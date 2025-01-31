@@ -1,0 +1,11 @@
+{
+    "tool_id": 1,
+    "tool_name": "livemonitor",
+    "monitor": {
+        "search.py": ["binary_search"],
+        "test.py": ["test"]
+    },
+    "output": {
+        "file": "data.jsonl"
+    }
+}
