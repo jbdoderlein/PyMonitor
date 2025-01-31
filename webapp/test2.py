@@ -1,4 +1,3 @@
-import monitor
 r = 1
 
 class Test:
