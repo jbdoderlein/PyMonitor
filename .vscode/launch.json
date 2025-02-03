@@ -2,19 +2,20 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Python: Flask",
-            "type": "debugpy",
+            "type": "extensionHost",
             "request": "launch",
-            "module": "flask",
-            "env": {
-                "FLASK_APP": "webapp.app",
-                "FLASK_ENV": "development",
-                "FLASK_RUN_PORT": "5000"
-            },
-            "args": [],
-            "jinja": true,
-            "justMyCode": true,
-            "python": "${workspaceFolder}/env/bin/python"
+            "name": "Launch Extension",
+            "runtimeExecutable": "${execPath}",
+            "args": [
+                "--extensionDevelopmentPath=${workspaceFolder}",
+                "--disable-extensions"
+            ],
+            "outFiles": [
+                "${workspaceFolder}/out/**/*.js"
+            ],
+            "preLaunchTask": "${defaultBuildTask}",
+            "sourceMaps": true,
+            "smartStep": true
         }
     ]
-} 
+}

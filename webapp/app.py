@@ -1,13 +1,54 @@
-
 import collections.abc
+from datetime import datetime
 import io
+import json
 from itertools import islice
-from flask import Flask, request, render_template_string
+from typing import Any
+from flask import Flask, request, render_template_string, jsonify
 import jsonpickle
 from search import binary_search
 import monitor
+from collections import defaultdict
+import os
 
 app = Flask(__name__)
+DATA_FILE = os.path.join(os.path.dirname(__file__), 'data.jsonl')
+
+def read_executions():
+    executions = []
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, 'r') as f:
+            for line in f:
+                try:
+                    executions.append(json.loads(line.strip()))
+                except json.JSONDecodeError:
+                    continue
+    return executions
+
+executions : dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
+
+def process_execution():
+    all_executions = read_executions()
+    # Group by execution_id
+    waiting = {}
+    for execution in all_executions:
+        if execution.get('event_type') == "call":
+            waiting[execution.get('execution_id')] = execution
+        elif execution.get('event_type') == "return":
+            if execution.get('execution_id') in waiting:
+                caller = waiting[execution.get('execution_id')]
+                executions[caller.get('file')][caller.get('function')].append({
+                    "line": caller.get('line'),
+                    "locals": caller.get('locals'),
+                    "return": execution.get('return_value'),
+                    "timestamp": execution.get('timestamp'),
+                    "exec_time": (datetime.fromisoformat(execution.get('timestamp')) - datetime.fromisoformat(caller.get('timestamp'))).total_seconds(),
+                })
+        else:
+            raise ValueError(f"Unknown event type: {execution.get('event_type')}")
+        
+process_execution()
+
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
@@ -66,7 +107,45 @@ def index():
     # If it's a GET request, just show the form
     return render_template_string(html_form)
 
+@app.route('/api/functions', methods=['GET'])
+def get_functions():
+    file_path = request.args.get('filePath')
+    if file_path in executions:
+        functions = []
+        for func_name, exec_list in executions[file_path].items():
+            line_counts = {}
+            for element in exec_list:
+                line_counts[element['line']] = line_counts.get(element['line'], 0) + 1
+            for line, count in line_counts.items():
+                functions.append({"name": func_name, "line": line, "count": count})
+        return jsonify(functions)
+    return jsonify([])
+
+@app.route('/api/executions', methods=['GET'])
+def get_executions():
+    file_path = request.args.get('filePath')
+    function_name = request.args.get('functionName')
+    line_number = request.args.get('line', type=int)
+    
+    filtered = []
+    if file_path in executions:
+        for func, exe_list in executions[file_path].items():
+            if function_name and func != function_name:
+                continue
+            for element in exe_list:
+                if line_number and element['line'] != line_number:
+                    continue
+                filtered.append({
+                    "functionName": func,
+                    "args": element['locals'],
+                    "return": element['return'],
+                    "line": element['line'],
+                    "timestamp": element['timestamp'],
+                    "exec_time": element['exec_time']
+                })
+    
+    return jsonify(filtered)
 
 
 if __name__ == "__main__":
-    app.run(debug=True) 
+    app.run(debug=True, port=5000)  # Explicit port for easier testing 

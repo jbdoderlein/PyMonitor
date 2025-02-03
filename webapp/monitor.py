@@ -92,6 +92,7 @@ def monitor_callback_function_start(code: types.CodeType, offset):
             "parent_id": parent_id,
             "file": code.co_filename,
             "function": code.co_name,
+            "line": frame.f_lineno,
             "locals": dict(args.locals).copy(),
             "globals": get_used_globals(code, frame.f_globals),
             "timestamp": datetime.datetime.now().isoformat()
@@ -110,7 +111,6 @@ def monitor_callback_function_start(code: types.CodeType, offset):
             # Get caller location from the parent frame
             caller_frame = frame.f_back
             caller_line = caller_frame.f_lineno # type: ignore
-            caller_file = caller_frame.f_code.co_filename # type: ignore
 
             execution_id = str(uuid.uuid4())
             # Store child execution with depth 1
@@ -121,8 +121,8 @@ def monitor_callback_function_start(code: types.CodeType, offset):
                 "parent_id": parent_id,
                 "file": code.co_filename,
                 "function": code.co_name,
+                "line": frame.f_lineno,
                 "caller_line": caller_line,
-                "caller_file": caller_file,
                 "locals": dict(inspect.getargvalues(frame).locals).copy(),
                 "globals": get_used_globals(code, frame.f_globals),
                 "timestamp": datetime.datetime.now().isoformat()
@@ -130,16 +130,16 @@ def monitor_callback_function_start(code: types.CodeType, offset):
             log_trace(json_trace)
 
 def monitor_callback_function_return(code: types.CodeType, offset, return_value):
-    print("return")
     exec_stack, executions = get_exec_data()
-    
+    filename = code.co_filename.split("/")[-1]
     # Get the frame from the execution storage instead of current frame
-    frame_id = None
-    for fid, (eid, depth) in executions.items():
-        if code.co_name == executions[fid][0].split('-')[-1]:  # Simple match for demo
-            frame_id = fid
-            break
-    print(frame_id)
+
+    current_frame = inspect.currentframe()
+    if current_frame is None or current_frame.f_back is None:
+        return
+
+    frame_id = id(current_frame.f_back)
+    
     if frame_id is None or frame_id not in executions:
         return
     
