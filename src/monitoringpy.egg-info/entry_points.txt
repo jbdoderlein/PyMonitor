@@ -1,0 +1,2 @@
+[console_scripts]
+monitoringpy-graph = monitoringpy.cli:main

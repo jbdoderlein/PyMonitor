@@ -7,24 +7,13 @@ import json
 import uuid
 import threading
 import datetime
-
-# open monitor_config.json
-with open('monitor_config.json', 'r') as f:
-    monitor_config = json.loads(f.read())
-
-# get tool_id
-tool_id : int = int(monitor_config["tool_id"])
-tool_name : str = monitor_config["tool_name"]
-monitor_functions : dict[str, list[str]] = monitor_config["monitor"]
-
-sys.monitoring.use_tool_id(tool_id, tool_name)
-# Register monitoring for function calls
-MONITOR_TOOL_ID = tool_id  # Can be 0-5 (reserved IDs)
+import os
 
 recording = {}
-
-# Add thread-local storage for execution tracking
 thread_local = threading.local()
+monitor_config = None
+monitor_functions = None
+MONITOR_TOOL_ID = None
 
 def get_exec_data():
     if not hasattr(thread_local, 'exec_stack'):
@@ -60,8 +49,10 @@ def get_used_globals(code, globals):
     filtered_globals = {k: v for k, v in globals.items() if k in globals_used}
     return filtered_globals
 
-# Modified monitoring callback
 def monitor_callback_function_start(code: types.CodeType, offset):
+    if monitor_config is None or monitor_functions is None:
+        return
+        
     exec_stack, executions = get_exec_data()
     filename = code.co_filename.split("/")[-1]
     
@@ -70,7 +61,7 @@ def monitor_callback_function_start(code: types.CodeType, offset):
         return
 
     frame = current_frame.f_back
-    is_monitored = filename in monitor_functions and code.co_name in monitor_functions[filename]
+    is_monitored = filename in monitor_functions and (code.co_name in monitor_functions[filename] or "*" in monitor_functions[filename])
 
     # Skip internal Python system files and private methods
     skip_files = {'threading.py', '<frozen importlib._bootstrap>'}
@@ -130,9 +121,11 @@ def monitor_callback_function_start(code: types.CodeType, offset):
             log_trace(json_trace)
 
 def monitor_callback_function_return(code: types.CodeType, offset, return_value):
+    if monitor_config is None:
+        return
+        
     exec_stack, executions = get_exec_data()
     filename = code.co_filename.split("/")[-1]
-    # Get the frame from the execution storage instead of current frame
 
     current_frame = inspect.currentframe()
     if current_frame is None or current_frame.f_back is None:
@@ -162,25 +155,68 @@ def monitor_callback_function_return(code: types.CodeType, offset, return_value)
 
 def log_trace(data):
     trace_str = jsonpickle.encode(data, fail_safe=(lambda e: None))
-    if trace_str:
-        with open(monitor_config["output"]["file"], "a") as f:
+    if trace_str and monitor_config is not None:
+        output_file = monitor_config["output"]["file"]
+        # Create directory if it doesn't exist
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
+        with open(output_file, "a") as f:
             f.write(trace_str + "\n")
 
-# Update event registration
+def init_monitoring(config_path='monitor_config.json', output_file=None):
+    """Initialize the monitoring system with the given configuration file.
+    
+    Args:
+        config_path (str): Path to the monitor_config.json file
+        output_file (str, optional): Override the output file specified in config
+    """
+    global monitor_config, monitor_functions, MONITOR_TOOL_ID
+    
+    # Read configuration from the caller's directory
+    caller_frame = inspect.currentframe().f_back # type: ignore
+    caller_dir = os.path.dirname(os.path.abspath(caller_frame.f_code.co_filename)) # type: ignore
+    config_full_path = os.path.join(caller_dir, config_path)
+    
+    try:
+        with open(config_full_path, 'r') as f:
+            monitor_config = json.loads(f.read())
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Configuration file not found at: {config_full_path}")
+    
+    # Override output file if specified
+    if output_file:
+        monitor_config["output"]["file"] = output_file
+    
+    # Make output path relative to the caller's directory if it's not absolute
+    if not os.path.isabs(monitor_config["output"]["file"]):
+        monitor_config["output"]["file"] = os.path.join(
+            caller_dir, 
+            monitor_config["output"]["file"]
+        )
 
-sys.monitoring.register_callback(
-    MONITOR_TOOL_ID,
-    sys.monitoring.events.PY_START,
-    monitor_callback_function_start
-)
+    # Set up monitoring
+    monitor_functions = monitor_config["monitor"]
+    MONITOR_TOOL_ID = int(monitor_config["tool_id"])
 
-sys.monitoring.register_callback(
-    MONITOR_TOOL_ID,
-    sys.monitoring.events.PY_RETURN,
-    monitor_callback_function_return
-)
+    # Register monitoring callbacks
+    sys.monitoring.use_tool_id(MONITOR_TOOL_ID, monitor_config["tool_name"])
+    
+    sys.monitoring.register_callback(
+        MONITOR_TOOL_ID,
+        sys.monitoring.events.PY_START,
+        monitor_callback_function_start
+    )
 
-sys.monitoring.set_events(
-    MONITOR_TOOL_ID, 
-    sys.monitoring.events.PY_START | sys.monitoring.events.PY_RETURN
-)
+    sys.monitoring.register_callback(
+        MONITOR_TOOL_ID,
+        sys.monitoring.events.PY_RETURN,
+        monitor_callback_function_return
+    )
+
+    sys.monitoring.set_events(
+        MONITOR_TOOL_ID, 
+        sys.monitoring.events.PY_START | sys.monitoring.events.PY_RETURN
+    )
+    
+    print(f"Monitoring initialized with tool '{monitor_config['tool_name']}'")
+    print(f"Output file: {monitor_config['output']['file']}")
+

@@ -1,4 +1,5 @@
 import json
+import os
 
 def generate_dot_graph(input_file, output_file):
     # Read and parse all events
@@ -48,6 +49,3 @@ def generate_dot_graph(input_file, output_file):
                             f'[label="{safe_value}", color=red, style=dashed];\n')
 
         f.write('}\n') 
-
-if __name__ == "__main__":
-    generate_dot_graph("data.jsonl", "execution_graph.dot")
