@@ -1,11 +1,15 @@
 import inspect
 import types
 import sys
-import jsonpickle
 import dis
 import uuid
 import datetime
 import logging
+import os
+import traceback
+from .models import init_db
+from .db_operations import DatabaseManager
+from .worker import LogWorker
 
 # Configure logging - only show warnings and errors
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -20,61 +24,96 @@ except ImportError:
 
 
 class PyMonitoring:
-    def __init__(self, output_file="monitoring.jsonl", pyrapl_enabled=True):
-        self.output_file = output_file
+    _instance = None
+    def __init__(self, db_path="monitoring.db", pyrapl_enabled=False, queue_size=1000, flush_interval=1.0):
+        if hasattr(self, 'initialized') and self._instance is not None:
+            print("PyMonitoring already initialized")
+            return
+        self.initialized = True
+        self.db_path = db_path
         self.execution_stack = []
         self.pyrapl_stack = []
         self.monitored_functions = {}
+        self.MONITOR_TOOL_ID = sys.monitoring.PROFILER_ID
         
-        if sys.monitoring.get_tool(2) is not None:
-            print("Monitoring already initialized")
-            return
+        # Initialize the database and managers
+        try:
+            Session = init_db(self.db_path)
+            self.db_manager = DatabaseManager(Session)
+            self.log_worker = LogWorker(self.db_manager, queue_size, flush_interval)
+            self.log_worker.start()
+            logger.info(f"Database initialized successfully at {self.db_path}")
+        except Exception as e:
+            logger.error(f"Failed to initialize database: {e}")
+            logger.error(traceback.format_exc())
+            print(f"ERROR: Failed to initialize monitoring database: {e}")
+            # Create a fallback in-memory database
+            try:
+                logger.warning("Attempting to create in-memory database as fallback")
+                Session = init_db(":memory:")
+                self.db_manager = DatabaseManager(Session)
+                self.log_worker = LogWorker(self.db_manager, queue_size, flush_interval)
+                self.log_worker.start()
+                logger.info("In-memory database initialized as fallback")
+                print("WARNING: Using in-memory database as fallback. Data will not be persisted.")
+            except Exception as e2:
+                logger.critical(f"Failed to initialize in-memory database: {e2}")
+                logger.critical(traceback.format_exc())
+                print(f"CRITICAL ERROR: Failed to initialize monitoring. Monitoring will be disabled.")
+                self.db_manager = None
+                self.log_worker = None
+                return
         
-        self.MONITOR_TOOL_ID = 2
-        sys.monitoring.use_tool_id(self.MONITOR_TOOL_ID, "py_monitoring")
+        try:
+            if sys.monitoring.get_tool(2) is None:
+                sys.monitoring.use_tool_id(self.MONITOR_TOOL_ID, "py_monitoring")
 
-        sys.monitoring.register_callback(
-            self.MONITOR_TOOL_ID,
-            sys.monitoring.events.PY_START,
-            self.monitor_callback_function_start
-        )
+            sys.monitoring.register_callback(
+                self.MONITOR_TOOL_ID,
+                sys.monitoring.events.PY_START,
+                self.monitor_callback_function_start
+            )
 
-        sys.monitoring.register_callback(
-            self.MONITOR_TOOL_ID,
-            sys.monitoring.events.PY_RETURN,
-            self.monitor_callback_function_return
-        )
-
-        sys.monitoring.set_events(
-            self.MONITOR_TOOL_ID, 
-            sys.monitoring.events.PY_START | sys.monitoring.events.PY_RETURN
-        )
+            sys.monitoring.register_callback(
+                self.MONITOR_TOOL_ID,
+                sys.monitoring.events.PY_RETURN,
+                self.monitor_callback_function_return
+            )
+            logger.info("Registered monitoring callbacks")
+            print("Registered callbacks")
+        except Exception as e:
+            logger.error(f"Failed to register monitoring callbacks: {e}")
+            print(f"ERROR: Failed to register monitoring callbacks: {e}")
+        
         self.pyrapl_enabled = pyrapl_enabled and pyRAPL is not None
         if self.pyrapl_enabled and pyRAPL is not None:
-            pyRAPL.setup()
+            try:
+                pyRAPL.setup()
+                logger.info("PyRAPL initialized successfully")
+            except Exception as e:
+                logger.warning(f"PyRAPL error: {e}")
+                self.pyrapl_enabled = False
+                print(f"WARNING: Failed to initialize PyRAPL: {e}")
+        
+        PyMonitoring._instance = self
+        logger.info("Monitoring initialized successfully")
+        print("Monitoring initialized")
 
-    def is_monitored(self, name: str):
-        return name in self.monitored_functions
+    def shutdown(self):
+        """Gracefully shut down the logging thread"""
+        if hasattr(self, 'log_worker') and self.log_worker is not None:
+            try:
+                self.log_worker.shutdown()
+                logger.info("Monitoring shutdown completed")
+            except Exception as e:
+                logger.error(f"Error during monitoring shutdown: {e}")
 
     def monitor_callback_function_start(self, code: types.CodeType, offset):
-        # check if function needs to be monitored
-        if not self.is_monitored(code.co_name):
-            return
-
         current_frame = inspect.currentframe()
-        if current_frame is None or current_frame.f_back is None:
-            return
-
+        if current_frame is None or current_frame.f_back is None: return
         # The parent frame should be the actual function being called
         frame = current_frame.f_back
-        
-        full_path = code.co_filename
-        
-        if any(path in full_path for path in ['/usr/lib/', '<frozen']):
-            return
-
         execution_id = str(uuid.uuid4())
-        
         # Capture function arguments
         # Get the function's parameter names from its code object
         arg_names = code.co_varnames[:code.co_argcount]
@@ -102,9 +141,7 @@ class PyMonitoring:
             self.pyrapl_stack[-1].begin()
 
     def monitor_callback_function_return(self, code: types.CodeType, offset, return_value):
-        if not self.is_monitored(code.co_name):
-            return
-            
+        perf_result = None
         if self.pyrapl_enabled and pyRAPL is not None:
             self.pyrapl_stack[-1].end()
             measurement = self.pyrapl_stack.pop()
@@ -115,8 +152,7 @@ class PyMonitoring:
             }
             
         # Make sure we have a trace to pop
-        if not self.execution_stack:
-            return
+        if not self.execution_stack: return
         json_trace = self.execution_stack.pop()
         
         json_trace["return_value"] = return_value
@@ -154,30 +190,40 @@ class PyMonitoring:
         return filtered_globals
 
     def log_trace(self, data):
-        trace_str = jsonpickle.encode(data, fail_safe=(lambda e: None))
-        if trace_str:
-            with open(self.output_file, "a") as f:
-                f.write(trace_str + "\n")
-
-
-# Global instance of the monitoring system
-_py_monitoring = None
-
-def init_monitoring(output_file="monitoring.jsonl"):
-    """Initialize the monitoring system with the given configuration file.
-    
-    Args:
-        output_file (str, optional): Override the output file specified in config
-    """
-    global _py_monitoring
-    _py_monitoring = PyMonitoring(output_file)
+        # Add to queue for processing by worker thread
+        if self.log_worker is None:
+            logger.warning("Log worker not available, skipping log")
+            return
+            
+        try:
+            if not self.log_worker.add_to_queue(data):
+                # If queue is full, log warning and try to process directly
+                logger.warning("Log queue full, processing directly")
+                if self.db_manager is not None:
+                    self.db_manager.save_to_database([data])
+        except Exception as e:
+            logger.error(f"Error logging trace: {e}")
 
 
 def pymonitor(func):
     """
     Decorator to monitor the execution of a function.
     """
-    if _py_monitoring is not None and func.__name__ not in _py_monitoring.monitored_functions:
-        _py_monitoring.monitored_functions[func.__name__] = True
+    if sys.monitoring.get_tool(sys.monitoring.PROFILER_ID) is None:
+        sys.monitoring.use_tool_id(sys.monitoring.PROFILER_ID, "py_monitoring")
+    sys.monitoring.set_local_events(sys.monitoring.PROFILER_ID, func.__code__, sys.monitoring.events.PY_START | sys.monitoring.events.PY_RETURN)
     return func
 
+def init_monitoring(*args, **kwargs):
+    print("Initializing monitoring")
+    monitor = PyMonitoring(*args, **kwargs)
+    return monitor
+
+# Register an atexit handler to ensure logs are flushed on program exit
+import atexit
+
+def _cleanup_monitoring():
+    if PyMonitoring._instance is not None:
+        PyMonitoring._instance.shutdown()
+
+atexit.register(_cleanup_monitoring)
