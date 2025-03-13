@@ -86,10 +86,11 @@ class PyMonitoring:
             print(f"ERROR: Failed to register monitoring callbacks: {e}")
         
         self.pyrapl_enabled = pyrapl_enabled and pyRAPL is not None
-        if self.pyrapl_enabled and pyRAPL is not None:
+        print(f"PyRAPL enabled: {self.pyrapl_enabled}")
+        if self.pyrapl_enabled:
             try:
-                pyRAPL.setup()
-                logger.info("PyRAPL initialized successfully")
+                pyRAPL.setup() # type: ignore
+                print("PyRAPL initialized successfully")
             except Exception as e:
                 logger.warning(f"PyRAPL error: {e}")
                 self.pyrapl_enabled = False
@@ -136,13 +137,13 @@ class PyMonitoring:
         }
         self.execution_stack.append(json_trace)
         
-        if self.pyrapl_enabled and pyRAPL is not None:
-            self.pyrapl_stack.append(pyRAPL.Measurement(code.co_name))
+        if self.pyrapl_enabled:
+            self.pyrapl_stack.append(pyRAPL.Measurement(code.co_name)) # type: ignore
             self.pyrapl_stack[-1].begin()
 
     def monitor_callback_function_return(self, code: types.CodeType, offset, return_value):
         perf_result = None
-        if self.pyrapl_enabled and pyRAPL is not None:
+        if self.pyrapl_enabled:
             self.pyrapl_stack[-1].end()
             measurement = self.pyrapl_stack.pop()
             perf_result = {
@@ -159,7 +160,7 @@ class PyMonitoring:
         json_trace["end_time"] = datetime.datetime.now().isoformat()
         if perf_result:
             json_trace["perf_result"] = perf_result
-        
+
         self.log_trace(json_trace)
 
     def get_used_globals(self, code, globals):

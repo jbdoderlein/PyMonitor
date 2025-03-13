@@ -18,6 +18,17 @@ import sys
 # Configure logging
 logger = logging.getLogger(__name__)
 
+# Set debug level for more detailed logging
+debug_enabled = os.environ.get('PYMONITOR_DEBUG', '0') == '1'
+if debug_enabled:
+    logger.setLevel(logging.DEBUG)
+    # Add a handler if none exists
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+
 # Types that can be stored directly as primitive values
 PRIMITIVE_TYPES = (int, float, str, bool, type(None))
 # Types that can be stored as structured objects
@@ -116,24 +127,50 @@ class DatabaseManager:
                     return existing_obj
                     
                 session.add(obj_model)
-                session.flush()  # Ensure the object is persisted and bound to the session
+                try:
+                    session.flush()  # Ensure the object is persisted and bound to the session
+                except SQLAlchemyError as e:
+                    logger.warning(f"Error flushing session for max depth object: {e}")
+                    session.rollback()
+                    # Try to get the object again after rollback
+                    existing_obj = session.query(Object).filter(Object.id == obj_hash).first()
+                    if existing_obj:
+                        return existing_obj
+                    # If not found, create a new session and try again
+                    session.close()
+                    session = self.Session()
+                    obj_model = Object(
+                        id=obj_hash, 
+                        type_name="str", 
+                        is_primitive=True,
+                        primitive_value=f"<max depth reached: {str(obj)[:100]}...>"
+                    )
+                    session.add(obj_model)
+                    session.flush()
+                
                 return obj_model
                 
             obj_hash = self._get_object_hash(obj)
             
             # Check if object is already in cache
             if obj_hash in self.object_cache:
+                if debug_enabled:
+                    logger.debug(f"Object {obj_hash} found in cache")
                 return self.object_cache[obj_hash]
             
             # Check if object is already in database
             existing_obj = session.query(Object).filter(Object.id == obj_hash).first()
             if existing_obj:
+                if debug_enabled:
+                    logger.debug(f"Object {obj_hash} found in database")
                 self.object_cache[obj_hash] = existing_obj
                 return existing_obj
             
             # Create new object with all attributes in constructor
             if isinstance(obj, PRIMITIVE_TYPES):
                 # Store primitive types directly
+                if debug_enabled:
+                    logger.debug(f"Storing primitive object of type {type(obj).__name__}")
                 obj_model = Object(
                     id=obj_hash,
                     type_name=type(obj).__name__,
@@ -143,16 +180,29 @@ class DatabaseManager:
                 session.add(obj_model)
                 try:
                     session.flush()  # Ensure the object is persisted and bound to the session
-                except Exception as e:
-                    # If flush fails, check if object was created by another transaction
+                except SQLAlchemyError as e:
+                    logger.warning(f"Error flushing session for primitive object: {e}")
                     session.rollback()
+                    # Try to get the object again after rollback
                     existing_obj = session.query(Object).filter(Object.id == obj_hash).first()
                     if existing_obj:
-                        self.object_cache[obj_hash] = existing_obj
                         return existing_obj
+                    # If not found, create a new session and try again
+                    session.close()
+                    session = self.Session()
+                    obj_model = Object(
+                        id=obj_hash,
+                        type_name=type(obj).__name__,
+                        is_primitive=True,
+                        primitive_value=str(obj)
+                    )
+                    session.add(obj_model)
+                    session.flush()
                     
             elif isinstance(obj, STRUCTURED_TYPES):
                 # Store structured types with their structure
+                if debug_enabled:
+                    logger.debug(f"Storing structured object of type {type(obj).__name__}")
                 obj_structure = None
                 try:
                     if isinstance(obj, dict):
@@ -174,18 +224,26 @@ class DatabaseManager:
                 session.add(obj_model)
                 try:
                     session.flush()  # Ensure the object is persisted and bound to the session
-                except Exception as e:
-                    # If flush fails, check if object was created by another transaction
+                except SQLAlchemyError as e:
+                    logger.warning(f"Error flushing session for structured object: {e}")
                     session.rollback()
+                    # Try to get the object again after rollback
                     existing_obj = session.query(Object).filter(Object.id == obj_hash).first()
                     if existing_obj:
                         self.object_cache[obj_hash] = existing_obj
                         return existing_obj
-                    else:
-                        # If object doesn't exist, re-raise the exception
-                        raise e
-                    
-                self.object_cache[obj_hash] = obj_model
+                    # If not found, create a new session and try again
+                    session.close()
+                    session = self.Session()
+                    obj_model = Object(
+                        id=obj_hash,
+                        type_name=type(obj).__name__,
+                        is_primitive=False,
+                        object_structure=obj_structure
+                    )
+                    session.add(obj_model)
+                    session.flush()
+                    self.object_cache[obj_hash] = obj_model
                 
                 # Store items with references
                 if isinstance(obj, dict):
@@ -223,6 +281,8 @@ class DatabaseManager:
                             logger.warning(f"Error storing list item at index {i}: {e}")
             else:
                 # For complex objects, try to store attributes
+                if debug_enabled:
+                    logger.debug(f"Storing complex object of type {type(obj).__name__}")
                 pickle_data = None
                 try:
                     pickle_data = pickle.dumps(obj)
@@ -242,22 +302,34 @@ class DatabaseManager:
                 session.add(obj_model)
                 try:
                     session.flush()  # Ensure the object is persisted and bound to the session
-                except Exception as e:
-                    # If flush fails, check if object was created by another transaction
+                    session.commit()  # Commit to ensure the object is in the database
+                    self.object_cache[obj_hash] = obj_model
+                except SQLAlchemyError as e:
+                    logger.warning(f"Error flushing session for complex object: {e}")
                     session.rollback()
+                    # Try to get the object again after rollback
                     existing_obj = session.query(Object).filter(Object.id == obj_hash).first()
                     if existing_obj:
                         self.object_cache[obj_hash] = existing_obj
                         return existing_obj
-                    else:
-                        # If object doesn't exist, re-raise the exception
-                        raise e
-                    
-                self.object_cache[obj_hash] = obj_model
+                    # If not found, create a new session and try again
+                    session.close()
+                    session = self.Session()
+                    obj_model = Object(
+                        id=obj_hash,
+                        type_name=type(obj).__name__,
+                        is_primitive=False,
+                        pickle_data=pickle_data,
+                        primitive_value=str(obj) if pickle_data is None else None
+                    )
+                    session.add(obj_model)
+                    session.flush()
+                    session.commit()
+                    self.object_cache[obj_hash] = obj_model
                 
                 # Try to store object attributes
                 try:
-                    # Get object attributes (excluding methods and private attributes)
+                    # Get all object attributes (excluding methods and private attributes)
                     attrs = {}
                     for attr_name in dir(obj):
                         if not attr_name.startswith('_') and not callable(getattr(obj, attr_name, None)):
@@ -267,45 +339,59 @@ class DatabaseManager:
                                 # Skip attributes that can't be accessed
                                 continue
                     
-                    # Store each attribute
+                    if debug_enabled:
+                        logger.debug(f"Found attributes for {type(obj).__name__}: {list(attrs.keys())}")
+                    
+                    # Store each attribute in a separate transaction to isolate failures
                     for attr_name, attr_value in attrs.items():
+                        attr_session = self.Session()
                         try:
-                            # Store the attribute value as a separate object
-                            attr_obj = self._store_object(attr_value, session, max_depth, current_depth + 1)
-                            
-                            # Create the attribute linking to the value
+                            # Get the parent object in this session
+                            parent_obj = attr_session.query(Object).filter(Object.id == obj_hash).first()
+                            if not parent_obj:
+                                logger.warning(f"Parent object {obj_hash} not found for attribute {attr_name}")
+                                # Try to create the parent object again
+                                parent_obj = Object(
+                                    id=obj_hash,
+                                    type_name=type(obj).__name__,
+                                    is_primitive=False,
+                                    pickle_data=pickle_data,
+                                    primitive_value=str(obj) if pickle_data is None else None
+                                )
+                                attr_session.add(parent_obj)
+                                attr_session.flush()
+                                attr_session.commit()
+                                
+                            # Store the attribute value
+                            attr_obj = self._store_object(attr_value, attr_session, max_depth, current_depth + 1)
+                            if not attr_obj:
+                                logger.warning(f"Failed to store attribute value for {attr_name}")
+                                attr_session.close()
+                                continue
+                                
+                            # Create the attribute relationship
+                            attr_id = str(uuid.uuid4())
                             attr = ObjectAttribute(
-                                id=str(uuid.uuid4()),
-                                parent_id=obj_model.id,
+                                id=attr_id,
+                                parent_id=parent_obj.id,
                                 name=attr_name,
                                 value_id=attr_obj.id
                             )
-                            session.add(attr)
-                            try:
-                                session.flush()  # Ensure the attribute is persisted
-                            except Exception as e:
-                                logger.warning(f"Error flushing attribute {attr_name}: {e}")
+                            attr_session.add(attr)
+                            attr_session.flush()
+                            attr_session.commit()
+                            
+                            if debug_enabled:
+                                logger.debug(f"Added attribute {attr_name} for {type(obj).__name__}")
                         except Exception as e:
-                            logger.warning(f"Error storing attribute {attr_name} for {type(obj).__name__}: {e}")
+                            logger.warning(f"Error storing attribute {attr_name}: {e}")
+                            attr_session.rollback()
+                        finally:
+                            attr_session.close()
+                    
                 except Exception as e:
                     logger.warning(f"Error storing attributes for {type(obj).__name__}: {e}")
             
-            if obj_model not in session:
-                session.add(obj_model)
-                try:
-                    session.flush()  # Ensure the object is persisted
-                except Exception as e:
-                    # If flush fails, check if object was created by another transaction
-                    session.rollback()
-                    existing_obj = session.query(Object).filter(Object.id == obj_hash).first()
-                    if existing_obj:
-                        self.object_cache[obj_hash] = existing_obj
-                        return existing_obj
-                    else:
-                        # If object doesn't exist, re-raise the exception
-                        raise e
-                
-            self.object_cache[obj_hash] = obj_model
             return obj_model
         except Exception as e:
             logger.error(f"Error storing object: {e}")
@@ -323,7 +409,22 @@ class DatabaseManager:
                     primitive_value=f"Error storing object: {str(e)[:100]}"
                 )
                 session.add(placeholder)
-                session.flush()
+                try:
+                    session.flush()
+                except SQLAlchemyError as flush_error:
+                    logger.warning(f"Error flushing placeholder: {flush_error}")
+                    session.rollback()
+                    # Try with a new session
+                    session.close()
+                    session = self.Session()
+                    placeholder = Object(
+                        id=placeholder_hash,
+                        type_name=f"Error_{type(obj).__name__}",
+                        is_primitive=True,
+                        primitive_value=f"Error storing object: {str(e)[:100]}"
+                    )
+                    session.add(placeholder)
+                    session.flush()
                 return placeholder
             except Exception as inner_e:
                 logger.error(f"Error creating placeholder: {inner_e}")
@@ -340,30 +441,57 @@ class DatabaseManager:
             session: SQLAlchemy session
         """
         try:
+            # Make sure the function call is in the session
+            if function_call not in session:
+                function_call = session.merge(function_call)
+            
             for arg_name, arg_value in locals_dict.items():
                 if arg_name == 'self':
                     continue  # Skip self parameter
                     
                 try:
+                    # Store the object with the current session
                     obj_model = self._store_object(arg_value, session)
                     if obj_model is None:
                         continue  # Skip if object couldn't be stored
                     
+                    # Make sure both objects are in the session
+                    if function_call not in session:
+                        function_call = session.merge(function_call)
+                    if obj_model not in session:
+                        obj_model = session.merge(obj_model)
+                    
                     # Add to function_call_locals association table
-                    session.execute(
-                        function_call_locals.insert().values(
-                            function_call_id=function_call.id,
-                            object_id=obj_model.id,
-                            arg_name=arg_name
-                        )
-                    )
                     try:
+                        session.execute(
+                            function_call_locals.insert().values(
+                                function_call_id=function_call.id,
+                                object_id=obj_model.id,
+                                arg_name=arg_name
+                            )
+                        )
                         session.flush()
                     except Exception as e:
-                        logger.warning(f"Error flushing function local {arg_name}: {e}")
+                        # If there's an error, try to recover
                         session.rollback()
+                        logger.warning(f"Error associating function local {arg_name}, retrying: {e}")
+                        
+                        # Try again with a fresh session state
+                        function_call = session.query(FunctionCall).filter(FunctionCall.id == function_call.id).first()
+                        obj_model = session.query(Object).filter(Object.id == obj_model.id).first()
+                        
+                        if function_call and obj_model:
+                            session.execute(
+                                function_call_locals.insert().values(
+                                    function_call_id=function_call.id,
+                                    object_id=obj_model.id,
+                                    arg_name=arg_name
+                                )
+                            )
+                            session.flush()
                 except Exception as e:
                     logger.warning(f"Error storing function local {arg_name}: {e}")
+                    session.rollback()  # Rollback the current transaction but continue with others
         except Exception as e:
             logger.error(f"Error storing function locals: {e}")
             session.rollback()
@@ -378,6 +506,10 @@ class DatabaseManager:
             session: SQLAlchemy session
         """
         try:
+            # Make sure the function call is in the session
+            if function_call not in session:
+                function_call = session.merge(function_call)
+            
             # Filter out modules and built-ins
             filtered_globals = {
                 k: v for k, v in globals_dict.items() 
@@ -387,25 +519,48 @@ class DatabaseManager:
             
             for var_name, var_value in filtered_globals.items():
                 try:
+                    # Store the object with the current session
                     obj_model = self._store_object(var_value, session)
                     if obj_model is None:
                         continue  # Skip if object couldn't be stored
                     
+                    # Make sure both objects are in the session
+                    if function_call not in session:
+                        function_call = session.merge(function_call)
+                    if obj_model not in session:
+                        obj_model = session.merge(obj_model)
+                    
                     # Add to function_call_globals association table
-                    session.execute(
-                        function_call_globals.insert().values(
-                            function_call_id=function_call.id,
-                            object_id=obj_model.id,
-                            var_name=var_name
-                        )
-                    )
                     try:
+                        session.execute(
+                            function_call_globals.insert().values(
+                                function_call_id=function_call.id,
+                                object_id=obj_model.id,
+                                var_name=var_name
+                            )
+                        )
                         session.flush()
                     except Exception as e:
-                        logger.warning(f"Error flushing function global {var_name}: {e}")
+                        # If there's an error, try to recover
                         session.rollback()
+                        logger.warning(f"Error associating function global {var_name}, retrying: {e}")
+                        
+                        # Try again with a fresh session state
+                        function_call = session.query(FunctionCall).filter(FunctionCall.id == function_call.id).first()
+                        obj_model = session.query(Object).filter(Object.id == obj_model.id).first()
+                        
+                        if function_call and obj_model:
+                            session.execute(
+                                function_call_globals.insert().values(
+                                    function_call_id=function_call.id,
+                                    object_id=obj_model.id,
+                                    var_name=var_name
+                                )
+                            )
+                            session.flush()
                 except Exception as e:
                     logger.warning(f"Error storing function global {var_name}: {e}")
+                    session.rollback()  # Rollback the current transaction but continue with others
         except Exception as e:
             logger.error(f"Error storing function globals: {e}")
             session.rollback()
@@ -420,20 +575,36 @@ class DatabaseManager:
             session: SQLAlchemy session
         """
         try:
+            # Make sure the function call is in the session
+            if function_call not in session:
+                function_call = session.merge(function_call)
+            
+            # Store the return value
             obj_model = self._store_object(return_value, session)
             if obj_model is None:
                 return  # Skip if object couldn't be stored
             
+            # Make sure both objects are in the session
+            if function_call not in session:
+                function_call = session.merge(function_call)
+            if obj_model not in session:
+                obj_model = session.merge(obj_model)
+            
+            # Set the return object ID
             function_call.return_object_id = obj_model.id
             try:
                 session.flush()
             except Exception as e:
-                logger.warning(f"Error flushing function return: {e}")
+                # If there's an error, try to recover
                 session.rollback()
-                # Try to query for the function call again to ensure it's still valid
-                refreshed_call = session.query(FunctionCall).filter(FunctionCall.id == function_call.id).first()
-                if refreshed_call:
-                    refreshed_call.return_object_id = obj_model.id
+                logger.warning(f"Error setting function return value, retrying: {e}")
+                
+                # Try again with a fresh session state
+                function_call = session.query(FunctionCall).filter(FunctionCall.id == function_call.id).first()
+                obj_model = session.query(Object).filter(Object.id == obj_model.id).first()
+                
+                if function_call and obj_model:
+                    function_call.return_object_id = obj_model.id
                     session.flush()
         except Exception as e:
             logger.error(f"Error storing function return value: {e}")
@@ -441,92 +612,154 @@ class DatabaseManager:
     
     def create_function_call_from_data(self, data, session):
         """
-        Create a FunctionCall object from a data dictionary.
+        Create a function call record from the provided data.
         
         Args:
-            data: Dictionary containing function call data
-            session: SQLAlchemy session
+            data (dict): The data to create the function call from.
+            session (Session): The database session to use.
             
         Returns:
-            FunctionCall: SQLAlchemy model instance
+            FunctionCall: The created function call record, or None if an error occurs.
         """
         try:
-            # Create with constructor parameters
+            logger.debug(f"Creating function call for {data.get('function')}")
+            
+            # Parse datetime strings if they are in ISO format
+            start_time = data.get('start_time')
+            end_time = data.get('end_time')
+            
+            # Convert ISO format strings to datetime objects
+            if isinstance(start_time, str):
+                start_time = datetime.datetime.fromisoformat(start_time)
+            if isinstance(end_time, str):
+                end_time = datetime.datetime.fromisoformat(end_time)
+            
+            # Extract performance data from perf_result if available
+            perf_label = None
+            perf_pkg = None
+            perf_dram = None
+            
+            if 'perf_result' in data and data['perf_result']:
+                perf_result = data['perf_result']
+                perf_label = perf_result.get('label')
+                
+                # Handle pkg energy - could be a list or a single value
+                # Energy values are in microjoules (μJ)
+                pkg = perf_result.get('pkg')
+                if pkg is not None:
+                    try:
+                        if isinstance(pkg, list) and len(pkg) > 0:
+                            perf_pkg = float(pkg[0])  # Take the first value if it's a list
+                        else:
+                            perf_pkg = float(pkg)
+                    except (TypeError, ValueError):
+                        logger.warning(f"Could not convert pkg energy to float: {pkg}")
+                
+                # Handle dram energy - could be a list or a single value
+                # Energy values are in seconds
+                dram = perf_result.get('dram')
+                if dram is not None:
+                    try:
+                        if isinstance(dram, list) and len(dram) > 0:
+                            perf_dram = float(dram[0])  # Take the first value if it's a list
+                        else:
+                            perf_dram = float(dram)
+                    except (TypeError, ValueError):
+                        logger.warning(f"Could not convert dram energy to float: {dram}")
+            
+            # Get the ID - check both 'id' and 'execution_id' fields
+            record_id = data.get('id') or data.get('execution_id') or str(uuid.uuid4())
+            
+            # Create the function call record
             function_call = FunctionCall(
-                id=data["execution_id"],
-                event_type=data["event_type"],
-                file=data["file"],
-                function=data["function"],
-                line=data["line"],
-                start_time=datetime.datetime.fromisoformat(data["start_time"])
+                id=record_id,
+                event_type=data.get('event_type', 'call'),
+                function=data.get('function', ''),
+                file=data.get('file', ''),
+                line=data.get('line', 0),
+                start_time=start_time,
+                end_time=end_time,
+                perf_label=perf_label,
+                perf_pkg=perf_pkg,
+                perf_dram=perf_dram
             )
             
-            # Add end_time if available
-            if "end_time" in data:
-                # Use setattr to avoid linter errors with SQLAlchemy columns
-                setattr(function_call, 'end_time', datetime.datetime.fromisoformat(data["end_time"]))
-            
-            # Add performance metrics if available
-            if "perf_result" in data:
-                setattr(function_call, 'perf_label', data["perf_result"].get("label"))
-                setattr(function_call, 'perf_pkg', data["perf_result"].get("pkg"))
-                setattr(function_call, 'perf_dram', data["perf_result"].get("dram"))
-            
+            # Add the function call to the session and flush to ensure it's persisted
             session.add(function_call)
-            session.flush()  # Ensure the function call is persisted
-            
-            # Store function locals
-            if "locals" in data and data["locals"]:
-                self._store_function_locals(function_call, data["locals"], session)
-            
-            # Store globals
-            if "globals" in data and data["globals"]:
-                self._store_function_globals(function_call, data["globals"], session)
-            
-            # Store return value
-            if "return_value" in data:
-                self._store_function_return(function_call, data["return_value"], session)
-                
-            return function_call
+            try:
+                session.flush()
+                return function_call
+            except SQLAlchemyError as e:
+                logger.error(f"Error flushing function call: {e}")
+                session.rollback()
+                return None
         except Exception as e:
             logger.error(f"Error creating function call: {e}")
-            session.rollback()
-            raise
+            try:
+                session.rollback()
+            except:
+                pass
+            return None
     
     def save_to_database(self, data_items):
         """
-        Save data items to the database.
+        Save a list of data items to the database.
         
         Args:
-            data_items: List of data dictionaries to save
-            
-        Returns:
-            bool: True if successful, False otherwise
+            data_items: List of data items to save
         """
-        session = self.Session()
-        try:
-            for data in data_items:
-                try:
-                    self.create_function_call_from_data(data, session)
-                except Exception as e:
-                    logger.error(f"Error processing data item: {e}")
-                    # Rollback and start a new transaction
-                    session.rollback()
-                    # Continue with next item instead of failing the entire batch
+        if not data_items:
+            return
+        
+        if debug_enabled:
+            logger.debug(f"Saving {len(data_items)} items to database")
+        
+        # Process each data item in a separate transaction
+        for data in data_items:
+            session = None
+            try:
+                session = self.Session()
+                
+                # Create function call record
+                function_call = self.create_function_call_from_data(data, session)
+                if not function_call:
+                    logger.error("Failed to create function call record")
                     continue
-            
-            session.commit()
-            return True
-        except (SQLAlchemyError, sqlite3.Error) as e:
-            session.rollback()
-            logger.error(f"Database error: {e}")
-            return False
-        except Exception as e:
-            session.rollback()
-            logger.error(f"Error committing to database: {e}")
-            return False
-        finally:
-            session.close()
+                
+                # Store locals
+                if 'locals' in data and function_call:
+                    self._store_function_locals(function_call, data['locals'], session)
+                    
+                # Store globals
+                if 'globals' in data and function_call:
+                    self._store_function_globals(function_call, data['globals'], session)
+                    
+                # Store return value
+                if 'return_value' in data and function_call:
+                    self._store_function_return(function_call, data['return_value'], session)
+                    
+                # Commit the transaction
+                try:
+                    session.commit()
+                    if debug_enabled and function_call:
+                        logger.debug(f"Successfully saved function call {function_call.id}")
+                except SQLAlchemyError as e:
+                    logger.error(f"Error committing transaction: {e}")
+                    session.rollback()
+                    
+            except Exception as e:
+                logger.error(f"Error saving data to database: {e}")
+                if session:
+                    try:
+                        session.rollback()
+                    except:
+                        pass
+            finally:
+                if session:
+                    try:
+                        session.close()
+                    except:
+                        pass
     
     def get_all_function_calls(self):
         """
@@ -723,7 +956,7 @@ class DatabaseManager:
     
     def get_function_call_data(self, function_call_id):
         """
-        Get detailed data for a function call.
+        Get detailed data for a function call, focusing on raw database fields.
         
         Args:
             function_call_id: ID of the function call
@@ -739,80 +972,156 @@ class DatabaseManager:
             if not function_call:
                 return None
             
-            # Get local variables
+            # Get local variables with their raw attributes
             locals_dict = {}
-            for local in function_call.local_objects:
-                # Get the argument name
-                arg_name = None
-                for assoc in session.query(function_call_locals).filter(
-                    function_call_locals.c.function_call_id == function_call_id,
-                    function_call_locals.c.object_id == local.id
-                ).all():
-                    arg_name = assoc.arg_name
-                    break
-                
-                if arg_name:
-                    # Reconstruct the object
-                    locals_dict[arg_name] = self._reconstruct_object(local, session)
+            for local_assoc in session.query(function_call_locals).filter(
+                function_call_locals.c.function_call_id == function_call_id
+            ).all():
+                obj = session.query(Object).filter(Object.id == local_assoc.object_id).first()
+                if obj:
+                    # Create a raw representation of the object
+                    obj_data = {
+                        'type': obj.type_name,
+                        'id': obj.id
+                    }
                     
-                    # If the object is a custom class with an error, try to get its attributes directly
-                    if isinstance(locals_dict[arg_name], dict) and locals_dict[arg_name].get('__error__'):
-                        # Get the attributes directly from the database
-                        attrs = {}
-                        for attr in session.query(ObjectAttribute).filter(ObjectAttribute.parent_id == local.id).all():
-                            attr_value_obj = session.query(Object).filter(Object.id == attr.value_id).first()
-                            if attr_value_obj:
-                                attrs[attr.name] = self._reconstruct_object(attr_value_obj, session)
-                        
-                        if attrs:
-                            locals_dict[arg_name]['__attributes__'] = attrs
+                    # Add primitive value if available
+                    if obj.is_primitive and obj.primitive_value:
+                        obj_data['value'] = obj.primitive_value
+                    
+                    # Add attributes if available
+                    attributes = {}
+                    for attr in session.query(ObjectAttribute).filter(ObjectAttribute.parent_id == obj.id).all():
+                        attr_obj = session.query(Object).filter(Object.id == attr.value_id).first()
+                        if attr_obj:
+                            if attr_obj.is_primitive and attr_obj.primitive_value:
+                                attributes[attr.name] = attr_obj.primitive_value
+                            else:
+                                attributes[attr.name] = {
+                                    'type': attr_obj.type_name,
+                                    'id': attr_obj.id
+                                }
+                    
+                    if attributes:
+                        obj_data['attributes'] = attributes
+                    
+                    # Add items if available (for lists, dicts, etc.)
+                    items = {}
+                    for item in session.query(ObjectItem).filter(ObjectItem.parent_id == obj.id).all():
+                        item_obj = session.query(Object).filter(Object.id == item.value_id).first()
+                        if item_obj:
+                            if item_obj.is_primitive and item_obj.primitive_value:
+                                items[item.key] = item_obj.primitive_value
+                            else:
+                                items[item.key] = {
+                                    'type': item_obj.type_name,
+                                    'id': item_obj.id
+                                }
+                    
+                    if items:
+                        obj_data['items'] = items
+                    
+                    locals_dict[local_assoc.arg_name] = obj_data
             
-            # Get global variables
+            # Get global variables with their raw attributes
             globals_dict = {}
-            for global_var in function_call.global_objects:
-                # Get the variable name
-                var_name = None
-                for assoc in session.query(function_call_globals).filter(
-                    function_call_globals.c.function_call_id == function_call_id,
-                    function_call_globals.c.object_id == global_var.id
-                ).all():
-                    var_name = assoc.var_name
-                    break
-                
-                if var_name:
-                    # Reconstruct the object
-                    globals_dict[var_name] = self._reconstruct_object(global_var, session)
+            for global_assoc in session.query(function_call_globals).filter(
+                function_call_globals.c.function_call_id == function_call_id
+            ).all():
+                obj = session.query(Object).filter(Object.id == global_assoc.object_id).first()
+                if obj:
+                    # Create a raw representation of the object
+                    obj_data = {
+                        'type': obj.type_name,
+                        'id': obj.id
+                    }
                     
-                    # If the object is a custom class with an error, try to get its attributes directly
-                    if isinstance(globals_dict[var_name], dict) and globals_dict[var_name].get('__error__'):
-                        # Get the attributes directly from the database
-                        attrs = {}
-                        for attr in session.query(ObjectAttribute).filter(ObjectAttribute.parent_id == global_var.id).all():
-                            attr_value_obj = session.query(Object).filter(Object.id == attr.value_id).first()
-                            if attr_value_obj:
-                                attrs[attr.name] = self._reconstruct_object(attr_value_obj, session)
-                        
-                        if attrs:
-                            globals_dict[var_name]['__attributes__'] = attrs
+                    # Add primitive value if available
+                    if obj.is_primitive and obj.primitive_value:
+                        obj_data['value'] = obj.primitive_value
+                    
+                    # Add attributes if available
+                    attributes = {}
+                    for attr in session.query(ObjectAttribute).filter(ObjectAttribute.parent_id == obj.id).all():
+                        attr_obj = session.query(Object).filter(Object.id == attr.value_id).first()
+                        if attr_obj:
+                            if attr_obj.is_primitive and attr_obj.primitive_value:
+                                attributes[attr.name] = attr_obj.primitive_value
+                            else:
+                                attributes[attr.name] = {
+                                    'type': attr_obj.type_name,
+                                    'id': attr_obj.id
+                                }
+                    
+                    if attributes:
+                        obj_data['attributes'] = attributes
+                    
+                    # Add items if available (for lists, dicts, etc.)
+                    items = {}
+                    for item in session.query(ObjectItem).filter(ObjectItem.parent_id == obj.id).all():
+                        item_obj = session.query(Object).filter(Object.id == item.value_id).first()
+                        if item_obj:
+                            if item_obj.is_primitive and item_obj.primitive_value:
+                                items[item.key] = item_obj.primitive_value
+                            else:
+                                items[item.key] = {
+                                    'type': item_obj.type_name,
+                                    'id': item_obj.id
+                                }
+                    
+                    if items:
+                        obj_data['items'] = items
+                    
+                    globals_dict[global_assoc.var_name] = obj_data
             
-            # Get return value
+            # Get return value with its raw attributes
             return_value = None
             if function_call.return_object_id:
-                return_obj = session.query(Object).filter(Object.id == function_call.return_object_id).first()
-                if return_obj:
-                    return_value = self._reconstruct_object(return_obj, session)
+                obj = session.query(Object).filter(Object.id == function_call.return_object_id).first()
+                if obj:
+                    # Create a raw representation of the object
+                    obj_data = {
+                        'type': obj.type_name,
+                        'id': obj.id
+                    }
                     
-                    # If the object is a custom class with an error, try to get its attributes directly
-                    if isinstance(return_value, dict) and return_value.get('__error__'):
-                        # Get the attributes directly from the database
-                        attrs = {}
-                        for attr in session.query(ObjectAttribute).filter(ObjectAttribute.parent_id == return_obj.id).all():
-                            attr_value_obj = session.query(Object).filter(Object.id == attr.value_id).first()
-                            if attr_value_obj:
-                                attrs[attr.name] = self._reconstruct_object(attr_value_obj, session)
+                    # Add primitive value if available
+                    if obj.is_primitive and obj.primitive_value:
+                        return_value = obj.primitive_value
+                    else:
+                        # Add attributes if available
+                        attributes = {}
+                        for attr in session.query(ObjectAttribute).filter(ObjectAttribute.parent_id == obj.id).all():
+                            attr_obj = session.query(Object).filter(Object.id == attr.value_id).first()
+                            if attr_obj:
+                                if attr_obj.is_primitive and attr_obj.primitive_value:
+                                    attributes[attr.name] = attr_obj.primitive_value
+                                else:
+                                    attributes[attr.name] = {
+                                        'type': attr_obj.type_name,
+                                        'id': attr_obj.id
+                                    }
                         
-                        if attrs:
-                            return_value['__attributes__'] = attrs
+                        if attributes:
+                            obj_data['attributes'] = attributes
+                        
+                        # Add items if available (for lists, dicts, etc.)
+                        items = {}
+                        for item in session.query(ObjectItem).filter(ObjectItem.parent_id == obj.id).all():
+                            item_obj = session.query(Object).filter(Object.id == item.value_id).first()
+                            if item_obj:
+                                if item_obj.is_primitive and item_obj.primitive_value:
+                                    items[item.key] = item_obj.primitive_value
+                                else:
+                                    items[item.key] = {
+                                        'type': item_obj.type_name,
+                                        'id': item_obj.id
+                                    }
+                        
+                        if items:
+                            obj_data['items'] = items
+                        
+                        return_value = obj_data
             
             session.close()
             

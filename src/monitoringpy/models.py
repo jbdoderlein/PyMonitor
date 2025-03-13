@@ -196,7 +196,18 @@ def init_db(db_path):
         logger.error(f"Unexpected error during database initialization: {e}")
     
     # Use a standard SQLite connection string with absolute path
-    engine = create_engine(f'sqlite:///{db_path}', connect_args={'check_same_thread': False})
+    engine = create_engine(
+        f'sqlite:///{db_path}', 
+        connect_args={
+            'check_same_thread': False,
+            'timeout': 60  # Increase SQLite timeout to 60 seconds (default is 5)
+        },
+        # Increase pool size and overflow to handle more connections
+        pool_size=20,  # Default is 5
+        max_overflow=20,  # Default is 10
+        pool_timeout=60,  # Default is 30
+        pool_recycle=1800  # Recycle connections after 30 minutes
+    )
     
     try:
         # Create tables if they don't exist
@@ -214,5 +225,7 @@ def init_db(db_path):
         raise
     
     # Create and return session factory
-    Session = sessionmaker(bind=engine)
+    # Set expire_on_commit=False to prevent objects from being expired after commit
+    # This helps prevent "Parent instance is not bound to a Session" errors
+    Session = sessionmaker(bind=engine, expire_on_commit=False)
     return Session 

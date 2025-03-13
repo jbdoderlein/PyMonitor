@@ -353,7 +353,7 @@ index_html = """<!DOCTYPE html>
                                                         <strong>Package Energy:</strong> ${call.perf_pkg !== null ? call.perf_pkg + ' μJ' : 'N/A'}
                                                     </div>
                                                     <div class="col-md-6">
-                                                        <strong>DRAM Energy:</strong> ${call.perf_dram !== null ? call.perf_dram + ' μJ' : 'N/A'}
+                                                        <strong>DRAM Energy:</strong> ${call.perf_dram !== null ? call.perf_dram + ' seconds' : 'N/A'}
                                                     </div>
                                                 </div>
                                             </div>
@@ -395,27 +395,11 @@ with open(os.path.join(template_dir, 'index.html'), 'w') as f:
 
 # JSON encoder for datetime objects
 class DateTimeEncoder(json.JSONEncoder):
-    """JSON encoder that handles datetime objects and custom objects"""
+    """JSON encoder that handles datetime objects"""
     def default(self, obj):
         if isinstance(obj, datetime.datetime):
             return obj.isoformat()
-        elif hasattr(obj, '__dict__'):
-            # For custom objects, convert to a dictionary of attributes
-            result = {}
-            for key, value in obj.__dict__.items():
-                if not key.startswith('_'):  # Skip private attributes
-                    try:
-                        # Try to make the value JSON serializable
-                        json.dumps({key: value}, cls=DateTimeEncoder)
-                        result[key] = value
-                    except (TypeError, OverflowError):
-                        # If the value can't be serialized, use its string representation
-                        result[key] = str(value)
-            
-            # Add the class name as a special attribute
-            result['__class__'] = obj.__class__.__name__
-            return result
-        return str(obj)
+        return super().default(obj)
 
 @app.route('/')
 def index():
