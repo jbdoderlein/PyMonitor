@@ -25,6 +25,7 @@ except ImportError:
 
 from .models import init_db
 from .db_operations import DatabaseManager
+from .reanimator import PyDBReanimator  # Import the reanimator
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -39,6 +40,7 @@ CORS(app)
 # Global variables
 db_manager = None
 db_path = None
+reanimator = None  # Add reanimator instance
 
 # Create templates directory if it doesn't exist
 template_dir = os.path.join(os.path.dirname(__file__), 'templates')
@@ -91,6 +93,49 @@ index_html = """<!DOCTYPE html>
         .spinner-border {
             width: 3rem;
             height: 3rem;
+        }
+        /* Add styles for collapsible objects */
+        .collapsible {
+            cursor: pointer;
+            padding: 2px 5px;
+            background-color: #f1f1f1;
+            border-radius: 3px;
+            display: inline-block;
+            margin: 2px 0;
+        }
+        .collapsible:hover {
+            background-color: #e9e9e9;
+        }
+        .collapsible-content {
+            display: none;
+            padding-left: 20px;
+            overflow: hidden;
+        }
+        .object-type {
+            color: #6c757d;
+            font-size: 0.9em;
+        }
+        .object-key {
+            color: #0d6efd;
+            font-weight: bold;
+        }
+        .object-value {
+            color: #198754;
+        }
+        .primitive-value {
+            color: #333;
+        }
+        .string-value {
+            color: #664d03;
+        }
+        .null-value {
+            color: #6c757d;
+            font-style: italic;
+        }
+        .top-level-container {
+            background-color: #f8f9fa;
+            border-radius: 5px;
+            padding: 10px;
         }
     </style>
 </head>
@@ -154,6 +199,7 @@ index_html = """<!DOCTYPE html>
         </div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         document.addEventListener('DOMContentLoaded', function() {
             // Set database path
@@ -335,17 +381,23 @@ index_html = """<!DOCTYPE html>
                                 </ul>
                                 <div class="tab-content" id="detailTabsContent">
                                     <div class="tab-pane fade show active" id="locals" role="tabpanel">
-                                        <pre>${formatObject(details.locals)}</pre>
+                                        <div id="locals-content" class="mt-3">
+                                            ${formatObjectPretty(details.locals, 'locals', true)}
+                                        </div>
                                     </div>
                                     <div class="tab-pane fade" id="globals" role="tabpanel">
-                                        <pre>${formatObject(details.globals)}</pre>
+                                        <div id="globals-content" class="mt-3">
+                                            ${formatObjectPretty(details.globals, 'globals', true)}
+                                        </div>
                                     </div>
                                     <div class="tab-pane fade" id="return" role="tabpanel">
-                                        <pre>${formatObject(details.return_value)}</pre>
+                                        <div id="return-content" class="mt-3">
+                                            ${formatObjectPretty(details.return_value, 'return', true)}
+                                        </div>
                                     </div>
                                     ${call.perf_label ? `
                                     <div class="tab-pane fade" id="perf" role="tabpanel">
-                                        <div class="card">
+                                        <div class="card mt-3">
                                             <div class="card-body">
                                                 <h5 class="card-title">${call.perf_label || 'Performance'}</h5>
                                                 <div class="row">
@@ -364,6 +416,9 @@ index_html = """<!DOCTYPE html>
                             </div>
                         </div>
                     `;
+                    
+                    // Set up collapsible sections after rendering
+                    setupCollapsibles();
                 })
                 .catch(error => {
                     console.error('Error loading function details:', error);
@@ -377,14 +432,175 @@ index_html = """<!DOCTYPE html>
                 });
         }
 
+        function formatObjectPretty(obj, prefix = '', isTopLevel = false) {
+            if (obj === null || obj === undefined) {
+                return '<span class="null-value">null</span>';
+            }
+            
+            // Handle reanimated objects
+            if (obj && typeof obj === 'object' && obj.is_reanimated) {
+                return `<span class="object-value">${obj.value}</span> <span class="object-type">(${obj.type})</span>`;
+            }
+            
+            if (typeof obj === 'string') {
+                return `<span class="string-value">"${escapeHtml(obj)}"</span>`;
+            }
+            
+            if (typeof obj !== 'object') {
+                return `<span class="primitive-value">${obj}</span>`;
+            }
+            
+            if (Array.isArray(obj)) {
+                if (obj.length === 0) {
+                    return '[]';
+                }
+                
+                const uniqueId = prefix + '_array_' + Math.random().toString(36).substr(2, 9);
+                let result = `<div class="collapsible" onclick="toggleCollapsible('${uniqueId}')">Array(${obj.length})</div>`;
+                result += `<div id="${uniqueId}" class="collapsible-content">`;
+                
+                for (let i = 0; i < obj.length; i++) {
+                    result += `<div>[${i}]: ${formatObjectPretty(obj[i], uniqueId + '_' + i)}</div>`;
+                }
+                
+                result += '</div>';
+                return result;
+            }
+            
+            const keys = Object.keys(obj);
+            if (keys.length === 0) {
+                return '{}';
+            }
+            
+            // Special handling for reanimated objects
+            if (obj._reanimated) {
+                // Add a note that this object has been reanimated
+                return `<div class="alert alert-info mb-2">Objects have been reanimated using PyDBReanimator</div>${formatObjectEntriesPretty(obj, keys, prefix, isTopLevel)}`;
+            }
+            
+            return formatObjectEntriesPretty(obj, keys, prefix, isTopLevel);
+        }
+
+        function formatObjectEntriesPretty(obj, keys, prefix, isTopLevel = false) {
+            // For top-level objects, directly show the properties without collapsible
+            if (isTopLevel) {
+                let result = `<div class="top-level-container">`;
+                
+                for (const key of keys) {
+                    // Skip internal properties that start with underscore
+                    if (key.startsWith('_') && key !== '_reanimated') {
+                        continue;
+                    }
+                    
+                    const value = obj[key];
+                    const formattedValue = formatObjectPretty(value, prefix + '_' + key);
+                    result += `<div><span class="object-key">${key}</span>: ${formattedValue}</div>`;
+                }
+                
+                result += '</div>';
+                return result;
+            }
+            
+            // For nested objects, use collapsible
+            const uniqueId = prefix + '_obj_' + Math.random().toString(36).substr(2, 9);
+            let objType = obj.type || 'Object';
+            
+            let result = `<div class="collapsible" onclick="toggleCollapsible('${uniqueId}')">${objType} {${keys.length} properties}</div>`;
+            result += `<div id="${uniqueId}" class="collapsible-content">`;
+            
+            for (const key of keys) {
+                // Skip internal properties that start with underscore
+                if (key.startsWith('_') && key !== '_reanimated') {
+                    continue;
+                }
+                
+                const value = obj[key];
+                const formattedValue = formatObjectPretty(value, uniqueId + '_' + key);
+                result += `<div><span class="object-key">${key}</span>: ${formattedValue}</div>`;
+            }
+            
+            result += '</div>';
+            return result;
+        }
+
+        function escapeHtml(str) {
+            return str
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+
+        function toggleCollapsible(id) {
+            const content = document.getElementById(id);
+            if (content) {
+                content.style.display = content.style.display === 'block' ? 'none' : 'block';
+            }
+        }
+
+        function setupCollapsibles() {
+            // Expand the first level of collapsibles by default
+            const firstLevelCollapsibles = document.querySelectorAll('.tab-pane.active .collapsible-content');
+            for (const collapsible of firstLevelCollapsibles) {
+                collapsible.style.display = 'block';
+            }
+        }
+
+        // Legacy format function kept for backward compatibility
         function formatObject(obj) {
             if (obj === null || obj === undefined) {
-                return 'None';
+                return 'null';
             }
-            return JSON.stringify(obj, null, 2);
+            
+            // Handle reanimated objects
+            if (obj && typeof obj === 'object' && obj.is_reanimated) {
+                return `<span class="text-success">${obj.value}</span> <span class="text-muted">(${obj.type})</span>`;
+            }
+            
+            if (typeof obj === 'string') {
+                return JSON.stringify(obj);
+            }
+            
+            if (typeof obj !== 'object') {
+                return String(obj);
+            }
+            
+            if (Array.isArray(obj)) {
+                const items = obj.map(item => formatObject(item)).join(', ');
+                return `[${items}]`;
+            }
+            
+            const keys = Object.keys(obj);
+            if (keys.length === 0) {
+                return '{}';
+            }
+            
+            // Special handling for reanimated objects
+            if (obj._reanimated) {
+                // Add a note that this object has been reanimated
+                return `<div class="alert alert-info mb-2">Objects have been reanimated using PyDBReanimator</div>${formatObjectEntries(obj, keys)}`;
+            }
+            
+            return formatObjectEntries(obj, keys);
+        }
+
+        function formatObjectEntries(obj, keys) {
+            let result = '{\\n';
+            for (const key of keys) {
+                // Skip internal properties that start with underscore
+                if (key.startsWith('_') && key !== '_reanimated') {
+                    continue;
+                }
+                
+                const value = obj[key];
+                const formattedValue = formatObject(value);
+                result += `  "${key}": ${formattedValue},\\n`;
+            }
+            result += '}';
+            return result;
         }
     </script>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
 """
@@ -480,7 +696,7 @@ def get_function_calls():
 @app.route('/api/function-call/<function_id>')
 def get_function_call(function_id):
     """Return details for a specific function call"""
-    global db_manager
+    global db_manager, reanimator
     if not db_manager:
         abort(500, description="Database manager not initialized")
         
@@ -496,8 +712,48 @@ def get_function_call(function_id):
     if not function_call:
         abort(404)
     
-    # Get the function call data
+    # Get the function call data using both methods
     details = db_manager.get_function_call_data(function_id)
+    
+    # Use reanimator to get reconstructed objects if available
+    reanimated_objects = None
+    if reanimator:
+        try:
+            reanimated_objects = reanimator.reanimate_objects(function_id)
+            
+            # Add a flag to indicate that objects have been reanimated
+            details['_reanimated'] = True
+            
+            # Replace return value with the reanimated version
+            if 'return_value' in details and reanimated_objects.get('return_value') is not None:
+                # Store the original return value for reference
+                details['_original_return_value'] = details['return_value']
+                
+                # Replace with reanimated return value, including type information
+                reanimated_return = reanimated_objects.get('return_value')
+                details['return_value'] = {
+                    'value': str(reanimated_return),
+                    'type': str(type(reanimated_return).__name__),
+                    'is_reanimated': True
+                }
+            
+            # Add type information for local variables
+            if 'locals' in details and reanimated_objects.get('locals'):
+                for var_name, var_value in reanimated_objects.get('locals', {}).items():
+                    if var_name in details['locals']:
+                        # Store the original value
+                        if isinstance(details['locals'][var_name], dict):
+                            details['locals'][var_name]['_original'] = details['locals'][var_name].copy()
+                        else:
+                            details['locals'][var_name] = {
+                                '_original': details['locals'][var_name],
+                                'value': str(var_value),
+                                'type': str(type(var_value).__name__),
+                                'is_reanimated': True
+                            }
+        except Exception as e:
+            logger.error(f"Error reanimating objects: {e}")
+            # Continue with the regular details if reanimation fails
     
     # Convert function call to dictionary
     call_dict = {
@@ -529,32 +785,46 @@ def open_browser(url):
     webbrowser.open(url)
 
 def run_explorer(db_file, host='127.0.0.1', port=5000, debug=False, open_browser_flag=True):
-    """Run the web explorer"""
-    global db_manager, db_path
+    """
+    Run the web explorer.
     
-    # Ensure we have an absolute path
-    db_path = os.path.abspath(db_file)
+    Args:
+        db_file: Path to the database file
+        host: Host to run the server on
+        port: Port to run the server on
+        debug: Whether to run in debug mode
+        open_browser_flag: Whether to open a browser automatically
+    """
+    global db_manager, db_path, reanimator
     
-    if not os.path.exists(db_path):
-        logger.error(f"Database file not found: {db_path}")
+    # Check if the database file exists
+    if not os.path.exists(db_file):
+        logger.error(f"Database file not found: {db_file}")
         sys.exit(1)
     
-    # Initialize the database
+    # Initialize the database manager
+    db_path = db_file
+    Session = init_db(db_file)
+    db_manager = DatabaseManager(Session)
+    
+    # Initialize the reanimator
     try:
-        Session = init_db(db_path)
-        db_manager = DatabaseManager(Session)
-        logger.info(f"Successfully connected to database: {db_path}")
+        reanimator = PyDBReanimator(db_file)
+        logger.info("Reanimator initialized successfully")
     except Exception as e:
-        logger.error(f"Error connecting to database: {e}")
-        sys.exit(1)
+        logger.error(f"Error initializing reanimator: {e}")
+        reanimator = None
     
-    # Open browser automatically if requested
+    # Create the HTML template file
+    with open(os.path.join(template_dir, 'index.html'), 'w') as f:
+        f.write(index_html)
+    
+    # Open browser after a delay
     if open_browser_flag:
-        url = f"http://{host}:{port}/"
-        threading.Thread(target=open_browser, args=(url,)).start()
+        url = f"http://{host}:{port}"
+        threading.Timer(1.5, open_browser, args=[url]).start()
     
     # Run the Flask app
-    logger.info(f"Starting web explorer at http://{host}:{port}/")
     app.run(host=host, port=port, debug=debug)
 
 def main():

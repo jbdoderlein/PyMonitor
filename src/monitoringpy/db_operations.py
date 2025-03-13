@@ -1087,7 +1087,9 @@ class DatabaseManager:
                     
                     # Add primitive value if available
                     if obj.is_primitive and obj.primitive_value:
-                        return_value = obj.primitive_value
+                        # Store the primitive value in the dictionary instead of returning it directly
+                        obj_data['value'] = obj.primitive_value
+                        return_value = obj_data
                     else:
                         # Add attributes if available
                         attributes = {}
