@@ -11,6 +11,7 @@ PyMonitor is a powerful Python monitoring and introspection tool that allows you
 - **Low Overhead**: Designed to minimize performance impact on monitored applications
 - **Custom Object Support**: Handles custom classes, nested objects, and complex data structures
 - **Automatic Schema Migration**: Seamlessly upgrade database schemas when the library is updated
+- **Object Versioning**: Track changes to objects over time with detailed version history
 
 ## Installation
 
@@ -123,6 +124,7 @@ The web explorer provides a user-friendly interface to browse and analyze monito
 - Examine object structures and attributes
 - Filter and search for specific functions or objects
 - Analyze performance metrics (if PyRAPL is enabled)
+- View object version history and compare changes between versions
 
 To run the web explorer:
 
@@ -151,6 +153,28 @@ Check out the `examples/` directory for more usage examples:
 - `custom_objects.py`: Monitoring with custom objects
 - `performance.py`: Performance monitoring with PyRAPL
 
+## Testing
+
+PyMonitor includes a comprehensive test suite to ensure reliability and correctness:
+
+```bash
+# Run all tests
+python tests/run_tests.py
+
+# Or use the standard unittest module
+python -m unittest discover tests
+```
+
+The tests cover:
+
+- Object hashing and identity management
+- Object storage and retrieval
+- Object versioning and version history
+- Function call data with versioned objects
+- Complex object structures and custom classes
+
+For more details on the test suite, see [tests/README.md](tests/README.md).
+
 ## Troubleshooting
 
 ### Common Issues
@@ -174,6 +198,14 @@ Check out the `examples/` directory for more usage examples:
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Add tests for your changes
+4. Ensure all tests pass (`python tests/run_tests.py`)
+5. Commit your changes (`git commit -m 'Add some amazing feature'`)
+6. Push to the branch (`git push origin feature/amazing-feature`)
+7. Open a Pull Request
 
 ## License
 

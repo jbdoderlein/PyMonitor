@@ -42,6 +42,8 @@ class LogWorker:
         """Background thread that processes log entries from the queue"""
         buffer = []
         last_flush_time = time.time()
+        retry_delay = 0.5  # Initial retry delay
+        max_retry_delay = 5.0  # Maximum retry delay
         
         while not self.shutdown_flag.is_set():
             try:
@@ -55,23 +57,46 @@ class LogWorker:
                 
                 current_time = time.time()
                 # Flush the buffer if it's been too long or if we have enough items
-                if (buffer and current_time - last_flush_time >= self.flush_interval) or len(buffer) >= 100:
-                    if self.db_manager.save_to_database(buffer):
-                        buffer.clear()
-                        last_flush_time = current_time
-                        # Reset error count on successful save
-                        if self.error_count > 0:
-                            logger.info("Database operations resumed successfully after errors")
+                if (buffer and current_time - last_flush_time >= self.flush_interval) or len(buffer) >= 25:
+                    # Get a sample of function names for logging
+                    function_names = [item.get('function', 'unknown') for item in buffer[:3]]
+                    if len(buffer) > 3:
+                        function_names.append(f"... and {len(buffer) - 3} more")
+                    
+                    logger.debug(f"Flushing buffer with {len(buffer)} items: {', '.join(function_names)}")
+                    
+                    # Try to save with retries
+                    retry_count = 0
+                    max_retries = 3
+                    while retry_count < max_retries:
+                        save_result = self.db_manager.save_to_database(buffer)
+                        if save_result:
+                            buffer.clear()
+                            last_flush_time = current_time
+                            # Reset error count and retry delay on successful save
                             self.error_count = 0
-                    else:
-                        # If save failed but didn't raise an exception, log it
+                            retry_delay = 0.5
+                            break
+                        else:
+                            retry_count += 1
+                            if retry_count < max_retries:
+                                logger.warning(f"Retry {retry_count}/{max_retries} after failed save")
+                                time.sleep(retry_delay)
+                                retry_delay = min(retry_delay * 2, max_retry_delay)
+                    
+                    if retry_count == max_retries:
+                        # If all retries failed
                         self.error_count += 1
                         if self.error_count <= self.max_consecutive_errors or self.error_count % 100 == 0:
-                            logger.error(f"Failed to save to database (error #{self.error_count})")
+                            logger.error(f"Failed to save to database after {max_retries} retries (error #{self.error_count}) - Buffer size: {len(buffer)}")
+                            # Log a sample of the data that failed to save
+                            if buffer:
+                                sample = buffer[0]
+                                logger.error(f"Sample data: Function: {sample.get('function', 'unknown')}, File: {sample.get('file', 'unknown')}")
                         
                         # If we've had too many errors, clear the buffer to avoid memory issues
                         if self.error_count > 10:
-                            logger.warning(f"Clearing buffer after {self.error_count} consecutive errors")
+                            logger.warning(f"Clearing buffer after {self.error_count} consecutive errors - Buffer size: {len(buffer)}")
                             buffer.clear()
                             last_flush_time = current_time
             except Exception as e:
@@ -79,13 +104,18 @@ class LogWorker:
                 if self.error_count <= self.max_consecutive_errors or self.error_count % 100 == 0:
                     logger.error(f"Error in log worker (error #{self.error_count}): {e}")
                     logger.error(traceback.format_exc())
+                    if buffer:
+                        logger.error(f"Buffer size: {len(buffer)}")
+                        sample = buffer[0]
+                        logger.error(f"Sample data: Function: {sample.get('function', 'unknown')}, File: {sample.get('file', 'unknown')}")
                 
-                # Sleep briefly to avoid tight error loops
-                time.sleep(0.5)
+                # Sleep with exponential backoff
+                time.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, max_retry_delay)
                 
                 # If we've had too many errors, clear the buffer to avoid memory issues
                 if self.error_count > 10 and buffer:
-                    logger.warning(f"Clearing buffer after {self.error_count} consecutive errors")
+                    logger.warning(f"Clearing buffer after {self.error_count} consecutive errors - Buffer size: {len(buffer)}")
                     buffer.clear()
                     last_flush_time = time.time()
         
@@ -93,7 +123,20 @@ class LogWorker:
         if buffer:
             try:
                 logger.info(f"Final flush of {len(buffer)} items on shutdown")
-                self.db_manager.save_to_database(buffer)
+                retry_count = 0
+                max_retries = 3
+                while retry_count < max_retries:
+                    if self.db_manager.save_to_database(buffer):
+                        logger.info("Final flush completed successfully")
+                        break
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        logger.warning(f"Retry {retry_count}/{max_retries} for final flush")
+                        time.sleep(retry_delay)
+                        retry_delay = min(retry_delay * 2, max_retry_delay)
+                
+                if retry_count == max_retries:
+                    logger.error("Failed to complete final flush after all retries")
             except Exception as e:
                 logger.error(f"Error during final flush: {e}")
     
@@ -118,16 +161,21 @@ class LogWorker:
     
     def shutdown(self):
         """Gracefully shut down the logging thread"""
-        logger.info("Shutting down log worker")
+        logger.info("Starting shutdown process")
         self.shutdown_flag.set()
         
         try:
             if self.worker_thread.is_alive():
-                logger.info("Waiting for worker thread to finish")
-                self.worker_thread.join(timeout=5.0)  # Wait up to 5 seconds for the thread to finish
+                logger.info("Worker thread is still alive, waiting for it to finish")
+                logger.info(f"Current queue size: {self.log_queue.qsize()}")
+                
+                self.worker_thread.join(timeout=10.0)  # Increased from 5.0 to 10.0 seconds
                 
                 if self.worker_thread.is_alive():
                     logger.warning("Worker thread did not finish in time")
+                    logger.warning(f"Queue size: {self.log_queue.qsize()}")
+                    logger.warning("Stack trace of worker thread:")
+                    logger.warning(traceback.format_stack())
                 else:
                     logger.info("Worker thread finished successfully")
                 
@@ -141,12 +189,14 @@ class LogWorker:
                     break
                     
             if remaining_items:
-                logger.info(f"Flushing {len(remaining_items)} remaining items")
+                logger.info(f"Found {len(remaining_items)} remaining items to flush")
                 try:
+                    logger.info("Attempting to save remaining items")
                     self.db_manager.save_to_database(remaining_items)
-                    logger.info("Final flush completed successfully")
+                    logger.info("Successfully saved remaining items")
                 except Exception as e:
                     logger.error(f"Error during final flush of remaining items: {e}")
+                    logger.error(traceback.format_exc())
         except Exception as e:
             logger.error(f"Error during worker shutdown: {e}")
             logger.error(traceback.format_exc()) 

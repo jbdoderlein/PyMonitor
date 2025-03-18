@@ -4,7 +4,7 @@ from .models import FunctionCall, init_db, migrate_database_schema
 from .db_operations import DatabaseManager
 from .worker import LogWorker
 from .migrate_db import migrate_database, check_database_schema
-from .reanimator import load_pydb, PyDBReanimator
+from .reanimator import load_pydb, Reanimator
 
 # Import web explorer if Flask is available
 try:

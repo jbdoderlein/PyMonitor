@@ -19,21 +19,50 @@ Base = declarative_base()
 function_call_locals = Table(
     'function_call_locals',
     Base.metadata,
-    Column('function_call_id', String, ForeignKey('function_calls.id')),
-    Column('object_id', String, ForeignKey('objects.id')),
-    Column('arg_name', String)
+    Column('function_call_id', Integer, ForeignKey('function_calls.id'), primary_key=True),
+    Column('object_id', String, ForeignKey('objects.id'), primary_key=True),
+    Column('object_version_id', Integer, ForeignKey('object_versions.id'), nullable=True),  # Reference to specific version
+    Column('arg_name', String, primary_key=True)
 )
 
 function_call_globals = Table(
     'function_call_globals',
     Base.metadata,
-    Column('function_call_id', String, ForeignKey('function_calls.id')),
-    Column('object_id', String, ForeignKey('objects.id')),
-    Column('var_name', String)
+    Column('function_call_id', Integer, ForeignKey('function_calls.id'), primary_key=True),
+    Column('object_id', String, ForeignKey('objects.id'), primary_key=True),
+    Column('object_version_id', Integer, ForeignKey('object_versions.id'), nullable=True),  # Reference to specific version
+    Column('var_name', String, primary_key=True)
 )
 
-# For return values, we use a direct relationship instead of an association table
-# since a function call can have only one return value
+# New table for object identity tracking
+class ObjectIdentity(Base):
+    """Model for tracking object identity across versions"""
+    __tablename__ = 'object_identities'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)  # Auto-incrementing ID
+    identity_hash = Column(String, unique=True)  # Stable hash for the object identity
+    name = Column(String)  # Object name if available (e.g., variable name)
+    creation_time = Column(DateTime, default=datetime.datetime.now)
+    latest_version_id = Column(String, ForeignKey('objects.id'), nullable=True)
+    
+    # Relationships
+    versions = relationship("ObjectVersion", back_populates="identity", cascade="all, delete-orphan")
+    latest_version = relationship("Object", foreign_keys=[latest_version_id])
+
+# New table for object version tracking
+class ObjectVersion(Base):
+    """Model for tracking versions of objects"""
+    __tablename__ = 'object_versions'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)  # Auto-incrementing ID
+    identity_id = Column(Integer, ForeignKey('object_identities.id'))
+    object_id = Column(String, ForeignKey('objects.id'))
+    version_number = Column(Integer)
+    timestamp = Column(DateTime, default=datetime.datetime.now)
+    
+    # Relationships
+    identity = relationship("ObjectIdentity", back_populates="versions")
+    object = relationship("Object", foreign_keys=[object_id])
 
 class Object(Base):
     """Model for storing objects with their structure"""
@@ -64,12 +93,15 @@ class Object(Base):
     local_in_calls = relationship("FunctionCall", secondary=function_call_locals, back_populates="local_objects")
     global_in_calls = relationship("FunctionCall", secondary=function_call_globals, back_populates="global_objects")
     return_from_calls = relationship("FunctionCall", back_populates="return_object")
+    
+    # Version relationships
+    versions = relationship("ObjectVersion", foreign_keys=[ObjectVersion.object_id], back_populates="object")
 
 class ObjectAttribute(Base):
     """Model for storing object attributes"""
     __tablename__ = 'object_attributes'
     
-    id = Column(String, primary_key=True)  # Auto-generated ID
+    id = Column(Integer, primary_key=True, autoincrement=True)  # Auto-incrementing ID
     parent_id = Column(String, ForeignKey('objects.id'))
     name = Column(String)  # Attribute name
     value_id = Column(String, ForeignKey('objects.id'))  # Reference to the attribute value
@@ -82,7 +114,7 @@ class ObjectItem(Base):
     """Model for storing collection items (list items, dict values, etc.)"""
     __tablename__ = 'object_items'
     
-    id = Column(String, primary_key=True)  # Auto-generated ID
+    id = Column(Integer, primary_key=True, autoincrement=True)  # Auto-incrementing ID
     parent_id = Column(String, ForeignKey('objects.id'))
     key = Column(String)  # Key (for dicts) or index (for lists)
     value_id = Column(String, ForeignKey('objects.id'))  # Reference to the item value
@@ -94,7 +126,7 @@ class ObjectItem(Base):
 class FunctionCall(Base):
     __tablename__ = 'function_calls'
     
-    id = Column(String, primary_key=True)  # execution_id
+    id = Column(Integer, primary_key=True, autoincrement=True)
     event_type = Column(String)
     file = Column(String)
     function = Column(String)
@@ -104,6 +136,7 @@ class FunctionCall(Base):
     
     # Return value - direct relationship
     return_object_id = Column(String, ForeignKey('objects.id'), nullable=True)
+    return_object_version_id = Column(Integer, ForeignKey('object_versions.id'), nullable=True)  # Reference to specific version
     
     # Performance metrics if pyRAPL is enabled
     perf_label = Column(String, nullable=True)
@@ -114,6 +147,7 @@ class FunctionCall(Base):
     local_objects = relationship("Object", secondary=function_call_locals, back_populates="local_in_calls")
     global_objects = relationship("Object", secondary=function_call_globals, back_populates="global_in_calls")
     return_object = relationship("Object", foreign_keys=[return_object_id], back_populates="return_from_calls")
+    return_object_version = relationship("ObjectVersion", foreign_keys=[return_object_version_id])
 
 def migrate_database_schema(engine):
     """

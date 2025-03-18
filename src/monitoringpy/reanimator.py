@@ -10,583 +10,516 @@ import datetime
 import re
 import builtins
 from typing import Any, Dict, List, Callable, Optional, Tuple, Union, cast
-from sqlalchemy import and_, or_
-from .models import init_db, FunctionCall, Object, ObjectAttribute, ObjectItem
+from sqlalchemy import and_, or_, create_engine, func, desc
+from sqlalchemy.orm import sessionmaker
+from .models import init_db, FunctionCall, Object, ObjectAttribute, ObjectItem, ObjectVersion, ObjectIdentity
 from .db_operations import DatabaseManager
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
-class PyDBReanimator:
+class Reanimator:
     """
-    Class for loading and reanimating function calls from a monitoring database.
-    This allows for searching, inspecting, and reanimating past function executions.
+    Class for reanimating function calls from the database.
+    This allows retrieving and reconstructing function calls with their inputs and outputs.
     """
     
-    def __init__(self, db_path: str):
+    def __init__(self, db_path):
         """
         Initialize the reanimator with a database path.
         
         Args:
             db_path: Path to the SQLite database file
         """
-        if not os.path.exists(db_path):
-            raise FileNotFoundError(f"Database file not found: {db_path}")
-            
         self.db_path = db_path
-        self.Session = init_db(db_path)
+        
+        # Create engine and session factory
+        self.engine = create_engine(f'sqlite:///{db_path}')
+        self.Session = sessionmaker(bind=self.engine)
+        
+        # Create database manager
         self.db_manager = DatabaseManager(self.Session)
-        logger.info(f"Initialized reanimator with database: {db_path}")
     
-    def search(self, 
-               function_filter: Optional[Union[str, Callable]] = None, 
-               file_filter: Optional[str] = None,
-               time_range: Optional[Tuple[datetime.datetime, datetime.datetime]] = None,
-               perf_filter: Optional[Dict[str, float]] = None,
-               limit: int = 100) -> List[Dict[str, Any]]:
+    def search(self, function_filter=None, file_filter=None, line_filter=None, 
+               perf_filter=None, start_time=None, end_time=None, limit=100):
         """
-        Search for function calls in the database based on various filters.
+        Search for function calls in the database.
         
         Args:
-            function_filter: Function name or callable to filter by
-            file_filter: File path to filter by
-            time_range: Tuple of (start_time, end_time) as datetime objects
-            perf_filter: Dict with performance thresholds (e.g., {'pkg': 100, 'dram': 50})
+            function_filter: Filter by function name (string or list of strings)
+            file_filter: Filter by file path (string or list of strings)
+            line_filter: Filter by line number (int or list of ints)
+            perf_filter: Filter by performance metrics (dict with keys 'pkg' and/or 'dram')
+            start_time: Filter by start time (datetime or ISO format string)
+            end_time: Filter by end time (datetime or ISO format string)
             limit: Maximum number of results to return
             
         Returns:
-            List of function call metadata dictionaries
+            list: List of function call dictionaries
         """
         session = self.Session()
         try:
+            # Start with a base query
             query = session.query(FunctionCall)
             
-            # Apply function filter
+            # Apply filters
             if function_filter:
-                if callable(function_filter):
-                    # If a callable is provided, get its name
-                    function_name = function_filter.__name__
+                if isinstance(function_filter, list):
+                    query = query.filter(FunctionCall.function.in_(function_filter))
                 else:
-                    function_name = function_filter
-                query = query.filter(FunctionCall.function == function_name)
+                    query = query.filter(FunctionCall.function == function_filter)
             
-            # Apply file filter
             if file_filter:
-                query = query.filter(FunctionCall.file.like(f"%{file_filter}%"))
+                if isinstance(file_filter, list):
+                    query = query.filter(FunctionCall.file.in_(file_filter))
+                else:
+                    query = query.filter(FunctionCall.file == file_filter)
             
-            # Apply time range filter
-            if time_range:
-                start_time, end_time = time_range
-                # Use explicit comparison operators instead of relying on __bool__
-                if start_time is not None:
-                    query = query.filter(FunctionCall.start_time >= start_time)
-                if end_time is not None:
-                    query = query.filter(FunctionCall.start_time <= end_time)
+            if line_filter:
+                if isinstance(line_filter, list):
+                    query = query.filter(FunctionCall.line.in_(line_filter))
+                else:
+                    query = query.filter(FunctionCall.line == line_filter)
             
-            # Apply performance filter
             if perf_filter:
                 if 'pkg' in perf_filter:
                     query = query.filter(FunctionCall.perf_pkg <= perf_filter['pkg'])
                 if 'dram' in perf_filter:
                     query = query.filter(FunctionCall.perf_dram <= perf_filter['dram'])
             
-            # Order by start time descending (most recent first)
-            query = query.order_by(FunctionCall.start_time.desc()).limit(limit)
+            if start_time:
+                if isinstance(start_time, str):
+                    start_time = datetime.datetime.fromisoformat(start_time)
+                query = query.filter(FunctionCall.start_time >= start_time)
             
-            # Convert to list of dictionaries
-            results = []
-            for call in query.all():
-                # Handle datetime objects safely
-                start_time_str = None
-                end_time_str = None
-                if hasattr(call.start_time, 'isoformat'):
-                    start_time_str = call.start_time.isoformat()
-                if hasattr(call.end_time, 'isoformat'):
-                    end_time_str = call.end_time.isoformat()
-                
-                results.append({
+            if end_time:
+                if isinstance(end_time, str):
+                    end_time = datetime.datetime.fromisoformat(end_time)
+                query = query.filter(FunctionCall.end_time <= end_time)
+            
+            # Order by start time (most recent first) and limit results
+            query = query.order_by(desc(FunctionCall.start_time)).limit(limit)
+            
+            # Execute query
+            function_calls = query.all()
+            
+            # Convert to dictionaries
+            result = []
+            for call in function_calls:
+                call_dict = {
                     'id': call.id,
                     'function': call.function,
                     'file': call.file,
                     'line': call.line,
-                    'start_time': start_time_str,
-                    'end_time': end_time_str,
-                    'perf_pkg': call.perf_pkg,
-                    'perf_dram': call.perf_dram,
-                })
+                    'start_time': call.start_time.isoformat() if call.start_time else None,
+                    'end_time': call.end_time.isoformat() if call.end_time else None
+                }
+                
+                # Add performance metrics if available
+                if call.perf_pkg is not None or call.perf_dram is not None:
+                    call_dict['performance'] = {}
+                    if call.perf_pkg is not None:
+                        call_dict['performance']['pkg'] = call.perf_pkg
+                    if call.perf_dram is not None:
+                        call_dict['performance']['dram'] = call.perf_dram
+                
+                result.append(call_dict)
             
-            return results
+            return result
+        except Exception as e:
+            logger.error(f"Error searching function calls: {e}")
+            return []
         finally:
             session.close()
     
-    def get_call_details(self, call_id: str) -> Dict[str, Any]:
+    def get_call_details(self, call_id: Union[str, int]) -> Dict[str, Any]:
         """
-        Get detailed information about a specific function call.
+        Get detailed information about a function call.
         
         Args:
-            call_id: ID of the function call
+            call_id: ID of the function call (can be string or integer)
             
         Returns:
-            Dictionary with detailed function call information
+            dict: Dictionary with function call details
         """
-        session = self.Session()
         try:
-            # First get the basic function call information
+            # Convert call_id to integer
+            try:
+                call_id = int(call_id)
+            except (ValueError, TypeError):
+                raise ValueError(f"Invalid call ID: {call_id}. Must be convertible to an integer.")
+            
+            session = self.Session()
+            
+            # Get the function call
             function_call = session.query(FunctionCall).filter(FunctionCall.id == call_id).first()
+            
             if not function_call:
                 raise ValueError(f"Function call with ID {call_id} not found")
             
-            # Get the basic function call information
-            call_info = {
+            # Get basic function call information
+            result = {
                 'id': function_call.id,
                 'function': function_call.function,
                 'file': function_call.file,
                 'line': function_call.line,
-                'start_time': function_call.start_time.isoformat() if hasattr(function_call.start_time, 'isoformat') else None,
-                'end_time': function_call.end_time.isoformat() if hasattr(function_call.end_time, 'isoformat') else None,
-                'perf_pkg': function_call.perf_pkg,
-                'perf_dram': function_call.perf_dram,
+                'start_time': function_call.start_time.isoformat() if function_call.start_time else None,
+                'end_time': function_call.end_time.isoformat() if function_call.end_time else None
             }
             
-            # Use the existing method to get detailed function call data (locals, globals, return value)
-            call_data = self.db_manager.get_function_call_data(call_id)
-            if not call_data:
-                raise ValueError(f"Function call data with ID {call_id} not found")
+            # Add performance metrics if available
+            if function_call.perf_pkg is not None or function_call.perf_dram is not None:
+                result['performance'] = {}
+                if function_call.perf_pkg is not None:
+                    result['performance']['pkg'] = function_call.perf_pkg
+                if function_call.perf_dram is not None:
+                    result['performance']['dram'] = function_call.perf_dram
             
-            # Merge the basic information with the detailed data
-            call_info.update(call_data)
+            # Get detailed data from the database manager
+            detailed_data = self.db_manager.get_function_call_data(call_id)
             
-            return call_info
-        finally:
+            if detailed_data:
+                # Merge with basic information
+                result.update(detailed_data)
+            
             session.close()
+            return result
+        except Exception as e:
+            logger.error(f"Error getting call details: {e}")
+            return {'error': str(e)}
     
-    def _import_module_from_file(self, file_path: str) -> Optional[Any]:
+    def reanimate_objects(self, call_id: Union[str, int]) -> Dict[str, Any]:
         """
-        Import a module from a file path.
+        Reanimate a function call by reconstructing Python objects.
         
         Args:
-            file_path: Path to the Python file
+            call_id: ID of the function call (can be string or integer)
             
         Returns:
-            Imported module or None if import fails
+            dict: Dictionary with reanimated objects
         """
         try:
-            # Convert file path to module path
-            if file_path.endswith('.py'):
-                file_path = file_path[:-3]
+            # Get call details first
+            call_details = self.get_call_details(call_id)
             
-            # Handle absolute paths
-            if file_path.startswith('/'):
-                # Get the directory containing the file
-                dir_path = os.path.dirname(file_path)
-                
-                # Add the directory to sys.path temporarily
-                sys.path.insert(0, dir_path)
-                
-                # Get the module name (filename without extension)
-                module_name = os.path.basename(file_path)
-                
-                try:
-                    # Import the module
-                    module = importlib.import_module(module_name)
-                    return module
-                finally:
-                    # Remove the directory from sys.path
-                    sys.path.pop(0)
-            else:
-                # For relative paths, try standard import
-                module_path = file_path.replace('/', '.').replace('\\', '.')
-                module_path = module_path.lstrip('.')
-                return importlib.import_module(module_path)
-        except (ImportError, AttributeError) as e:
-            logger.error(f"Error importing module from {file_path}: {e}")
-            return None
-    
-    def _convert_primitive_value(self, value: Optional[str], type_name: Optional[str]) -> Any:
-        """
-        Convert a primitive value string to its appropriate Python type.
-        
-        Args:
-            value: String value to convert
-            type_name: Type name to convert to
+            if 'error' in call_details:
+                return call_details
             
-        Returns:
-            Converted value
-        """
-        if value is None or type_name is None:
-            return None
+            # Initialize result with basic function information
+            result = {
+                'function_name': call_details.get('function'),
+                'file_path': call_details.get('file'),
+                'line_number': call_details.get('line')
+            }
             
-        if type_name == 'int':
-            try:
-                return int(value)
-            except (ValueError, TypeError):
-                return 0
-        elif type_name == 'float':
-            try:
-                return float(value)
-            except (ValueError, TypeError):
-                return 0.0
-        elif type_name == 'str':
-            return str(value)
-        elif type_name == 'bool':
-            return value.lower() == 'true' if hasattr(value, 'lower') else False
-        elif type_name == 'NoneType':
-            return None
-        else:
-            # For other primitive types, return the value as is
-            return value
-    
-    def _reconstruct_object(self, obj_data: Dict[str, Any], session, visited=None, function_file=None) -> Any:
-        """
-        Recursively reconstruct a Python object from its stored representation.
-        
-        Args:
-            obj_data: Dictionary containing object data
-            session: SQLAlchemy session
-            visited: Set of already visited object IDs to prevent infinite recursion
-            function_file: File path of the function that used this object
-            
-        Returns:
-            Reconstructed Python object
-        """
-        if visited is None:
-            visited = set()
-            
-        # If we've already visited this object, return None to prevent infinite recursion
-        obj_id = obj_data.get('id')
-        if obj_id in visited:
-            return f"<Circular reference to {obj_data.get('type')}>"
-        
-        # Add this object to the visited set
-        if obj_id:
-            visited.add(obj_id)
-        
-        # Handle primitive types
-        if 'value' in obj_data:
-            type_name = obj_data.get('type')
-            value = obj_data.get('value')
-            return self._convert_primitive_value(value, type_name)
-        
-        # Handle complex types
-        type_name = obj_data.get('type')
-        if type_name is None:
-            return None
-        
-        # Handle lists
-        if type_name == 'list':
-            items = obj_data.get('items', {})
-            result = []
-            # Sort by key (which should be the index)
-            for key in sorted(items.keys(), key=lambda k: int(k) if k.isdigit() else k):
-                item_value = items[key]
-                if isinstance(item_value, dict):
-                    result.append(self._reconstruct_object(item_value, session, visited, function_file))
-                else:
-                    result.append(item_value)
-            return result
-        
-        # Handle tuples
-        elif type_name == 'tuple':
-            items = obj_data.get('items', {})
-            result = []
-            # Sort by key (which should be the index)
-            for key in sorted(items.keys(), key=lambda k: int(k) if k.isdigit() else k):
-                item_value = items[key]
-                if isinstance(item_value, dict):
-                    result.append(self._reconstruct_object(item_value, session, visited, function_file))
-                else:
-                    result.append(item_value)
-            return tuple(result)
-        
-        # Handle dictionaries
-        elif type_name == 'dict':
-            items = obj_data.get('items', {})
-            result = {}
-            for key, item_value in items.items():
-                if isinstance(item_value, dict):
-                    result[key] = self._reconstruct_object(item_value, session, visited, function_file)
-                else:
-                    result[key] = item_value
-            return result
-        
-        # Handle sets
-        elif type_name == 'set':
-            items = obj_data.get('items', {})
-            result = set()
-            for key, item_value in items.items():
-                if isinstance(item_value, dict):
-                    result.add(self._reconstruct_object(item_value, session, visited, function_file))
-                else:
-                    result.add(item_value)
-            return result
-        
-        # Handle custom classes
-        else:
-            # Try to import the class
-            try:
-                class_obj = None
-                
-                # Extract module and class name from the type name
-                # This assumes the type name is in the format "module.ClassName"
-                if '.' in type_name:
-                    module_name, class_name = type_name.rsplit('.', 1)
-                    try:
-                        module = importlib.import_module(module_name)
-                        class_obj = getattr(module, class_name)
-                    except (ImportError, AttributeError):
-                        pass
-                else:
-                    # If no module is specified, try to find the class in the builtins
-                    class_name = type_name
-                    class_obj = getattr(builtins, class_name, None)
-                
-                # If not found yet, try to find it in the module of the function
-                if class_obj is None and function_file:
-                    # Try to import the module from the function file
-                    module = self._import_module_from_file(function_file)
-                    if module:
-                        class_obj = getattr(module, class_name, None)
-                
-                # If still not found, try to find it in the current directory
-                if class_obj is None:
-                    # Get the current working directory
-                    cwd = os.getcwd()
-                    
-                    # Look for Python files in the current directory
-                    for filename in os.listdir(cwd):
-                        if filename.endswith('.py'):
-                            # Try to import the module
-                            module_name = filename[:-3]
-                            try:
-                                spec = importlib.util.spec_from_file_location(module_name, os.path.join(cwd, filename))
-                                if spec and spec.loader:
-                                    module = importlib.util.module_from_spec(spec)
-                                    spec.loader.exec_module(module)
-                                    if hasattr(module, class_name):
-                                        class_obj = getattr(module, class_name)
-                                        break
-                            except (ImportError, AttributeError):
-                                pass
-                
-                # If we found the class, create an instance
-                if class_obj:
-                    # Create an empty instance
-                    instance = object.__new__(class_obj)
-                    
-                    # Set attributes
-                    attributes = obj_data.get('attributes', {})
-                    for attr_name, attr_value in attributes.items():
-                        if isinstance(attr_value, dict):
-                            setattr(instance, attr_name, self._reconstruct_object(attr_value, session, visited, function_file))
-                        else:
-                            # Convert string values to appropriate types for common attributes
-                            if attr_name in ('x', 'y', 'z') and isinstance(attr_value, str):
-                                try:
-                                    # Try to convert to int or float
-                                    if '.' in attr_value:
-                                        setattr(instance, attr_name, float(attr_value))
-                                    else:
-                                        setattr(instance, attr_name, int(attr_value))
-                                except (ValueError, TypeError):
-                                    setattr(instance, attr_name, attr_value)
-                            else:
-                                setattr(instance, attr_name, attr_value)
-                    
-                    return instance
-                else:
-                    # If we couldn't find the class, return a placeholder
-                    attributes = obj_data.get('attributes', {})
-                    reconstructed_attrs = {}
-                    for attr_name, attr_value in attributes.items():
-                        if isinstance(attr_value, dict):
-                            reconstructed_attrs[attr_name] = self._reconstruct_object(attr_value, session, visited, function_file)
-                        else:
-                            reconstructed_attrs[attr_name] = attr_value
-                    
-                    return f"<{type_name} object with attributes: {reconstructed_attrs}>"
-            except Exception as e:
-                logger.error(f"Error reconstructing object of type {type_name}: {e}")
-                return f"<Error reconstructing {type_name}: {e}>"
-    
-    def reanimate(self, call_id: str) -> Dict[str, Any]:
-        """
-        Reanimate a function call by reconstructing its arguments and local variables.
-        
-        Args:
-            call_id: ID of the function call to reanimate
-            
-        Returns:
-            Dictionary containing the reconstructed arguments and local variables
-        """
-        call_data = self.get_call_details(call_id)
-        
-        # Extract the necessary information
-        function_name = call_data.get('function')
-        file_path = call_data.get('file')
-        locals_dict = call_data.get('locals', {})
-        globals_dict = call_data.get('globals', {})
-        return_value = call_data.get('return_value')
-        
-        # Create a result dictionary with all the reanimated data
-        result = {
-            'function_name': function_name,
-            'file_path': file_path,
-            'locals': locals_dict,
-            'globals': globals_dict,
-            'return_value': return_value,
-            'call_id': call_id
-        }
-        
-        return result
-    
-    def reanimate_objects(self, call_id: str) -> Dict[str, Any]:
-        """
-        Reanimate a function call by reconstructing its arguments and local variables
-        into actual Python objects.
-        
-        Args:
-            call_id: ID of the function call to reanimate
-            
-        Returns:
-            Dictionary containing the reconstructed arguments and local variables as Python objects
-        """
-        session = self.Session()
-        try:
-            call_data = self.get_call_details(call_id)
-            
-            # Extract the necessary information
-            function_name = call_data.get('function')
-            file_path = call_data.get('file')
-            locals_dict = call_data.get('locals', {})
-            globals_dict = call_data.get('globals', {})
-            return_value_data = call_data.get('return_value')
+            # Create a session for object reconstruction
+            session = self.Session()
             
             # Reconstruct local variables
-            reanimated_locals = {}
-            for var_name, var_data in locals_dict.items():
-                reanimated_locals[var_name] = self._reconstruct_object(var_data, session, None, file_path)
+            locals_dict = {}
+            for name, obj_data in call_details.get('locals', {}).items():
+                try:
+                    # Get the object model
+                    obj_model = session.query(Object).filter(Object.id == obj_data.get('id')).first()
+                    if obj_model:
+                        # Use the version if available
+                        version_id = None
+                        if 'version' in obj_data:
+                            version_id = obj_data['version'].get('id')
+                        
+                        # Reconstruct the object
+                        locals_dict[name] = self.db_manager._reconstruct_object(obj_model, session)
+                except Exception as e:
+                    logger.error(f"Error reconstructing local variable {name}: {e}")
+                    locals_dict[name] = f"<Error: {str(e)}>"
+            
+            result['locals'] = locals_dict
             
             # Reconstruct global variables
-            reanimated_globals = {}
-            for var_name, var_data in globals_dict.items():
-                reanimated_globals[var_name] = self._reconstruct_object(var_data, session, None, file_path)
+            globals_dict = {}
+            for name, obj_data in call_details.get('globals', {}).items():
+                try:
+                    # Get the object model
+                    obj_model = session.query(Object).filter(Object.id == obj_data.get('id')).first()
+                    if obj_model:
+                        # Use the version if available
+                        version_id = None
+                        if 'version' in obj_data:
+                            version_id = obj_data['version'].get('id')
+                        
+                        # Reconstruct the object
+                        globals_dict[name] = self.db_manager._reconstruct_object(obj_model, session)
+                except Exception as e:
+                    logger.error(f"Error reconstructing global variable {name}: {e}")
+                    globals_dict[name] = f"<Error: {str(e)}>"
+            
+            result['globals'] = globals_dict
             
             # Reconstruct return value
-            reanimated_return = None
-            if return_value_data:
-                if isinstance(return_value_data, dict):
-                    # If it's a complex object
-                    reanimated_return = self._reconstruct_object(return_value_data, session, None, file_path)
-                else:
-                    # If it's a primitive value, we need to determine its type and convert it
-                    # Query the database directly to get the return object
-                    function_call = session.query(FunctionCall).get(call_id)
-                    if function_call and function_call.return_object_id:
-                        # Get the return object to determine its type
-                        return_obj = session.query(Object).get(function_call.return_object_id)
-                        if return_obj and return_obj.type_name:
-                            # Convert the value based on the type
-                            type_name = str(return_obj.type_name)
-                            reanimated_return = self._convert_primitive_value(str(return_value_data), type_name)
-                        else:
-                            # If we can't determine the type, try to infer it
-                            reanimated_return = self._infer_primitive_type(return_value_data)
-                    else:
-                        # If we can't determine the type, try to infer it
-                        reanimated_return = self._infer_primitive_type(return_value_data)
+            if 'return_value' in call_details and call_details['return_value']:
+                try:
+                    # Get the object model
+                    obj_model = session.query(Object).filter(
+                        Object.id == call_details['return_value'].get('id')
+                    ).first()
+                    
+                    if obj_model:
+                        # Use the version if available
+                        version_id = None
+                        if 'version' in call_details['return_value']:
+                            version_id = call_details['return_value']['version'].get('id')
+                        
+                        # Reconstruct the object
+                        result['return_value'] = self.db_manager._reconstruct_object(obj_model, session)
+                except Exception as e:
+                    logger.error(f"Error reconstructing return value: {e}")
+                    result['return_value'] = f"<Error: {str(e)}>"
             
-            # Create a result dictionary with all the reanimated data
-            result = {
-                'function_name': function_name,
-                'file_path': file_path,
-                'locals': reanimated_locals,
-                'globals': reanimated_globals,
-                'return_value': reanimated_return,
-                'call_id': call_id
-            }
+            session.close()
+            return result
+        except Exception as e:
+            logger.error(f"Error reanimating objects: {e}")
+            return {'error': str(e)}
+    
+    def get_object_history(self, object_name: str) -> List[Dict[str, Any]]:
+        """
+        Get the version history for an object by name.
+        
+        Args:
+            object_name: Name of the object to find
+            
+        Returns:
+            list: List of object identities with their version history
+        """
+        try:
+            # Find objects with this name
+            identities = self.db_manager.find_object_by_name(object_name)
+            
+            result = []
+            for identity in identities:
+                # Get version history for this identity
+                history = self.db_manager.get_object_version_history(identity['identity_hash'])
+                
+                # Add to result
+                result.append({
+                    'identity': identity,
+                    'versions': history
+                })
             
             return result
-        finally:
-            session.close()
+        except Exception as e:
+            logger.error(f"Error getting object history: {e}")
+            return []
     
-    def _infer_primitive_type(self, value: str) -> Any:
+    def compare_versions(self, version_id1: int, version_id2: int) -> Dict[str, Any]:
         """
-        Infer the type of a primitive value and convert it.
+        Compare two versions of an object.
         
         Args:
-            value: String value to convert
+            version_id1: ID of the first version
+            version_id2: ID of the second version
             
         Returns:
-            Converted value
+            dict: Comparison results
         """
-        if value is None:
-            return None
-            
-        # Try to infer the type
-        if value.isdigit():
-            return int(value)
-        elif value.replace('.', '', 1).isdigit() and value.count('.') == 1:
-            return float(value)
-        elif value.lower() in ('true', 'false'):
-            return value.lower() == 'true'
-        else:
-            return value
-    
-    def execute_reanimated(self, call_id: str) -> Any:
-        """
-        Execute a function with its reanimated arguments.
-        
-        Args:
-            call_id: ID of the function call to execute
-            
-        Returns:
-            The result of the function execution
-        """
-        reanimated_data = self.reanimate_objects(call_id)
-        
-        function_name = reanimated_data['function_name']
-        file_path = reanimated_data['file_path']
-        locals_dict = reanimated_data['locals']
-        
-        # Try to import the module containing the function
         try:
-            # Import the module from the file path
-            module = self._import_module_from_file(file_path)
-            if not module:
-                raise ImportError(f"Could not import module from {file_path}")
+            return self.db_manager.compare_object_versions(version_id1, version_id2)
+        except Exception as e:
+            logger.error(f"Error comparing versions: {e}")
+            return {'error': str(e)}
+    
+    def debug_nested_structure(self, call_id: Union[str, int], var_name: str) -> Dict[str, Any]:
+        """
+        Debug the structure of a nested object in the database.
+        
+        Args:
+            call_id: ID of the function call
+            var_name: Name of the variable to debug
             
-            # Get the function from the module
-            func = getattr(module, function_name)
+        Returns:
+            dict: Structure information
+        """
+        try:
+            # Get call details
+            call_details = self.get_call_details(call_id)
             
-            # Extract arguments from locals
-            # This assumes the first argument is 'self' for methods or that
-            # all arguments are named and in locals_dict
-            sig = inspect.signature(func)
-            args = []
-            kwargs = {}
+            if 'error' in call_details:
+                return call_details
             
-            for param_name, param in sig.parameters.items():
-                if param_name in locals_dict:
-                    if param.kind == param.POSITIONAL_ONLY:
-                        args.append(locals_dict[param_name])
+            # Find the variable
+            var_data = None
+            var_location = None
+            
+            if var_name in call_details.get('locals', {}):
+                var_data = call_details['locals'][var_name]
+                var_location = 'locals'
+            elif var_name in call_details.get('globals', {}):
+                var_data = call_details['globals'][var_name]
+                var_location = 'globals'
+            elif var_name == 'return_value' and 'return_value' in call_details:
+                var_data = call_details['return_value']
+                var_location = 'return'
+            
+            if not var_data:
+                return {'error': f"Variable {var_name} not found in function call {call_id}"}
+            
+            # Get the object model
+            session = self.Session()
+            obj_model = session.query(Object).filter(Object.id == var_data.get('id')).first()
+            
+            if not obj_model:
+                session.close()
+                return {'error': f"Object for variable {var_name} not found in database"}
+            
+            # Get structure information
+            result = {
+                'variable': var_name,
+                'location': var_location,
+                'type': obj_model.type_name,
+                'is_primitive': obj_model.is_primitive
+            }
+            
+            # Add version information if available
+            if 'version' in var_data:
+                result['version'] = var_data['version']
+            
+            # Add primitive value if available
+            if obj_model.is_primitive and obj_model.primitive_value:
+                result['value'] = obj_model.primitive_value
+            
+            # Add object structure if available
+            if obj_model.object_structure:
+                result['structure'] = obj_model.object_structure
+            
+            # Add attributes if available
+            attributes = {}
+            for attr in session.query(ObjectAttribute).filter(ObjectAttribute.parent_id == obj_model.id).all():
+                attr_obj = session.query(Object).filter(Object.id == attr.value_id).first()
+                if attr_obj:
+                    if attr_obj.is_primitive and attr_obj.primitive_value:
+                        attributes[attr.name] = {
+                            'type': attr_obj.type_name,
+                            'value': attr_obj.primitive_value
+                        }
                     else:
-                        kwargs[param_name] = locals_dict[param_name]
+                        attributes[attr.name] = {
+                            'type': attr_obj.type_name,
+                            'id': attr_obj.id
+                        }
             
-            # Execute the function with the reanimated arguments
-            return func(*args, **kwargs)
-        except (ImportError, AttributeError) as e:
-            logger.error(f"Failed to import or execute function: {e}")
-            raise RuntimeError(f"Failed to execute reanimated function: {e}")
+            if attributes:
+                result['attributes'] = attributes
+            
+            # Add items if available
+            items = {}
+            for item in session.query(ObjectItem).filter(ObjectItem.parent_id == obj_model.id).all():
+                item_obj = session.query(Object).filter(Object.id == item.value_id).first()
+                if item_obj:
+                    if item_obj.is_primitive and item_obj.primitive_value:
+                        items[item.key] = {
+                            'type': item_obj.type_name,
+                            'value': item_obj.primitive_value
+                        }
+                    else:
+                        items[item.key] = {
+                            'type': item_obj.type_name,
+                            'id': item_obj.id
+                        }
+            
+            if items:
+                result['items'] = items
+            
+            session.close()
+            return result
+        except Exception as e:
+            logger.error(f"Error debugging nested structure: {e}")
+            return {'error': str(e)}
+    
+    def debug_object_versions(self, var_name: str) -> Dict[str, Any]:
+        """
+        Debug the versions of an object by name.
+        
+        Args:
+            var_name: Name of the object to debug
+            
+        Returns:
+            dict: Version information
+        """
+        try:
+            # Get object history
+            history = self.get_object_history(var_name)
+            
+            if not history:
+                return {"error": f"No object history found for '{var_name}'"}
+            
+            # Get all function calls that reference this object
+            session = self.Session()
+            result = {
+                "variable": var_name,
+                "identities": []
+            }
+            
+            for identity_info in history:
+                identity = identity_info["identity"]
+                versions = identity_info["versions"]
+                
+                identity_data = {
+                    "identity_hash": identity["identity_hash"],
+                    "name": identity["name"],
+                    "versions": []
+                }
+                
+                for version in versions:
+                    version_data = {
+                        "version_id": version["version_id"],
+                        "version_number": version["version_number"],
+                        "timestamp": version["timestamp"],
+                        "function_calls": []
+                    }
+                    
+                    # Add attributes if available
+                    if "object_id" in version:
+                        obj = session.query(Object).filter(Object.id == version["object_id"]).first()
+                        if obj:
+                            attributes = {}
+                            for attr in session.query(ObjectAttribute).filter(ObjectAttribute.parent_id == obj.id).all():
+                                attr_obj = session.query(Object).filter(Object.id == attr.value_id).first()
+                                if attr_obj and attr_obj.is_primitive and attr_obj.primitive_value:
+                                    attributes[attr.name] = attr_obj.primitive_value
+                            
+                            if attributes:
+                                version_data["attributes"] = attributes
+                    
+                    # Add function calls that reference this version
+                    if "function_calls" in version:
+                        for call in version["function_calls"]:
+                            call_data = {
+                                "call_id": call["call_id"],
+                                "function": call["function"],
+                                "role": call["role"],
+                                "name": call["name"],
+                                "timestamp": call["timestamp"]
+                            }
+                            version_data["function_calls"].append(call_data)
+                    
+                    identity_data["versions"].append(version_data)
+                
+                result["identities"].append(identity_data)
+            
+            session.close()
+            return result
+        except Exception as e:
+            logger.error(f"Error debugging object versions: {e}")
+            return {"error": str(e)}
 
-# Convenience function to load a PyDB
-def load_pydb(db_path: str) -> PyDBReanimator:
+def load_pydb(db_path):
     """
-    Load a PyMonitor database for reanimation.
+    Load a PyMonitor database and return a Reanimator instance.
     
     Args:
-        db_path: Path to the SQLite database file
+        db_path: Path to the database file
         
     Returns:
-        PyDBReanimator instance
+        Reanimator: Reanimator instance for the database
     """
-    return PyDBReanimator(db_path) 
+    return Reanimator(db_path) 

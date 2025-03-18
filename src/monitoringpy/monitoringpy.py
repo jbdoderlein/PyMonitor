@@ -7,6 +7,7 @@ import datetime
 import logging
 import os
 import traceback
+from sqlalchemy import text
 from .models import init_db
 from .db_operations import DatabaseManager
 from .worker import LogWorker
@@ -38,8 +39,28 @@ class PyMonitoring:
         
         # Initialize the database and managers
         try:
+            # First, initialize the database and ensure tables are created
+            print(f"Initializing database at {self.db_path}")
             Session = init_db(self.db_path)
+            
+            # Create a test session to verify database access
+            test_session = Session()
+            try:
+                # Try a simple query to verify database access
+                test_session.execute(text("SELECT 1"))
+                test_session.commit()
+                print("Database connection test successful")
+            except Exception as e:
+                logger.error(f"Database connection test failed: {e}")
+                raise
+            finally:
+                test_session.close()
+            
+            # Now initialize the database manager
             self.db_manager = DatabaseManager(Session)
+            
+            # Finally, start the worker thread
+            print("Starting log worker thread")
             self.log_worker = LogWorker(self.db_manager, queue_size, flush_interval)
             self.log_worker.start()
             logger.info(f"Database initialized successfully at {self.db_path}")
@@ -102,19 +123,25 @@ class PyMonitoring:
 
     def shutdown(self):
         """Gracefully shut down the logging thread"""
+        logger.info("Starting PyMonitoring shutdown")
         if hasattr(self, 'log_worker') and self.log_worker is not None:
             try:
+                logger.info("Shutting down log worker")
                 self.log_worker.shutdown()
-                logger.info("Monitoring shutdown completed")
+                logger.info("Log worker shutdown completed")
             except Exception as e:
                 logger.error(f"Error during monitoring shutdown: {e}")
+                logger.error(traceback.format_exc())
+        else:
+            logger.warning("No log worker found during shutdown")
+        logger.info("PyMonitoring shutdown completed")
 
     def monitor_callback_function_start(self, code: types.CodeType, offset):
         current_frame = inspect.currentframe()
         if current_frame is None or current_frame.f_back is None: return
         # The parent frame should be the actual function being called
         frame = current_frame.f_back
-        execution_id = str(uuid.uuid4())
+        
         # Capture function arguments
         # Get the function's parameter names from its code object
         arg_names = code.co_varnames[:code.co_argcount]
@@ -127,7 +154,6 @@ class PyMonitoring:
         
         json_trace = {
             "event_type": "call",
-            "execution_id": execution_id,
             "file": code.co_filename,
             "function": code.co_name,
             "line": frame.f_lineno,

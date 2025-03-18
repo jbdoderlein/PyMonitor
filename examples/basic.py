@@ -21,11 +21,12 @@ class CustomClass:
 
 # Create a global instance
 gcl = CustomClass(10)
+ncl = [[1,2,3], [4,5,6]]
 
 @monitoringpy.pymonitor
 def linear_function(x, cl):
     """A simple function that uses custom objects."""
-    a = 0
+    a = ncl[0][0]
     for i in range(100*x):
         a += cl.rep() + i + gcl.rep()
     return a
@@ -39,5 +40,9 @@ if __name__ == "__main__":
     for i in range(5):
         cl = CustomClass(i)
         linear_function(100*i, cl)
+    
+    gcl.x = 100
+    linear_function(100*i, cl)
+    
     
     

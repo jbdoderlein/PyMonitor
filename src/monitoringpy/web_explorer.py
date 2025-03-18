@@ -25,7 +25,7 @@ except ImportError:
 
 from .models import init_db
 from .db_operations import DatabaseManager
-from .reanimator import PyDBReanimator  # Import the reanimator
+from .reanimator import Reanimator  # Import the reanimator
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -136,6 +136,61 @@ index_html = """<!DOCTYPE html>
             background-color: #f8f9fa;
             border-radius: 5px;
             padding: 10px;
+        }
+        .reanimation-note {
+            background-color: #cff4fc;
+            color: #055160;
+            padding: 5px 10px;
+            border-radius: 4px;
+            margin: 5px 0;
+            font-size: 0.9em;
+            border-left: 4px solid #0dcaf0;
+        }
+        .raw-data-note {
+            background-color: #fff3cd;
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 10px;
+            font-family: monospace;
+        }
+        .raw-data-note pre {
+            margin: 5px 0 0 0;
+            background-color: #fffbf0;
+            padding: 8px;
+            border-radius: 3px;
+            border-left: 3px solid #ffc107;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .api-hint {
+            font-family: monospace;
+            background-color: #f8f9fa;
+            padding: 2px 4px;
+            border-radius: 3px;
+            font-size: 0.9em;
+        }
+        /* Add styles for the debug modal and nested list display */
+        .json-display {
+            background-color: #f8f9fa;
+            padding: 10px;
+            border-radius: 4px;
+            white-space: pre-wrap;
+            max-height: 500px;
+            overflow-y: auto;
+        }
+        
+        .reanimation-note {
+            background-color: #e2f0ff;
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 10px;
+        }
+        
+        .api-hint {
+            font-family: monospace;
+            background-color: #f8f9fa;
+            padding: 2px 4px;
+            border-radius: 2px;
         }
     </style>
 </head>
@@ -287,6 +342,7 @@ index_html = """<!DOCTYPE html>
                     data.function_calls.forEach(call => {
                         const card = document.createElement('div');
                         card.className = 'card function-card';
+                        card.dataset.functionId = call.id;
                         card.innerHTML = `
                             <div class="card-body">
                                 <h5 class="card-title">${call.function}</h5>
@@ -317,6 +373,10 @@ index_html = """<!DOCTYPE html>
 
         function loadFunctionDetails(functionId) {
             const detailsContainer = document.getElementById('function-details');
+            
+            // Store the function ID in a data attribute for later use
+            detailsContainer.dataset.functionId = functionId;
+            
             detailsContainer.innerHTML = `
                 <div class="loading">
                     <div class="spinner-border text-primary" role="status">
@@ -417,6 +477,9 @@ index_html = """<!DOCTYPE html>
                         </div>
                     `;
                     
+                    // Restore the function ID in the data attribute (it was overwritten by innerHTML)
+                    detailsContainer.dataset.functionId = functionId;
+                    
                     // Set up collapsible sections after rendering
                     setupCollapsibles();
                 })
@@ -437,12 +500,145 @@ index_html = """<!DOCTYPE html>
                 return '<span class="null-value">null</span>';
             }
             
-            // Handle reanimated objects
-            if (obj && typeof obj === 'object' && obj.is_reanimated) {
-                return `<span class="object-value">${obj.value}</span> <span class="object-type">(${obj.type})</span>`;
+            // Handle nested list structures
+            if (obj && typeof obj === 'object' && obj._nested_list) {
+                const note = obj._nested_structure || "Nested list structure";
+                
+                // Extract the function ID properly - we need to get the actual function ID
+                // The prefix format is typically 'functionId_variableName'
+                // For tabs like 'locals', 'globals', etc., we need to get the actual function ID from the URL
+                let functionId;
+                
+                // Get the function ID from the URL if we're in a function details view
+                const urlParams = new URLSearchParams(window.location.search);
+                const pathParts = window.location.pathname.split('/');
+                const urlFunctionId = pathParts[pathParts.length - 1] || '';
+                
+                // If we have a function ID in the URL, use that
+                if (urlFunctionId && urlFunctionId !== '') {
+                    functionId = urlFunctionId;
+                } else {
+                    // Otherwise, try to extract it from the prefix
+                    functionId = prefix.split('_')[0];
+                    // Remove any trailing text with spaces
+                    functionId = functionId.split(' ')[0];
+                }
+                
+                // Extract the variable name
+                const varName = prefix.includes('_') ? prefix.split('_')[1] : 'ncl'; // Default to 'ncl' if not specified
+                
+                console.log(`Creating debug button for function "${functionId}", variable "${varName}"`);
+                
+                // Only create the debug button if we have a valid function ID (not 'locals', 'globals', etc.)
+                let debugButton = '';
+                if (functionId && !['locals', 'globals', 'return'].includes(functionId)) {
+                    debugButton = `<button class="btn btn-sm btn-info mt-1" onclick="debugNestedStructure('${functionId}', '${varName}')">Debug Structure</button>`;
+                } else {
+                    // Get the current function ID from the URL or the page
+                    const currentFunctionId = getCurrentFunctionId();
+                    if (currentFunctionId) {
+                        debugButton = `<button class="btn btn-sm btn-info mt-1" onclick="debugNestedStructure('${currentFunctionId}', '${varName}')">Debug Structure</button>`;
+                    } else {
+                        debugButton = `<span class="text-muted">(Debug not available - no function ID)</span>`;
+                    }
+                }
+                
+                // Try to display the raw nested list structure directly
+                let rawDataDisplay = '';
+                if (obj.items && Object.keys(obj.items).length > 0) {
+                    try {
+                        // Create a more accurate representation of the nested list structure
+                        const nestedListData = [];
+                        // Sort keys numerically to maintain order
+                        const sortedKeys = Object.keys(obj.items).sort((a, b) => parseInt(a) - parseInt(b));
+                        
+                        for (const key of sortedKeys) {
+                            const item = obj.items[key];
+                            if (item && item.type === 'list') {
+                                // This is a nested list
+                                const innerList = [];
+                                
+                                // If the inner list has items, try to extract them
+                                if (item.items && Object.keys(item.items).length > 0) {
+                                    const innerSortedKeys = Object.keys(item.items).sort((a, b) => parseInt(a) - parseInt(b));
+                                    for (const innerKey of innerSortedKeys) {
+                                        const innerItem = item.items[innerKey];
+                                        if (innerItem && typeof innerItem !== 'object') {
+                                            // This is a primitive value
+                                            innerList.push(innerItem);
+                                        } else if (innerItem && innerItem.value !== undefined) {
+                                            // This is an object with a value property
+                                            innerList.push(innerItem.value);
+                                        }
+                                    }
+                                }
+                                
+                                nestedListData.push(innerList.length > 0 ? innerList : []);
+                            }
+                        }
+                        
+                        // Create a more descriptive display of the raw data
+                        if (nestedListData.length > 0) {
+                            const displayData = JSON.stringify(nestedListData, null, 2);
+                            rawDataDisplay = `<div class="raw-data-note">Raw data from database: <pre>${displayData}</pre></div>`;
+                        }
+                    } catch (e) {
+                        console.error('Error formatting nested list:', e);
+                        rawDataDisplay = `<div class="raw-data-note">Error formatting nested list: ${e.message}</div>`;
+                    }
+                }
+                
+                const noteHtml = `<div class="reanimation-note">${note}<br>${debugButton}</div>${rawDataDisplay}`;
+                
+                // Remove the special properties before formatting the rest
+                const objCopy = {...obj};
+                delete objCopy._nested_list;
+                delete objCopy._nested_structure;
+                delete objCopy._can_display_directly;
+                delete objCopy._display_note;
+                
+                return noteHtml + formatObjectPretty(objCopy, prefix, isTopLevel);
+            }
+            
+            // Handle reanimation notes
+            if (obj && typeof obj === 'object' && obj._needs_reanimation) {
+                const note = obj._reanimation_note || "This object requires reanimation for full details";
+                const apiHint = `<span class="api-hint">reanimator.reanimate_objects('${prefix.split('_')[0]}')</span>`;
+                const noteHtml = `<div class="reanimation-note">${note}<br>Use: ${apiHint}</div>`;
+                
+                // Remove the note properties before formatting the rest
+                const objCopy = {...obj};
+                delete objCopy._needs_reanimation;
+                delete objCopy._reanimation_note;
+                
+                return noteHtml + formatObjectPretty(objCopy, prefix, isTopLevel);
+            }
+            
+            // Handle primitive values with type information
+            if (obj && typeof obj === 'object' && obj.type && obj.value !== undefined) {
+                return `<span class="primitive-value">${obj.value}</span> <span class="object-type">(${obj.type})</span>`;
+            }
+            
+            // Handle primitive types directly
+            if (typeof obj === 'number') {
+                return `<span class="primitive-value">${obj}</span>`;
+            }
+            
+            if (typeof obj === 'boolean') {
+                return `<span class="primitive-value">${obj}</span>`;
             }
             
             if (typeof obj === 'string') {
+                // Check if it's a JSON string that we can parse
+                if (obj.startsWith('{') || obj.startsWith('[')) {
+                    try {
+                        const parsed = JSON.parse(obj);
+                        return formatObjectPretty(parsed, prefix);
+                    } catch (e) {
+                        // Not valid JSON, treat as regular string
+                        return `<span class="string-value">"${escapeHtml(obj)}"</span>`;
+                    }
+                }
                 return `<span class="string-value">"${escapeHtml(obj)}"</span>`;
             }
             
@@ -472,10 +668,10 @@ index_html = """<!DOCTYPE html>
                 return '{}';
             }
             
-            // Special handling for reanimated objects
-            if (obj._reanimated) {
-                // Add a note that this object has been reanimated
-                return `<div class="alert alert-info mb-2">Objects have been reanimated using PyDBReanimator</div>${formatObjectEntriesPretty(obj, keys, prefix, isTopLevel)}`;
+            // Special handling for raw data
+            if (obj._raw_data) {
+                // Add a note that this is raw data
+                return `<div class="raw-data-note">Raw data from database (not reanimated)</div>${formatObjectEntriesPretty(obj, keys, prefix, isTopLevel)}`;
             }
             
             return formatObjectEntriesPretty(obj, keys, prefix, isTopLevel);
@@ -488,7 +684,7 @@ index_html = """<!DOCTYPE html>
                 
                 for (const key of keys) {
                     // Skip internal properties that start with underscore
-                    if (key.startsWith('_') && key !== '_reanimated') {
+                    if (key.startsWith('_') && key !== '_raw_data') {
                         continue;
                     }
                     
@@ -510,7 +706,7 @@ index_html = """<!DOCTYPE html>
             
             for (const key of keys) {
                 // Skip internal properties that start with underscore
-                if (key.startsWith('_') && key !== '_reanimated') {
+                if (key.startsWith('_') && key !== '_raw_data') {
                     continue;
                 }
                 
@@ -547,6 +743,399 @@ index_html = """<!DOCTYPE html>
             }
         }
 
+        function debugNestedStructure(functionId, variableName) {
+            console.log(`Debug structure called for function "${functionId}", variable "${variableName}"`);
+            
+            // Sanitize the function ID and variable name to ensure they're valid for URLs
+            functionId = functionId.trim();
+            variableName = variableName.trim();
+            
+            // Create a modal to show the debug information
+            const modalId = 'debugModal';
+            let modal = document.getElementById(modalId);
+            
+            if (!modal) {
+                // Create the modal if it doesn't exist
+                modal = document.createElement('div');
+                modal.id = modalId;
+                modal.className = 'modal fade';
+                modal.tabIndex = -1;
+                modal.setAttribute('aria-labelledby', 'debugModalLabel');
+                modal.setAttribute('aria-hidden', 'true');
+                
+                modal.innerHTML = `
+                    <div class="modal-dialog modal-lg">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                <h5 class="modal-title" id="debugModalLabel">Structure Debug</h5>
+                                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                            </div>
+                            <div class="modal-body">
+                                <div id="debugContent">
+                                    <div class="text-center">
+                                        <div class="spinner-border" role="status">
+                                            <span class="visually-hidden">Loading...</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="modal-footer">
+                                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                                <button type="button" class="btn btn-primary" id="viewVersionsBtn">View Version History</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                
+                document.body.appendChild(modal);
+            }
+            
+            // Show the modal
+            const modalElement = new bootstrap.Modal(modal);
+            modalElement.show();
+            
+            // Set up the View Version History button
+            const viewVersionsBtn = document.getElementById('viewVersionsBtn');
+            viewVersionsBtn.onclick = function() {
+                viewVersionHistory(functionId, variableName);
+            };
+            
+            // Properly encode the URL parameters
+            const encodedFunctionId = encodeURIComponent(functionId);
+            const encodedVariableName = encodeURIComponent(variableName);
+            
+            // Fetch the debug information
+            const apiUrl = `/api/debug-structure/${encodedFunctionId}/${encodedVariableName}`;
+            console.log(`Fetching from API: ${apiUrl}`);
+            
+            fetch(apiUrl)
+                .then(response => {
+                    console.log('API response received:', response);
+                    
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! Status: ${response.status}, URL: ${apiUrl}`);
+                    }
+                    
+                    return response.text();  // Get the raw text first
+                })
+                .then(text => {
+                    console.log('Raw API response text:', text);
+                    
+                    if (!text || text.trim() === '') {
+                        throw new Error('Empty response from server');
+                    }
+                    
+                    // Try to parse the JSON
+                    try {
+                        const data = JSON.parse(text);
+                        console.log('Parsed JSON data:', data);
+                        return data;
+                    } catch (e) {
+                        console.error('JSON parse error:', e);
+                        throw new Error(`JSON parse error: ${e.message}\nRaw data: ${text.substring(0, 200)}...`);
+                    }
+                })
+                .then(data => {
+                    const debugContent = document.getElementById('debugContent');
+                    
+                    if (data.error) {
+                        console.error('API returned error:', data.error);
+                        debugContent.innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
+                        return;
+                    }
+                    
+                    console.log('Structure info:', data.structure_info);
+                    const structureInfo = data.structure_info;
+                    
+                    // Check if we have reconstructed values
+                    let reconstructedValueHtml = '';
+                    if (structureInfo.structure && structureInfo.structure.reconstructed_value) {
+                        console.log('Reconstructed value:', structureInfo.structure.reconstructed_value);
+                        const reconstructedValue = structureInfo.structure.reconstructed_value;
+                        reconstructedValueHtml = `
+                            <div class="card mb-3">
+                                <div class="card-header bg-success text-white">
+                                    Reconstructed Value
+                                </div>
+                                <div class="card-body">
+                                    <pre class="json-display">${JSON.stringify(reconstructedValue, null, 2)}</pre>
+                                </div>
+                            </div>
+                        `;
+                    }
+                    
+                    // Check if we have detailed structure information
+                    let detailedStructureHtml = '';
+                    if (structureInfo.structure && structureInfo.structure.detailed_structure) {
+                        console.log('Detailed structure:', structureInfo.structure.detailed_structure);
+                        const detailedStructure = structureInfo.structure.detailed_structure;
+                        detailedStructureHtml = `
+                            <div class="card mb-3">
+                                <div class="card-header bg-info text-white">
+                                    Detailed Structure
+                                </div>
+                                <div class="card-body">
+                                    <pre class="json-display">${JSON.stringify(detailedStructure, null, 2)}</pre>
+                                </div>
+                            </div>
+                        `;
+                    }
+                    
+                    // Format the structure info - use a safer approach to display the structure
+                    let structureHtml = '';
+                    try {
+                        // Create a copy of the structure without the detailed_structure and reconstructed_value
+                        // to avoid duplicating large amounts of data
+                        const structureCopy = {...structureInfo.structure};
+                        delete structureCopy.detailed_structure;
+                        delete structureCopy.reconstructed_value;
+                        
+                        // Convert the structure to a string with proper formatting
+                        console.log('Structure copy for display:', structureCopy);
+                        const structureStr = JSON.stringify(structureCopy, null, 2);
+                        structureHtml = `<pre class="json-display">${structureStr}</pre>`;
+                    } catch (e) {
+                        console.error('Error formatting structure:', e);
+                        // If JSON.stringify fails, use a more robust approach
+                        structureHtml = `<div class="alert alert-warning">
+                            Could not format structure as JSON. Displaying as string:
+                            <pre>${String(structureInfo.structure)}</pre>
+                        </div>`;
+                    }
+                    
+                    // Format the structure info
+                    let html = `
+                        <h4>Variable: ${structureInfo.variable}</h4>
+                        <p><strong>Location:</strong> ${structureInfo.location}</p>
+                        <p><strong>Type:</strong> ${structureInfo.type}</p>
+                        
+                        ${reconstructedValueHtml}
+                        ${detailedStructureHtml}
+                        
+                        <h5>Database Structure:</h5>
+                        ${structureHtml}
+                    `;
+                    
+                    debugContent.innerHTML = html;
+                })
+                .catch(error => {
+                    console.error('Fetch error:', error);
+                    const debugContent = document.getElementById('debugContent');
+                    debugContent.innerHTML = `
+                        <div class="alert alert-danger">
+                            <h4>Error</h4>
+                            <p>${error.message}</p>
+                            <p>Function ID: ${functionId}</p>
+                            <p>Variable Name: ${variableName}</p>
+                            <p>API URL: ${apiUrl}</p>
+                        </div>
+                    `;
+                });
+        }
+
+        // New function to view version history
+        function viewVersionHistory(functionId, variableName) {
+            console.log(`View version history called for function "${functionId}", variable "${variableName}"`);
+            
+            // Create a modal to show the version history
+            const modalId = 'versionHistoryModal';
+            let modal = document.getElementById(modalId);
+            
+            if (!modal) {
+                // Create the modal if it doesn't exist
+                modal = document.createElement('div');
+                modal.id = modalId;
+                modal.className = 'modal fade';
+                modal.tabIndex = -1;
+                modal.setAttribute('aria-labelledby', 'versionHistoryModalLabel');
+                modal.setAttribute('aria-hidden', 'true');
+                
+                modal.innerHTML = `
+                    <div class="modal-dialog modal-xl">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                <h5 class="modal-title" id="versionHistoryModalLabel">Version History</h5>
+                                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                            </div>
+                            <div class="modal-body">
+                                <div id="versionHistoryContent">
+                                    <div class="text-center">
+                                        <div class="spinner-border" role="status">
+                                            <span class="visually-hidden">Loading...</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="modal-footer">
+                                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                
+                document.body.appendChild(modal);
+            }
+            
+            // Show the modal
+            const modalElement = new bootstrap.Modal(modal);
+            modalElement.show();
+            
+            // Properly encode the URL parameters
+            const encodedFunctionId = encodeURIComponent(functionId);
+            const encodedVariableName = encodeURIComponent(variableName);
+            
+            // Fetch the version history
+            const apiUrl = `/api/debug-versions/${encodedFunctionId}/${encodedVariableName}`;
+            console.log(`Fetching from API: ${apiUrl}`);
+            
+            fetch(apiUrl)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! Status: ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    const versionHistoryContent = document.getElementById('versionHistoryContent');
+                    
+                    if (data.error) {
+                        versionHistoryContent.innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
+                        return;
+                    }
+                    
+                    // Format the version history
+                    let html = `
+                        <h4>Version History for ${data.variable_name}</h4>
+                        <p><strong>Function:</strong> ${data.debug_info.function_context.function_name} (ID: ${data.debug_info.function_context.function_id})</p>
+                        <p><strong>File:</strong> ${data.debug_info.function_context.file_path}:${data.debug_info.function_context.line_number}</p>
+                        <p><strong>Variable Location:</strong> ${data.debug_info.function_context.variable_location}</p>
+                    `;
+                    
+                    // Display identities and their versions
+                    if (data.debug_info.identities && data.debug_info.identities.length > 0) {
+                        html += `<div class="accordion" id="versionAccordion">`;
+                        
+                        data.debug_info.identities.forEach((identity, identityIndex) => {
+                            const identityId = `identity-${identityIndex}`;
+                            
+                            html += `
+                                <div class="accordion-item">
+                                    <h2 class="accordion-header" id="heading-${identityId}">
+                                        <button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-${identityId}" aria-expanded="true" aria-controls="collapse-${identityId}">
+                                            Identity: ${identity.name} (${identity.identity_hash.substring(0, 8)}...)
+                                        </button>
+                                    </h2>
+                                    <div id="collapse-${identityId}" class="accordion-collapse collapse show" aria-labelledby="heading-${identityId}" data-bs-parent="#versionAccordion">
+                                        <div class="accordion-body">
+                                            <table class="table table-striped">
+                                                <thead>
+                                                    <tr>
+                                                        <th>Version</th>
+                                                        <th>Timestamp</th>
+                                                        <th>Attributes</th>
+                                                        <th>Function Calls</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                            `;
+                            
+                            // Sort versions by version number
+                            const sortedVersions = [...identity.versions].sort((a, b) => a.version_number - b.version_number);
+                            
+                            sortedVersions.forEach(version => {
+                                // Format attributes
+                                let attributesHtml = '<ul class="list-unstyled">';
+                                if (version.attributes) {
+                                    for (const [key, value] of Object.entries(version.attributes)) {
+                                        attributesHtml += `<li><strong>${key}:</strong> ${value}</li>`;
+                                    }
+                                } else {
+                                    attributesHtml += '<li>No attributes available</li>';
+                                }
+                                attributesHtml += '</ul>';
+                                
+                                // Format function calls
+                                let functionCallsHtml = '<ul class="list-unstyled">';
+                                if (version.function_calls && version.function_calls.length > 0) {
+                                    version.function_calls.forEach(call => {
+                                        functionCallsHtml += `
+                                            <li>
+                                                <a href="#" onclick="loadFunctionDetails(${call.call_id}); return false;">
+                                                    ${call.function} (${call.role}: ${call.name})
+                                                </a>
+                                            </li>
+                                        `;
+                                    });
+                                } else {
+                                    functionCallsHtml += '<li>No function calls</li>';
+                                }
+                                functionCallsHtml += '</ul>';
+                                
+                                html += `
+                                    <tr>
+                                        <td>${version.version_number}</td>
+                                        <td>${new Date(version.timestamp).toLocaleString()}</td>
+                                        <td>${attributesHtml}</td>
+                                        <td>${functionCallsHtml}</td>
+                                    </tr>
+                                `;
+                            });
+                            
+                            html += `
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                </div>
+                            `;
+                        });
+                        
+                        html += `</div>`;
+                    } else {
+                        html += `<div class="alert alert-info">No version history found for this variable.</div>`;
+                    }
+                    
+                    versionHistoryContent.innerHTML = html;
+                })
+                .catch(error => {
+                    console.error('Fetch error:', error);
+                    const versionHistoryContent = document.getElementById('versionHistoryContent');
+                    versionHistoryContent.innerHTML = `
+                        <div class="alert alert-danger">
+                            <h4>Error</h4>
+                            <p>${error.message}</p>
+                        </div>
+                    `;
+                });
+        }
+
+        // Helper function to get the current function ID from the page
+        function getCurrentFunctionId() {
+            // Try to extract the function ID from the URL
+            const pathParts = window.location.pathname.split('/');
+            if (pathParts.length > 2 && pathParts[1] === 'api' && pathParts[2] === 'function-call') {
+                return pathParts[3];
+            }
+            
+            // If not in the URL, try to find it in the page content
+            const functionDetailsHeader = document.querySelector('.card.detail-card .card-header h3');
+            if (functionDetailsHeader) {
+                // The function ID might be stored in a data attribute or we can try to find it in the DOM
+                const detailsContainer = document.getElementById('function-details');
+                if (detailsContainer && detailsContainer.dataset && detailsContainer.dataset.functionId) {
+                    return detailsContainer.dataset.functionId;
+                }
+            }
+            
+            // As a last resort, check if we have any function calls loaded and use the first one
+            const functionCards = document.querySelectorAll('.function-card');
+            if (functionCards.length > 0 && functionCards[0].dataset && functionCards[0].dataset.functionId) {
+                return functionCards[0].dataset.functionId;
+            }
+            
+            return null;
+        }
+        
         // Legacy format function kept for backward compatibility
         function formatObject(obj) {
             if (obj === null || obj === undefined) {
@@ -559,46 +1148,18 @@ index_html = """<!DOCTYPE html>
             }
             
             if (typeof obj === 'string') {
-                return JSON.stringify(obj);
+                return `"${obj}"`;
             }
             
             if (typeof obj !== 'object') {
                 return String(obj);
             }
             
-            if (Array.isArray(obj)) {
-                const items = obj.map(item => formatObject(item)).join(', ');
-                return `[${items}]`;
+            try {
+                return JSON.stringify(obj, null, 2);
+            } catch (e) {
+                return String(obj);
             }
-            
-            const keys = Object.keys(obj);
-            if (keys.length === 0) {
-                return '{}';
-            }
-            
-            // Special handling for reanimated objects
-            if (obj._reanimated) {
-                // Add a note that this object has been reanimated
-                return `<div class="alert alert-info mb-2">Objects have been reanimated using PyDBReanimator</div>${formatObjectEntries(obj, keys)}`;
-            }
-            
-            return formatObjectEntries(obj, keys);
-        }
-
-        function formatObjectEntries(obj, keys) {
-            let result = '{\\n';
-            for (const key of keys) {
-                // Skip internal properties that start with underscore
-                if (key.startsWith('_') && key !== '_reanimated') {
-                    continue;
-                }
-                
-                const value = obj[key];
-                const formattedValue = formatObject(value);
-                result += `  "${key}": ${formattedValue},\\n`;
-            }
-            result += '}';
-            return result;
         }
     </script>
 </body>
@@ -699,61 +1260,47 @@ def get_function_call(function_id):
     global db_manager, reanimator
     if not db_manager:
         abort(500, description="Database manager not initialized")
+    
+    # Convert function_id to integer since it comes as a string from the URL
+    try:
+        function_id_int = int(function_id)
+    except ValueError:
+        abort(400, description="Invalid function ID format")
         
     function_calls = db_manager.get_all_function_calls()
     
     # Find the function call
     function_call = None
     for call in function_calls:
-        if call.id == function_id:
+        if call.id == function_id_int:  # Compare with integer ID
             function_call = call
             break
     
     if not function_call:
-        abort(404)
+        abort(404, description=f"Function call with ID {function_id} not found")
     
-    # Get the function call data using both methods
-    details = db_manager.get_function_call_data(function_id)
+    # Get the function call data directly from the database manager
+    # This provides raw data without reanimating objects
+    details = db_manager.get_function_call_data(function_id_int)  # Use integer ID
     
-    # Use reanimator to get reconstructed objects if available
-    reanimated_objects = None
-    if reanimator:
-        try:
-            reanimated_objects = reanimator.reanimate_objects(function_id)
+    # Add a flag to indicate that this data is raw (not reanimated)
+    if details:
+        details['_raw_data'] = True
+        
+        # Process nested lists and complex objects
+        if 'locals' in details:
+            _process_nested_structures(details['locals'])
+        
+        if 'globals' in details:
+            _process_nested_structures(details['globals'])
+        
+        # Add a note about reanimation for complex objects
+        if 'return_value' in details and details['return_value'] and isinstance(details['return_value'], dict):
+            _process_nested_structures({'return': details['return_value']})
             
-            # Add a flag to indicate that objects have been reanimated
-            details['_reanimated'] = True
-            
-            # Replace return value with the reanimated version
-            if 'return_value' in details and reanimated_objects.get('return_value') is not None:
-                # Store the original return value for reference
-                details['_original_return_value'] = details['return_value']
-                
-                # Replace with reanimated return value, including type information
-                reanimated_return = reanimated_objects.get('return_value')
-                details['return_value'] = {
-                    'value': str(reanimated_return),
-                    'type': str(type(reanimated_return).__name__),
-                    'is_reanimated': True
-                }
-            
-            # Add type information for local variables
-            if 'locals' in details and reanimated_objects.get('locals'):
-                for var_name, var_value in reanimated_objects.get('locals', {}).items():
-                    if var_name in details['locals']:
-                        # Store the original value
-                        if isinstance(details['locals'][var_name], dict):
-                            details['locals'][var_name]['_original'] = details['locals'][var_name].copy()
-                        else:
-                            details['locals'][var_name] = {
-                                '_original': details['locals'][var_name],
-                                'value': str(var_value),
-                                'type': str(type(var_value).__name__),
-                                'is_reanimated': True
-                            }
-        except Exception as e:
-            logger.error(f"Error reanimating objects: {e}")
-            # Continue with the regular details if reanimation fails
+            if 'attributes' in details['return_value'] or 'items' in details['return_value']:
+                details['return_value']['_needs_reanimation'] = True
+                details['return_value']['_reanimation_note'] = "This complex object can be fully reconstructed using the reanimator API"
     
     # Convert function call to dictionary
     call_dict = {
@@ -773,11 +1320,61 @@ def get_function_call(function_id):
     return app.response_class(
         response=json.dumps({
             'function_call': call_dict,
-            'details': details
+            'details': details,
+            'reanimator_available': reanimator is not None
         }, cls=DateTimeEncoder),
         status=200,
         mimetype='application/json'
     )
+
+def _process_nested_structures(data_dict):
+    """
+    Process nested structures like lists of lists to make them more displayable.
+    
+    Args:
+        data_dict: Dictionary containing variable data
+    """
+    for key, value in data_dict.items():
+        if isinstance(value, dict):
+            # Check if it's a list
+            if value.get('type') == 'list':
+                items = value.get('items', {})
+                
+                # Check if it contains nested lists
+                has_nested_lists = False
+                all_primitive_sublists = True
+                
+                for item_key, item_value in items.items():
+                    if isinstance(item_value, dict) and item_value.get('type') == 'list':
+                        has_nested_lists = True
+                        
+                        # Check if this nested list contains only primitive values
+                        if item_value.get('id'):
+                            # This is a reference to another object, not a primitive
+                            all_primitive_sublists = False
+                
+                if has_nested_lists:
+                    value['_nested_list'] = True
+                    value['_nested_structure'] = "List containing nested lists"
+                    
+                    # If all sublists contain only primitive values, we can display them directly
+                    if all_primitive_sublists:
+                        value['_can_display_directly'] = True
+                        value['_display_note'] = "This nested list can be displayed directly"
+                    
+                    # Process each item in the list
+                    for item_key, item_value in items.items():
+                        if isinstance(item_value, dict):
+                            _process_nested_structures({f"{key}_{item_key}": item_value})
+            
+            # Recursively process other dictionaries
+            elif 'attributes' in value:
+                _process_nested_structures(value['attributes'])
+            elif 'items' in value:
+                # Process dictionary items
+                for item_key, item_value in value.get('items', {}).items():
+                    if isinstance(item_value, dict):
+                        _process_nested_structures({f"{key}_{item_key}": item_value})
 
 def open_browser(url):
     """Open the browser after a short delay"""
@@ -809,7 +1406,7 @@ def run_explorer(db_file, host='127.0.0.1', port=5000, debug=False, open_browser
     
     # Initialize the reanimator
     try:
-        reanimator = PyDBReanimator(db_file)
+        reanimator = Reanimator(db_file)
         logger.info("Reanimator initialized successfully")
     except Exception as e:
         logger.error(f"Error initializing reanimator: {e}")
@@ -852,4 +1449,199 @@ if __name__ == "__main__":
 # Module entry point
 def __main__():
     """Entry point for running as a module"""
-    main() 
+    main()
+
+@app.route('/api/debug-structure/<function_id>/<variable_name>')
+def debug_structure(function_id, variable_name):
+    """Debug a nested structure in a function call"""
+    global reanimator
+    if not reanimator:
+        abort(500, description="Reanimator not initialized")
+    
+    try:
+        # Validate that function_id can be converted to an integer
+        try:
+            int(function_id)  # Just validate, but keep as string for the API call
+        except ValueError:
+            return jsonify({'error': f"Invalid function ID format: {function_id}"}), 400
+            
+        # Use the reanimator to debug the structure - pass function_id as string
+        structure_info = reanimator.debug_nested_structure(function_id, variable_name)
+        
+        # Process the structure info to ensure it's JSON serializable
+        def process_for_json(obj):
+            if isinstance(obj, dict):
+                return {k: process_for_json(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [process_for_json(item) for item in obj]
+            elif isinstance(obj, (int, float, bool, str, type(None))):
+                return obj
+            else:
+                return str(obj)
+        
+        # Process the structure info
+        processed_info = process_for_json(structure_info)
+        
+        # Log the processed info for debugging
+        logger.info(f"Debug structure for {function_id}/{variable_name}: {processed_info}")
+        
+        # Create the response data
+        response_data = {
+            'structure_info': processed_info
+        }
+        
+        # Convert to JSON with the DateTimeEncoder
+        json_data = json.dumps(response_data, cls=DateTimeEncoder)
+        
+        # Return the response
+        return app.response_class(
+            response=json_data,
+            status=200,
+            mimetype='application/json'
+        )
+    except Exception as e:
+        logger.error(f"Error debugging structure: {e}", exc_info=True)
+        return jsonify({
+            'error': str(e)
+        }), 500
+
+@app.route('/api/object-history/<variable_name>')
+def object_history(variable_name):
+    """Get the version history for an object by name"""
+    global reanimator
+    if not reanimator:
+        abort(500, description="Reanimator not initialized")
+    
+    try:
+        # Use the reanimator to get the object history
+        history = reanimator.get_object_history(variable_name)
+        
+        # Process the history to ensure it's JSON serializable
+        def process_for_json(obj):
+            if isinstance(obj, dict):
+                return {k: process_for_json(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [process_for_json(item) for item in obj]
+            elif isinstance(obj, (int, float, bool, str, type(None))):
+                return obj
+            else:
+                return str(obj)
+        
+        # Process the history
+        processed_history = process_for_json(history)
+        
+        # Log the processed history for debugging
+        logger.info(f"Object history for {variable_name}: {processed_history}")
+        
+        # Create the response data
+        response_data = {
+            'variable_name': variable_name,
+            'history': processed_history
+        }
+        
+        # Convert to JSON with the DateTimeEncoder
+        json_data = json.dumps(response_data, cls=DateTimeEncoder)
+        
+        # Return the response
+        return app.response_class(
+            response=json_data,
+            status=200,
+            mimetype='application/json'
+        )
+    except Exception as e:
+        logger.error(f"Error getting object history: {e}", exc_info=True)
+        return jsonify({
+            'error': str(e)
+        }), 500
+
+@app.route('/api/debug-versions/<function_id>/<variable_name>')
+def debug_versions(function_id, variable_name):
+    """Debug the versions of an object by name in the context of a specific function call"""
+    global reanimator
+    if not reanimator:
+        abort(500, description="Reanimator not initialized")
+    
+    try:
+        # Validate function_id
+        try:
+            int(function_id)
+        except ValueError:
+            return jsonify({'error': f"Invalid function ID format: {function_id}"}), 400
+            
+        # Get the function call details first to establish context
+        call_details = reanimator.get_call_details(function_id)
+        
+        if 'error' in call_details:
+            return jsonify({'error': f"Function call not found: {call_details['error']}"}), 404
+            
+        # Check if the variable exists in this function call
+        var_found = False
+        var_location = None
+        var_data = None
+        
+        if 'locals' in call_details and variable_name in call_details['locals']:
+            var_found = True
+            var_location = 'locals'
+            var_data = call_details['locals'][variable_name]
+        elif 'globals' in call_details and variable_name in call_details['globals']:
+            var_found = True
+            var_location = 'globals'
+            var_data = call_details['globals'][variable_name]
+        elif variable_name == 'return_value' and 'return_value' in call_details:
+            var_found = True
+            var_location = 'return'
+            var_data = call_details['return_value']
+            
+        if not var_found:
+            return jsonify({'error': f"Variable '{variable_name}' not found in function call {function_id}"}), 404
+            
+        # Use the reanimator to debug the object versions
+        debug_info = reanimator.debug_object_versions(variable_name)
+        
+        # Add context information
+        debug_info['function_context'] = {
+            'function_id': function_id,
+            'function_name': call_details.get('function'),
+            'file_path': call_details.get('file'),
+            'line_number': call_details.get('line'),
+            'variable_location': var_location
+        }
+        
+        # Process the debug info to ensure it's JSON serializable
+        def process_for_json(obj):
+            if isinstance(obj, dict):
+                return {k: process_for_json(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [process_for_json(item) for item in obj]
+            elif isinstance(obj, (int, float, bool, str, type(None))):
+                return obj
+            else:
+                return str(obj)
+        
+        # Process the debug info
+        processed_info = process_for_json(debug_info)
+        
+        # Log the processed info for debugging
+        logger.info(f"Debug versions for {function_id}/{variable_name}: {processed_info}")
+        
+        # Create the response data
+        response_data = {
+            'function_id': function_id,
+            'variable_name': variable_name,
+            'debug_info': processed_info
+        }
+        
+        # Convert to JSON with the DateTimeEncoder
+        json_data = json.dumps(response_data, cls=DateTimeEncoder)
+        
+        # Return the response
+        return app.response_class(
+            response=json_data,
+            status=200,
+            mimetype='application/json'
+        )
+    except Exception as e:
+        logger.error(f"Error debugging object versions: {e}", exc_info=True)
+        return jsonify({
+            'error': str(e)
+        }), 500 
