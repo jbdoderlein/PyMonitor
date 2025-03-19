@@ -7,9 +7,7 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.3/font/bootstrap-icons.css">
     <style>
-        body {
-            padding-top: 20px;
-        }
+        body { padding-top: 20px; }
         .function-card {
             margin-bottom: 15px;
             cursor: pointer;
@@ -17,20 +15,14 @@
         .function-card:hover {
             box-shadow: 0 0 10px rgba(0,0,0,0.1);
         }
-        .detail-card {
-            margin-top: 20px;
-        }
+        .detail-card { margin-top: 20px; }
         pre {
             background-color: #f8f9fa;
             padding: 10px;
             border-radius: 5px;
         }
-        .nav-tabs {
-            margin-bottom: 15px;
-        }
-        .search-box {
-            margin-bottom: 20px;
-        }
+        .nav-tabs { margin-bottom: 15px; }
+        .search-box { margin-bottom: 20px; }
         .loading {
             display: flex;
             justify-content: center;
@@ -41,7 +33,6 @@
             width: 3rem;
             height: 3rem;
         }
-        /* Add styles for collapsible objects */
         .collapsible {
             cursor: pointer;
             padding: 2px 5px;
@@ -66,15 +57,9 @@
             color: #0d6efd;
             font-weight: bold;
         }
-        .object-value {
-            color: #198754;
-        }
-        .primitive-value {
-            color: #333;
-        }
-        .string-value {
-            color: #664d03;
-        }
+        .object-value { color: #198754; }
+        .primitive-value { color: #333; }
+        .string-value { color: #664d03; }
         .null-value {
             color: #6c757d;
             font-style: italic;
@@ -84,60 +69,10 @@
             border-radius: 5px;
             padding: 10px;
         }
-        .reanimation-note {
-            background-color: #cff4fc;
-            color: #055160;
-            padding: 5px 10px;
-            border-radius: 4px;
+        .attributes-section {
+            border-left: 4px solid #0d6efd;
+            padding-left: 10px;
             margin: 5px 0;
-            font-size: 0.9em;
-            border-left: 4px solid #0dcaf0;
-        }
-        .raw-data-note {
-            background-color: #fff3cd;
-            padding: 10px;
-            border-radius: 4px;
-            margin-bottom: 10px;
-            font-family: monospace;
-        }
-        .raw-data-note pre {
-            margin: 5px 0 0 0;
-            background-color: #fffbf0;
-            padding: 8px;
-            border-radius: 3px;
-            border-left: 3px solid #ffc107;
-            max-height: 200px;
-            overflow-y: auto;
-        }
-        .api-hint {
-            font-family: monospace;
-            background-color: #f8f9fa;
-            padding: 2px 4px;
-            border-radius: 3px;
-            font-size: 0.9em;
-        }
-        /* Add styles for the debug modal and nested list display */
-        .json-display {
-            background-color: #f8f9fa;
-            padding: 10px;
-            border-radius: 4px;
-            white-space: pre-wrap;
-            max-height: 500px;
-            overflow-y: auto;
-        }
-        
-        .reanimation-note {
-            background-color: #e2f0ff;
-            padding: 10px;
-            border-radius: 4px;
-            margin-bottom: 10px;
-        }
-        
-        .api-hint {
-            font-family: monospace;
-            background-color: #f8f9fa;
-            padding: 2px 4px;
-            border-radius: 2px;
         }
     </style>
 </head>
@@ -204,28 +139,18 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         document.addEventListener('DOMContentLoaded', function() {
-            // Set database path
             fetch('/api/db-info')
                 .then(response => response.json())
                 .then(data => {
                     document.getElementById('db-path').textContent = data.db_path;
                 });
 
-            // Load function calls
             loadFunctionCalls();
 
-            // Set up search
-            document.getElementById('search-button').addEventListener('click', function() {
-                loadFunctionCalls();
-            });
-
+            document.getElementById('search-button').addEventListener('click', loadFunctionCalls);
             document.getElementById('search-input').addEventListener('keyup', function(event) {
-                if (event.key === 'Enter') {
-                    loadFunctionCalls();
-                }
+                if (event.key === 'Enter') loadFunctionCalls();
             });
-
-            // Set up filters
             document.getElementById('file-filter').addEventListener('change', loadFunctionCalls);
             document.getElementById('function-filter').addEventListener('change', loadFunctionCalls);
         });
@@ -247,7 +172,6 @@
             fetch(`/api/function-calls?search=${searchTerm}&file=${fileFilter}&function=${functionFilter}`)
                 .then(response => response.json())
                 .then(data => {
-                    // Update function list
                     functionList.innerHTML = '';
                     
                     if (data.function_calls.length === 0) {
@@ -261,7 +185,6 @@
                         return;
                     }
 
-                    // Populate file and function filters if they're empty
                     const fileFilter = document.getElementById('file-filter');
                     const functionFilter = document.getElementById('function-filter');
                     
@@ -285,7 +208,6 @@
                         });
                     }
 
-                    // Add function calls to the list
                     data.function_calls.forEach(call => {
                         const card = document.createElement('div');
                         card.className = 'card function-card';
@@ -320,8 +242,6 @@
 
         function loadFunctionDetails(functionId) {
             const detailsContainer = document.getElementById('function-details');
-            
-            // Store the function ID in a data attribute for later use
             detailsContainer.dataset.functionId = functionId;
             
             detailsContainer.innerHTML = `
@@ -424,10 +344,7 @@
                         </div>
                     `;
                     
-                    // Restore the function ID in the data attribute (it was overwritten by innerHTML)
                     detailsContainer.dataset.functionId = functionId;
-                    
-                    // Set up collapsible sections after rendering
                     setupCollapsibles();
                 })
                 .catch(error => {
@@ -447,145 +364,11 @@
                 return '<span class="null-value">null</span>';
             }
             
-            // Handle nested list structures
-            if (obj && typeof obj === 'object' && obj._nested_list) {
-                const note = obj._nested_structure || "Nested list structure";
-                
-                // Extract the function ID properly - we need to get the actual function ID
-                // The prefix format is typically 'functionId_variableName'
-                // For tabs like 'locals', 'globals', etc., we need to get the actual function ID from the URL
-                let functionId;
-                
-                // Get the function ID from the URL if we're in a function details view
-                const urlParams = new URLSearchParams(window.location.search);
-                const pathParts = window.location.pathname.split('/');
-                const urlFunctionId = pathParts[pathParts.length - 1] || '';
-                
-                // If we have a function ID in the URL, use that
-                if (urlFunctionId && urlFunctionId !== '') {
-                    functionId = urlFunctionId;
-                } else {
-                    // Otherwise, try to extract it from the prefix
-                    functionId = prefix.split('_')[0];
-                    // Remove any trailing text with spaces
-                    functionId = functionId.split(' ')[0];
-                }
-                
-                // Extract the variable name
-                const varName = prefix.includes('_') ? prefix.split('_')[1] : 'ncl'; // Default to 'ncl' if not specified
-                
-                console.log(`Creating debug button for function "${functionId}", variable "${varName}"`);
-                
-                // Only create the debug button if we have a valid function ID (not 'locals', 'globals', etc.)
-                let debugButton = '';
-                if (functionId && !['locals', 'globals', 'return'].includes(functionId)) {
-                    debugButton = `<button class="btn btn-sm btn-info mt-1" onclick="debugNestedStructure('${functionId}', '${varName}')">Debug Structure</button>`;
-                } else {
-                    // Get the current function ID from the URL or the page
-                    const currentFunctionId = getCurrentFunctionId();
-                    if (currentFunctionId) {
-                        debugButton = `<button class="btn btn-sm btn-info mt-1" onclick="debugNestedStructure('${currentFunctionId}', '${varName}')">Debug Structure</button>`;
-                    } else {
-                        debugButton = `<span class="text-muted">(Debug not available - no function ID)</span>`;
-                    }
-                }
-                
-                // Try to display the raw nested list structure directly
-                let rawDataDisplay = '';
-                if (obj.items && Object.keys(obj.items).length > 0) {
-                    try {
-                        // Create a more accurate representation of the nested list structure
-                        const nestedListData = [];
-                        // Sort keys numerically to maintain order
-                        const sortedKeys = Object.keys(obj.items).sort((a, b) => parseInt(a) - parseInt(b));
-                        
-                        for (const key of sortedKeys) {
-                            const item = obj.items[key];
-                            if (item && item.type === 'list') {
-                                // This is a nested list
-                                const innerList = [];
-                                
-                                // If the inner list has items, try to extract them
-                                if (item.items && Object.keys(item.items).length > 0) {
-                                    const innerSortedKeys = Object.keys(item.items).sort((a, b) => parseInt(a) - parseInt(b));
-                                    for (const innerKey of innerSortedKeys) {
-                                        const innerItem = item.items[innerKey];
-                                        if (innerItem && typeof innerItem !== 'object') {
-                                            // This is a primitive value
-                                            innerList.push(innerItem);
-                                        } else if (innerItem && innerItem.value !== undefined) {
-                                            // This is an object with a value property
-                                            innerList.push(innerItem.value);
-                                        }
-                                    }
-                                }
-                                
-                                nestedListData.push(innerList.length > 0 ? innerList : []);
-                            }
-                        }
-                        
-                        // Create a more descriptive display of the raw data
-                        if (nestedListData.length > 0) {
-                            const displayData = JSON.stringify(nestedListData, null, 2);
-                            rawDataDisplay = `<div class="raw-data-note">Raw data from database: <pre>${displayData}</pre></div>`;
-                        }
-                    } catch (e) {
-                        console.error('Error formatting nested list:', e);
-                        rawDataDisplay = `<div class="raw-data-note">Error formatting nested list: ${e.message}</div>`;
-                    }
-                }
-                
-                const noteHtml = `<div class="reanimation-note">${note}<br>${debugButton}</div>${rawDataDisplay}`;
-                
-                // Remove the special properties before formatting the rest
-                const objCopy = {...obj};
-                delete objCopy._nested_list;
-                delete objCopy._nested_structure;
-                delete objCopy._can_display_directly;
-                delete objCopy._display_note;
-                
-                return noteHtml + formatObjectPretty(objCopy, prefix, isTopLevel);
-            }
-            
-            // Handle reanimation notes
-            if (obj && typeof obj === 'object' && obj._needs_reanimation) {
-                const note = obj._reanimation_note || "This object requires reanimation for full details";
-                const apiHint = `<span class="api-hint">reanimator.reanimate_objects('${prefix.split('_')[0]}')</span>`;
-                const noteHtml = `<div class="reanimation-note">${note}<br>Use: ${apiHint}</div>`;
-                
-                // Remove the note properties before formatting the rest
-                const objCopy = {...obj};
-                delete objCopy._needs_reanimation;
-                delete objCopy._reanimation_note;
-                
-                return noteHtml + formatObjectPretty(objCopy, prefix, isTopLevel);
-            }
-            
-            // Handle primitive values with type information
-            if (obj && typeof obj === 'object' && obj.type && obj.value !== undefined) {
-                return `<span class="primitive-value">${obj.value}</span> <span class="object-type">(${obj.type})</span>`;
-            }
-            
-            // Handle primitive types directly
-            if (typeof obj === 'number') {
-                return `<span class="primitive-value">${obj}</span>`;
-            }
-            
-            if (typeof obj === 'boolean') {
+            if (typeof obj === 'number' || typeof obj === 'boolean') {
                 return `<span class="primitive-value">${obj}</span>`;
             }
             
             if (typeof obj === 'string') {
-                // Check if it's a JSON string that we can parse
-                if (obj.startsWith('{') || obj.startsWith('[')) {
-                    try {
-                        const parsed = JSON.parse(obj);
-                        return formatObjectPretty(parsed, prefix);
-                    } catch (e) {
-                        // Not valid JSON, treat as regular string
-                        return `<span class="string-value">"${escapeHtml(obj)}"</span>`;
-                    }
-                }
                 return `<span class="string-value">"${escapeHtml(obj)}"</span>`;
             }
             
@@ -594,46 +377,32 @@
             }
             
             if (Array.isArray(obj)) {
-                if (obj.length === 0) {
-                    return '[]';
-                }
+                if (obj.length === 0) return '[]';
                 
                 const uniqueId = prefix + '_array_' + Math.random().toString(36).substr(2, 9);
                 let result = `<div class="collapsible" onclick="toggleCollapsible('${uniqueId}')">Array(${obj.length})</div>`;
                 result += `<div id="${uniqueId}" class="collapsible-content">`;
                 
-                for (let i = 0; i < obj.length; i++) {
-                    result += `<div>[${i}]: ${formatObjectPretty(obj[i], uniqueId + '_' + i)}</div>`;
-                }
+                obj.forEach((item, i) => {
+                    result += `<div>[${i}]: ${formatObjectPretty(item, uniqueId + '_' + i)}</div>`;
+                });
                 
                 result += '</div>';
                 return result;
             }
             
             const keys = Object.keys(obj);
-            if (keys.length === 0) {
-                return '{}';
-            }
-            
-            // Special handling for raw data
-            if (obj._raw_data) {
-                // Add a note that this is raw data
-                return `<div class="raw-data-note">Raw data from database (not reanimated)</div>${formatObjectEntriesPretty(obj, keys, prefix, isTopLevel)}`;
-            }
+            if (keys.length === 0) return '{}';
             
             return formatObjectEntriesPretty(obj, keys, prefix, isTopLevel);
         }
 
         function formatObjectEntriesPretty(obj, keys, prefix, isTopLevel = false) {
-            // For top-level objects, directly show the properties without collapsible
             if (isTopLevel) {
                 let result = `<div class="top-level-container">`;
                 
                 for (const key of keys) {
-                    // Skip internal properties that start with underscore
-                    if (key.startsWith('_') && key !== '_raw_data') {
-                        continue;
-                    }
+                    if (key.startsWith('_')) continue;
                     
                     const value = obj[key];
                     const formattedValue = formatObjectPretty(value, prefix + '_' + key);
@@ -644,18 +413,25 @@
                 return result;
             }
             
-            // For nested objects, use collapsible
             const uniqueId = prefix + '_obj_' + Math.random().toString(36).substr(2, 9);
             let objType = obj.type || 'Object';
             
             let result = `<div class="collapsible" onclick="toggleCollapsible('${uniqueId}')">${objType} {${keys.length} properties}</div>`;
             result += `<div id="${uniqueId}" class="collapsible-content">`;
             
-            for (const key of keys) {
-                // Skip internal properties that start with underscore
-                if (key.startsWith('_') && key !== '_raw_data') {
-                    continue;
+            // Show attributes section first if it exists
+            if (obj.attributes) {
+                result += `<div class="attributes-section">`;
+                for (const [key, value] of Object.entries(obj.attributes)) {
+                    const formattedValue = formatObjectPretty(value, uniqueId + '_attr_' + key);
+                    result += `<div><span class="object-key">${key}</span>: ${formattedValue}</div>`;
                 }
+                result += '</div>';
+            }
+            
+            // Show other properties
+            for (const key of keys) {
+                if (key.startsWith('_') || key === 'attributes') continue;
                 
                 const value = obj[key];
                 const formattedValue = formatObjectPretty(value, uniqueId + '_' + key);
@@ -683,431 +459,23 @@
         }
 
         function setupCollapsibles() {
-            // Expand the first level of collapsibles by default
-            const firstLevelCollapsibles = document.querySelectorAll('.tab-pane.active .collapsible-content');
-            for (const collapsible of firstLevelCollapsibles) {
-                collapsible.style.display = 'block';
-            }
-        }
-
-        function debugNestedStructure(functionId, variableName) {
-            console.log(`Debug structure called for function "${functionId}", variable "${variableName}"`);
-            
-            // Sanitize the function ID and variable name to ensure they're valid for URLs
-            functionId = functionId.trim();
-            variableName = variableName.trim();
-            
-            // Create a modal to show the debug information
-            const modalId = 'debugModal';
-            let modal = document.getElementById(modalId);
-            
-            if (!modal) {
-                // Create the modal if it doesn't exist
-                modal = document.createElement('div');
-                modal.id = modalId;
-                modal.className = 'modal fade';
-                modal.tabIndex = -1;
-                modal.setAttribute('aria-labelledby', 'debugModalLabel');
-                modal.setAttribute('aria-hidden', 'true');
+            // Show top-level objects and their attributes sections
+            const topLevelObjects = document.querySelectorAll('.top-level-container > div > .collapsible-content');
+            topLevelObjects.forEach(obj => {
+                obj.style.display = 'block';
                 
-                modal.innerHTML = `
-                    <div class="modal-dialog modal-lg">
-                        <div class="modal-content">
-                            <div class="modal-header">
-                                <h5 class="modal-title" id="debugModalLabel">Structure Debug</h5>
-                                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                            </div>
-                            <div class="modal-body">
-                                <div id="debugContent">
-                                    <div class="text-center">
-                                        <div class="spinner-border" role="status">
-                                            <span class="visually-hidden">Loading...</span>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="modal-footer">
-                                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-                                <button type="button" class="btn btn-primary" id="viewVersionsBtn">View Version History</button>
-                            </div>
-                        </div>
-                    </div>
-                `;
-                
-                document.body.appendChild(modal);
-            }
-            
-            // Show the modal
-            const modalElement = new bootstrap.Modal(modal);
-            modalElement.show();
-            
-            // Set up the View Version History button
-            const viewVersionsBtn = document.getElementById('viewVersionsBtn');
-            viewVersionsBtn.onclick = function() {
-                viewVersionHistory(functionId, variableName);
-            };
-            
-            // Properly encode the URL parameters
-            const encodedFunctionId = encodeURIComponent(functionId);
-            const encodedVariableName = encodeURIComponent(variableName);
-            
-            // Fetch the debug information
-            const apiUrl = `/api/debug-structure/${encodedFunctionId}/${encodedVariableName}`;
-            console.log(`Fetching from API: ${apiUrl}`);
-            
-            fetch(apiUrl)
-                .then(response => {
-                    console.log('API response received:', response);
-                    
-                    if (!response.ok) {
-                        throw new Error(`HTTP error! Status: ${response.status}, URL: ${apiUrl}`);
-                    }
-                    
-                    return response.text();  // Get the raw text first
-                })
-                .then(text => {
-                    console.log('Raw API response text:', text);
-                    
-                    if (!text || text.trim() === '') {
-                        throw new Error('Empty response from server');
-                    }
-                    
-                    // Try to parse the JSON
-                    try {
-                        const data = JSON.parse(text);
-                        console.log('Parsed JSON data:', data);
-                        return data;
-                    } catch (e) {
-                        console.error('JSON parse error:', e);
-                        throw new Error(`JSON parse error: ${e.message}
-Raw data: ${text.substring(0, 200)}...`);
-                    }
-                })
-                .then(data => {
-                    const debugContent = document.getElementById('debugContent');
-                    
-                    if (data.error) {
-                        console.error('API returned error:', data.error);
-                        debugContent.innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
-                        return;
-                    }
-                    
-                    console.log('Structure info:', data.structure_info);
-                    const structureInfo = data.structure_info;
-                    
-                    // Check if we have reconstructed values
-                    let reconstructedValueHtml = '';
-                    if (structureInfo.structure && structureInfo.structure.reconstructed_value) {
-                        console.log('Reconstructed value:', structureInfo.structure.reconstructed_value);
-                        const reconstructedValue = structureInfo.structure.reconstructed_value;
-                        reconstructedValueHtml = `
-                            <div class="card mb-3">
-                                <div class="card-header bg-success text-white">
-                                    Reconstructed Value
-                                </div>
-                                <div class="card-body">
-                                    <pre class="json-display">${JSON.stringify(reconstructedValue, null, 2)}</pre>
-                                </div>
-                            </div>
-                        `;
-                    }
-                    
-                    // Check if we have detailed structure information
-                    let detailedStructureHtml = '';
-                    if (structureInfo.structure && structureInfo.structure.detailed_structure) {
-                        console.log('Detailed structure:', structureInfo.structure.detailed_structure);
-                        const detailedStructure = structureInfo.structure.detailed_structure;
-                        detailedStructureHtml = `
-                            <div class="card mb-3">
-                                <div class="card-header bg-info text-white">
-                                    Detailed Structure
-                                </div>
-                                <div class="card-body">
-                                    <pre class="json-display">${JSON.stringify(detailedStructure, null, 2)}</pre>
-                                </div>
-                            </div>
-                        `;
-                    }
-                    
-                    // Format the structure info - use a safer approach to display the structure
-                    let structureHtml = '';
-                    try {
-                        // Create a copy of the structure without the detailed_structure and reconstructed_value
-                        // to avoid duplicating large amounts of data
-                        const structureCopy = {...structureInfo.structure};
-                        delete structureCopy.detailed_structure;
-                        delete structureCopy.reconstructed_value;
-                        
-                        // Convert the structure to a string with proper formatting
-                        console.log('Structure copy for display:', structureCopy);
-                        const structureStr = JSON.stringify(structureCopy, null, 2);
-                        structureHtml = `<pre class="json-display">${structureStr}</pre>`;
-                    } catch (e) {
-                        console.error('Error formatting structure:', e);
-                        // If JSON.stringify fails, use a more robust approach
-                        structureHtml = `<div class="alert alert-warning">
-                            Could not format structure as JSON. Displaying as string:
-                            <pre>${String(structureInfo.structure)}</pre>
-                        </div>`;
-                    }
-                    
-                    // Format the structure info
-                    let html = `
-                        <h4>Variable: ${structureInfo.variable}</h4>
-                        <p><strong>Location:</strong> ${structureInfo.location}</p>
-                        <p><strong>Type:</strong> ${structureInfo.type}</p>
-                        
-                        ${reconstructedValueHtml}
-                        ${detailedStructureHtml}
-                        
-                        <h5>Database Structure:</h5>
-                        ${structureHtml}
-                    `;
-                    
-                    debugContent.innerHTML = html;
-                })
-                .catch(error => {
-                    console.error('Fetch error:', error);
-                    const debugContent = document.getElementById('debugContent');
-                    debugContent.innerHTML = `
-                        <div class="alert alert-danger">
-                            <h4>Error</h4>
-                            <p>${error.message}</p>
-                            <p>Function ID: ${functionId}</p>
-                            <p>Variable Name: ${variableName}</p>
-                            <p>API URL: ${apiUrl}</p>
-                        </div>
-                    `;
-                });
-        }
-
-        // New function to view version history
-        function viewVersionHistory(functionId, variableName) {
-            console.log(`View version history called for function "${functionId}", variable "${variableName}"`);
-            
-            // Create a modal to show the version history
-            const modalId = 'versionHistoryModal';
-            let modal = document.getElementById(modalId);
-            
-            if (!modal) {
-                // Create the modal if it doesn't exist
-                modal = document.createElement('div');
-                modal.id = modalId;
-                modal.className = 'modal fade';
-                modal.tabIndex = -1;
-                modal.setAttribute('aria-labelledby', 'versionHistoryModalLabel');
-                modal.setAttribute('aria-hidden', 'true');
-                
-                modal.innerHTML = `
-                    <div class="modal-dialog modal-xl">
-                        <div class="modal-content">
-                            <div class="modal-header">
-                                <h5 class="modal-title" id="versionHistoryModalLabel">Version History</h5>
-                                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                            </div>
-                            <div class="modal-body">
-                                <div id="versionHistoryContent">
-                                    <div class="text-center">
-                                        <div class="spinner-border" role="status">
-                                            <span class="visually-hidden">Loading...</span>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="modal-footer">
-                                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-                            </div>
-                        </div>
-                    </div>
-                `;
-                
-                document.body.appendChild(modal);
-            }
-            
-            // Show the modal
-            const modalElement = new bootstrap.Modal(modal);
-            modalElement.show();
-            
-            // Properly encode the URL parameters
-            const encodedFunctionId = encodeURIComponent(functionId);
-            const encodedVariableName = encodeURIComponent(variableName);
-            
-            // Fetch the version history
-            const apiUrl = `/api/debug-versions/${encodedFunctionId}/${encodedVariableName}`;
-            console.log(`Fetching from API: ${apiUrl}`);
-            
-            fetch(apiUrl)
-                .then(response => {
-                    if (!response.ok) {
-                        throw new Error(`HTTP error! Status: ${response.status}`);
-                    }
-                    return response.json();
-                })
-                .then(data => {
-                    const versionHistoryContent = document.getElementById('versionHistoryContent');
-                    
-                    if (data.error) {
-                        versionHistoryContent.innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
-                        return;
-                    }
-                    
-                    // Format the version history
-                    let html = `
-                        <h4>Version History for ${data.variable_name}</h4>
-                        <p><strong>Function:</strong> ${data.debug_info.function_context.function_name} (ID: ${data.debug_info.function_context.function_id})</p>
-                        <p><strong>File:</strong> ${data.debug_info.function_context.file_path}:${data.debug_info.function_context.line_number}</p>
-                        <p><strong>Variable Location:</strong> ${data.debug_info.function_context.variable_location}</p>
-                    `;
-                    
-                    // Display identities and their versions
-                    if (data.debug_info.identities && data.debug_info.identities.length > 0) {
-                        html += `<div class="accordion" id="versionAccordion">`;
-                        
-                        data.debug_info.identities.forEach((identity, identityIndex) => {
-                            const identityId = `identity-${identityIndex}`;
-                            
-                            html += `
-                                <div class="accordion-item">
-                                    <h2 class="accordion-header" id="heading-${identityId}">
-                                        <button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-${identityId}" aria-expanded="true" aria-controls="collapse-${identityId}">
-                                            Identity: ${identity.name} (${identity.identity_hash.substring(0, 8)}...)
-                                        </button>
-                                    </h2>
-                                    <div id="collapse-${identityId}" class="accordion-collapse collapse show" aria-labelledby="heading-${identityId}" data-bs-parent="#versionAccordion">
-                                        <div class="accordion-body">
-                                            <table class="table table-striped">
-                                                <thead>
-                                                    <tr>
-                                                        <th>Version</th>
-                                                        <th>Timestamp</th>
-                                                        <th>Attributes</th>
-                                                        <th>Function Calls</th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody>
-                            `;
-                            
-                            // Sort versions by version number
-                            const sortedVersions = [...identity.versions].sort((a, b) => a.version_number - b.version_number);
-                            
-                            sortedVersions.forEach(version => {
-                                // Format attributes
-                                let attributesHtml = '<ul class="list-unstyled">';
-                                if (version.attributes) {
-                                    for (const [key, value] of Object.entries(version.attributes)) {
-                                        attributesHtml += `<li><strong>${key}:</strong> ${value}</li>`;
-                                    }
-                                } else {
-                                    attributesHtml += '<li>No attributes available</li>';
-                                }
-                                attributesHtml += '</ul>';
-                                
-                                // Format function calls
-                                let functionCallsHtml = '<ul class="list-unstyled">';
-                                if (version.function_calls && version.function_calls.length > 0) {
-                                    version.function_calls.forEach(call => {
-                                        functionCallsHtml += `
-                                            <li>
-                                                <a href="#" onclick="loadFunctionDetails(${call.call_id}); return false;">
-                                                    ${call.function} (${call.role}: ${call.name})
-                                                </a>
-                                            </li>
-                                        `;
-                                    });
-                                } else {
-                                    functionCallsHtml += '<li>No function calls</li>';
-                                }
-                                functionCallsHtml += '</ul>';
-                                
-                                html += `
-                                    <tr>
-                                        <td>${version.version_number}</td>
-                                        <td>${new Date(version.timestamp).toLocaleString()}</td>
-                                        <td>${attributesHtml}</td>
-                                        <td>${functionCallsHtml}</td>
-                                    </tr>
-                                `;
-                            });
-                            
-                            html += `
-                                                </tbody>
-                                            </table>
-                                        </div>
-                                    </div>
-                                </div>
-                            `;
-                        });
-                        
-                        html += `</div>`;
-                    } else {
-                        html += `<div class="alert alert-info">No version history found for this variable.</div>`;
-                    }
-                    
-                    versionHistoryContent.innerHTML = html;
-                })
-                .catch(error => {
-                    console.error('Fetch error:', error);
-                    const versionHistoryContent = document.getElementById('versionHistoryContent');
-                    versionHistoryContent.innerHTML = `
-                        <div class="alert alert-danger">
-                            <h4>Error</h4>
-                            <p>${error.message}</p>
-                        </div>
-                    `;
-                });
-        }
-
-        // Helper function to get the current function ID from the page
-        function getCurrentFunctionId() {
-            // Try to extract the function ID from the URL
-            const pathParts = window.location.pathname.split('/');
-            if (pathParts.length > 2 && pathParts[1] === 'api' && pathParts[2] === 'function-call') {
-                return pathParts[3];
-            }
-            
-            // If not in the URL, try to find it in the page content
-            const functionDetailsHeader = document.querySelector('.card.detail-card .card-header h3');
-            if (functionDetailsHeader) {
-                // The function ID might be stored in a data attribute or we can try to find it in the DOM
-                const detailsContainer = document.getElementById('function-details');
-                if (detailsContainer && detailsContainer.dataset && detailsContainer.dataset.functionId) {
-                    return detailsContainer.dataset.functionId;
+                // Show attributes sections within this object
+                const attributesSection = obj.querySelector('.attributes-section');
+                if (attributesSection) {
+                    attributesSection.style.display = 'block';
                 }
-            }
-            
-            // As a last resort, check if we have any function calls loaded and use the first one
-            const functionCards = document.querySelectorAll('.function-card');
-            if (functionCards.length > 0 && functionCards[0].dataset && functionCards[0].dataset.functionId) {
-                return functionCards[0].dataset.functionId;
-            }
-            
-            return null;
-        }
-        
-        // Legacy format function kept for backward compatibility
-        function formatObject(obj) {
-            if (obj === null || obj === undefined) {
-                return 'null';
-            }
-            
-            // Handle reanimated objects
-            if (obj && typeof obj === 'object' && obj.is_reanimated) {
-                return `<span class="text-success">${obj.value}</span> <span class="text-muted">(${obj.type})</span>`;
-            }
-            
-            if (typeof obj === 'string') {
-                return `"${obj}"`;
-            }
-            
-            if (typeof obj !== 'object') {
-                return String(obj);
-            }
-            
-            try {
-                return JSON.stringify(obj, null, 2);
-            } catch (e) {
-                return String(obj);
-            }
+                
+                // Hide all other collapsible content
+                const otherCollapsibles = obj.querySelectorAll('.collapsible-content:not(.attributes-section)');
+                otherCollapsibles.forEach(collapsible => {
+                    collapsible.style.display = 'none';
+                });
+            });
         }
     </script>
 </body>

@@ -34,7 +34,7 @@ def linear_function(x, cl):
 if __name__ == "__main__":
 
     # Initialize monitoring
-    monitor = monitoringpy.init_monitoring(db_path="basic.db", pyrapl_enabled=True)
+    monitor = monitoringpy.init_monitoring(db_path="basic.db", pyrapl_enabled=False)
     
     # Run the function with a custom object
     for i in range(5):
