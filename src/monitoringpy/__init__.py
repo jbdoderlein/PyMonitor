@@ -1,10 +1,9 @@
 from .monitoringpy import init_monitoring, pymonitor
 from .generate_graph import generate_dot_graph
-from .models import FunctionCall, init_db, migrate_database_schema
+from .models import init_db
 from .db_operations import DatabaseManager
 from .worker import LogWorker
-from .migrate_db import migrate_database, check_database_schema
-from .reanimator import load_pydb, Reanimator
+#from .reanimator import load_pydb, Reanimator
 
 # Import web explorer if Flask is available
 try:

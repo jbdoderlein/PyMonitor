@@ -1,10 +1,8 @@
-from sqlalchemy import Column, String, Text, DateTime, Integer, Float, ForeignKey, create_engine, Table, LargeBinary, Boolean, JSON, inspect
+from sqlalchemy import Column, String, DateTime, Integer, ForeignKey, create_engine, LargeBinary, Boolean, JSON, Text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
+from sqlalchemy.sql import func
 import datetime
-import json
-import pickle
-import hashlib
 import os
 import logging
 import sqlite3
@@ -15,173 +13,102 @@ logger = logging.getLogger(__name__)
 
 Base = declarative_base()
 
-# Association tables for many-to-many relationships
-function_call_locals = Table(
-    'function_call_locals',
-    Base.metadata,
-    Column('function_call_id', Integer, ForeignKey('function_calls.id'), primary_key=True),
-    Column('object_id', String, ForeignKey('objects.id'), primary_key=True),
-    Column('object_version_id', Integer, ForeignKey('object_versions.id'), nullable=True),  # Reference to specific version
-    Column('arg_name', String, primary_key=True)
-)
+class StoredObject(Base):
+    """Model for storing objects"""
+    __tablename__ = 'stored_objects'
 
-function_call_globals = Table(
-    'function_call_globals',
-    Base.metadata,
-    Column('function_call_id', Integer, ForeignKey('function_calls.id'), primary_key=True),
-    Column('object_id', String, ForeignKey('objects.id'), primary_key=True),
-    Column('object_version_id', Integer, ForeignKey('object_versions.id'), nullable=True),  # Reference to specific version
-    Column('var_name', String, primary_key=True)
-)
+    id = Column(String, primary_key=True)
+    type_name = Column(String, nullable=False)
+    is_primitive = Column(Boolean, nullable=False)
+    primitive_value = Column(String, nullable=True)
+    pickle_data = Column(LargeBinary, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.now)
 
-# New table for object identity tracking
+    # Relationships
+    versions = relationship("ObjectVersion", back_populates="object", cascade="all, delete-orphan")
+    identities = relationship("ObjectIdentity", back_populates="latest_version")
+
+class ObjectVersion(Base):
+    """Model for tracking object versions"""
+    __tablename__ = 'object_versions'
+
+    id = Column(Integer, primary_key=True)
+    object_id = Column(String, ForeignKey('stored_objects.id'), nullable=False)
+    identity_id = Column(Integer, ForeignKey('object_identities.id'), nullable=False)
+    version_number = Column(Integer, nullable=False)
+    timestamp = Column(DateTime, default=datetime.datetime.now)
+
+    # Relationships
+    object = relationship("StoredObject", back_populates="versions")
+    identity = relationship("ObjectIdentity", back_populates="versions")
+
 class ObjectIdentity(Base):
     """Model for tracking object identity across versions"""
     __tablename__ = 'object_identities'
-    
-    id = Column(Integer, primary_key=True, autoincrement=True)  # Auto-incrementing ID
-    identity_hash = Column(String, unique=True)  # Stable hash for the object identity
-    name = Column(String)  # Object name if available (e.g., variable name)
+
+    id = Column(Integer, primary_key=True)
+    identity_hash = Column(String, unique=True, nullable=False)
+    name = Column(String, nullable=True)
     creation_time = Column(DateTime, default=datetime.datetime.now)
-    latest_version_id = Column(String, ForeignKey('objects.id'), nullable=True)
-    
+    latest_version_id = Column(String, ForeignKey('stored_objects.id'), nullable=True)
+
     # Relationships
+    latest_version = relationship("StoredObject", back_populates="identities")
     versions = relationship("ObjectVersion", back_populates="identity", cascade="all, delete-orphan")
-    latest_version = relationship("Object", foreign_keys=[latest_version_id])
-
-# New table for object version tracking
-class ObjectVersion(Base):
-    """Model for tracking versions of objects"""
-    __tablename__ = 'object_versions'
-    
-    id = Column(Integer, primary_key=True, autoincrement=True)  # Auto-incrementing ID
-    identity_id = Column(Integer, ForeignKey('object_identities.id'))
-    object_id = Column(String, ForeignKey('objects.id'))
-    version_number = Column(Integer)
-    timestamp = Column(DateTime, default=datetime.datetime.now)
-    
-    # Relationships
-    identity = relationship("ObjectIdentity", back_populates="versions")
-    object = relationship("Object", foreign_keys=[object_id])
-
-class Object(Base):
-    """Model for storing objects with their structure"""
-    __tablename__ = 'objects'
-    
-    id = Column(String, primary_key=True)  # Hash of the object
-    type_name = Column(String)  # Type of the object (e.g., 'list', 'dict', 'CustomClass')
-    is_primitive = Column(Boolean, default=False)  # Whether this is a primitive type
-    primitive_value = Column(Text, nullable=True)  # For primitive types like int, str, etc.
-    object_structure = Column(JSON, nullable=True)  # For structured objects (dict, list, etc.)
-    pickle_data = Column(LargeBinary, nullable=True)  # Fallback for complex objects
-    
-    # Relationships - explicitly specify foreign keys to avoid ambiguity
-    attributes = relationship(
-        "ObjectAttribute", 
-        foreign_keys="[ObjectAttribute.parent_id]",
-        back_populates="parent_object", 
-        cascade="all, delete-orphan"
-    )
-    items = relationship(
-        "ObjectItem", 
-        foreign_keys="[ObjectItem.parent_id]",
-        back_populates="parent_object", 
-        cascade="all, delete-orphan"
-    )
-    
-    # Function call relationships
-    local_in_calls = relationship("FunctionCall", secondary=function_call_locals, back_populates="local_objects")
-    global_in_calls = relationship("FunctionCall", secondary=function_call_globals, back_populates="global_objects")
-    return_from_calls = relationship("FunctionCall", back_populates="return_object")
-    
-    # Version relationships
-    versions = relationship("ObjectVersion", foreign_keys=[ObjectVersion.object_id], back_populates="object")
-
-class ObjectAttribute(Base):
-    """Model for storing object attributes"""
-    __tablename__ = 'object_attributes'
-    
-    id = Column(Integer, primary_key=True, autoincrement=True)  # Auto-incrementing ID
-    parent_id = Column(String, ForeignKey('objects.id'))
-    name = Column(String)  # Attribute name
-    value_id = Column(String, ForeignKey('objects.id'))  # Reference to the attribute value
-    
-    # Relationships - explicitly specify foreign keys to avoid ambiguity
-    parent_object = relationship("Object", foreign_keys=[parent_id], back_populates="attributes")
-    value_object = relationship("Object", foreign_keys=[value_id])
-
-class ObjectItem(Base):
-    """Model for storing collection items (list items, dict values, etc.)"""
-    __tablename__ = 'object_items'
-    
-    id = Column(Integer, primary_key=True, autoincrement=True)  # Auto-incrementing ID
-    parent_id = Column(String, ForeignKey('objects.id'))
-    key = Column(String)  # Key (for dicts) or index (for lists)
-    value_id = Column(String, ForeignKey('objects.id'))  # Reference to the item value
-    
-    # Relationships - explicitly specify foreign keys to avoid ambiguity
-    parent_object = relationship("Object", foreign_keys=[parent_id], back_populates="items")
-    value_object = relationship("Object", foreign_keys=[value_id])
 
 class FunctionCall(Base):
+    """Model for storing function call information"""
     __tablename__ = 'function_calls'
-    
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    event_type = Column(String)
-    file = Column(String)
-    function = Column(String)
-    line = Column(Integer)
-    start_time = Column(DateTime)
+
+    id = Column(Integer, primary_key=True)
+    function = Column(String, nullable=False)
+    file = Column(String, nullable=True)
+    line = Column(Integer, nullable=True)
+    start_time = Column(DateTime, nullable=False)
     end_time = Column(DateTime, nullable=True)
     
-    # Return value - direct relationship
-    return_object_id = Column(String, ForeignKey('objects.id'), nullable=True)
-    return_object_version_id = Column(Integer, ForeignKey('object_versions.id'), nullable=True)  # Reference to specific version
-    
-    # Performance metrics if pyRAPL is enabled
-    perf_label = Column(String, nullable=True)
-    perf_pkg = Column(Float, nullable=True)
-    perf_dram = Column(Float, nullable=True)
-    
-    # Relationships - maintain separation between locals and globals
-    local_objects = relationship("Object", secondary=function_call_locals, back_populates="local_in_calls")
-    global_objects = relationship("Object", secondary=function_call_globals, back_populates="global_in_calls")
-    return_object = relationship("Object", foreign_keys=[return_object_id], back_populates="return_from_calls")
-    return_object_version = relationship("ObjectVersion", foreign_keys=[return_object_version_id])
+    # Store references to objects
+    locals_refs = Column(JSON, nullable=False, default=dict)  # Dict[str, str] mapping variable names to object refs
+    globals_refs = Column(JSON, nullable=False, default=dict)  # Dict[str, str] mapping variable names to object refs
+    return_ref = Column(String, nullable=True)  # Reference to return value in object manager
 
-def migrate_database_schema(engine):
-    """
-    Check if the database schema matches the models and perform migrations if needed.
+class CodeDefinition(Base):
+    """Represents a code definition (class, function, etc.)."""
+    __tablename__ = 'code_definitions'
+
+    id = Column(String, primary_key=True)  # Hash of the code content
+    name = Column(String, nullable=False)  # Class/function name
+    type = Column(String, nullable=False)  # 'class' or 'function'
+    module_path = Column(String, nullable=False)  # Full module path
+    code_content = Column(Text, nullable=False)  # The actual code
+    creation_time = Column(DateTime, server_default=func.now())
     
-    Args:
-        engine: SQLAlchemy engine
-        
-    Returns:
-        bool: True if migration was successful, False otherwise
-    """
-    try:
-        inspector = inspect(engine)
-        
-        # Check if function_calls table exists and has the required columns
-        if 'function_calls' in inspector.get_table_names():
-            function_calls_columns = [col['name'] for col in inspector.get_columns('function_calls')]
-            
-            # Check if return_object_id column exists
-            if 'return_object_id' not in function_calls_columns:
-                logger.warning("Database schema is outdated: missing return_object_id column")
-                
-                # Add the missing column
-                with engine.connect() as conn:
-                    conn.execute("ALTER TABLE function_calls ADD COLUMN return_object_id VARCHAR REFERENCES objects(id)")
-                    logger.info("Added return_object_id column to function_calls table")
-        
-        # Check other tables and columns as needed
-        # ...
-        
-        return True
-    except Exception as e:
-        logger.error(f"Error during schema migration: {e}")
-        return False
+    # Relationships
+    versions = relationship("CodeVersion", back_populates="definition", cascade="all, delete-orphan")
+    objects = relationship("StoredObject", secondary="code_object_links")
+
+class CodeVersion(Base):
+    """Represents a version of a code definition."""
+    __tablename__ = 'code_versions'
+
+    id = Column(Integer, primary_key=True)
+    definition_id = Column(String, ForeignKey('code_definitions.id'), nullable=False)
+    version_number = Column(Integer, nullable=False)
+    timestamp = Column(DateTime, server_default=func.now())
+    git_commit = Column(String)  # Optional link to git commit
+    git_repo = Column(String)    # Optional link to git repository
+    
+    # Relationships
+    definition = relationship("CodeDefinition", back_populates="versions")
+
+class CodeObjectLink(Base):
+    """Links objects to their code definitions."""
+    __tablename__ = 'code_object_links'
+
+    id = Column(Integer, primary_key=True)
+    object_id = Column(String, ForeignKey('stored_objects.id'), nullable=False)
+    definition_id = Column(String, ForeignKey('code_definitions.id'), nullable=False)
+    timestamp = Column(DateTime, server_default=func.now())
 
 def init_db(db_path):
     """Initialize the database and return session factory"""
@@ -247,13 +174,6 @@ def init_db(db_path):
         # Create tables if they don't exist
         Base.metadata.create_all(engine)
         logger.info("Database schema created successfully")
-        
-        # Check if we need to migrate the schema
-        if os.path.exists(db_path) and os.path.getsize(db_path) > 0:
-            if migrate_database_schema(engine):
-                logger.info("Database schema migration completed successfully")
-            else:
-                logger.warning("Database schema migration failed")
     except Exception as e:
         logger.error(f"Error creating database schema: {e}")
         raise

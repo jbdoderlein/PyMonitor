@@ -9,7 +9,7 @@ import os
 import traceback
 from sqlalchemy import text
 from .models import init_db
-from .db_operations import DatabaseManager
+from .function_call import FunctionCallTracker
 from .worker import LogWorker
 
 # Configure logging - only show warnings and errors
@@ -33,6 +33,7 @@ class PyMonitoring:
         self.initialized = True
         self.db_path = db_path
         self.execution_stack = []
+        self.call_id_stack = []  # Stack to keep track of function call IDs
         self.pyrapl_stack = []
         self.monitored_functions = {}
         self.MONITOR_TOOL_ID = sys.monitoring.PROFILER_ID
@@ -56,13 +57,10 @@ class PyMonitoring:
             finally:
                 test_session.close()
             
-            # Now initialize the database manager
-            self.db_manager = DatabaseManager(Session)
+            # Initialize the function call tracker
+            self.session = Session()
+            self.call_tracker = FunctionCallTracker(self.session)
             
-            # Finally, start the worker thread
-            print("Starting log worker thread")
-            self.log_worker = LogWorker(self.db_manager, queue_size, flush_interval)
-            self.log_worker.start()
             logger.info(f"Database initialized successfully at {self.db_path}")
         except Exception as e:
             logger.error(f"Failed to initialize database: {e}")
@@ -72,17 +70,15 @@ class PyMonitoring:
             try:
                 logger.warning("Attempting to create in-memory database as fallback")
                 Session = init_db(":memory:")
-                self.db_manager = DatabaseManager(Session)
-                self.log_worker = LogWorker(self.db_manager, queue_size, flush_interval)
-                self.log_worker.start()
+                self.session = Session()
+                self.call_tracker = FunctionCallTracker(self.session)
                 logger.info("In-memory database initialized as fallback")
                 print("WARNING: Using in-memory database as fallback. Data will not be persisted.")
             except Exception as e2:
                 logger.critical(f"Failed to initialize in-memory database: {e2}")
                 logger.critical(traceback.format_exc())
                 print(f"CRITICAL ERROR: Failed to initialize monitoring. Monitoring will be disabled.")
-                self.db_manager = None
-                self.log_worker = None
+                self.call_tracker = None
                 return
         
         try:
@@ -122,27 +118,30 @@ class PyMonitoring:
         print("Monitoring initialized")
 
     def shutdown(self):
-        """Gracefully shut down the logging thread"""
+        """Gracefully shut down monitoring"""
         logger.info("Starting PyMonitoring shutdown")
-        if hasattr(self, 'log_worker') and self.log_worker is not None:
+        if hasattr(self, 'session'):
             try:
-                logger.info("Shutting down log worker")
-                self.log_worker.shutdown()
-                logger.info("Log worker shutdown completed")
+                logger.info("Committing final changes and closing session")
+                self.session.commit()
+                self.session.close()
+                logger.info("Database session closed")
             except Exception as e:
                 logger.error(f"Error during monitoring shutdown: {e}")
                 logger.error(traceback.format_exc())
-        else:
-            logger.warning("No log worker found during shutdown")
         logger.info("PyMonitoring shutdown completed")
 
     def monitor_callback_function_start(self, code: types.CodeType, offset):
+        if self.call_tracker is None:
+            return
+
         current_frame = inspect.currentframe()
-        if current_frame is None or current_frame.f_back is None: return
+        if current_frame is None or current_frame.f_back is None: 
+            return
+            
         # The parent frame should be the actual function being called
         frame = current_frame.f_back
         
-        # Capture function arguments
         # Get the function's parameter names from its code object
         arg_names = code.co_varnames[:code.co_argcount]
         
@@ -152,24 +151,31 @@ class PyMonitoring:
             if arg_name in frame.f_locals:
                 function_locals[arg_name] = frame.f_locals[arg_name]
         
-        json_trace = {
-            "event_type": "call",
-            "file": code.co_filename,
-            "function": code.co_name,
-            "line": frame.f_lineno,
-            "locals": function_locals,
-            "globals": self.get_used_globals(code, frame.f_globals),
-            "start_time": datetime.datetime.now().isoformat()
-        }
-        self.execution_stack.append(json_trace)
-        
-        if self.pyrapl_enabled:
-            self.pyrapl_stack.append(pyRAPL.Measurement(code.co_name)) # type: ignore
-            self.pyrapl_stack[-1].begin()
+        # Get used globals
+        globals_used = self.get_used_globals(code, frame.f_globals)
+
+        # Capture the function call
+        try:
+            call_id = self.call_tracker.capture_call(
+                code.co_name,
+                function_locals,
+                globals_used
+            )
+            self.call_id_stack.append(call_id)
+            
+            if self.pyrapl_enabled:
+                self.pyrapl_stack.append(pyRAPL.Measurement(code.co_name)) # type: ignore
+                self.pyrapl_stack[-1].begin()
+        except Exception as e:
+            logger.error(f"Error capturing function call: {e}")
+            logger.error(traceback.format_exc())
 
     def monitor_callback_function_return(self, code: types.CodeType, offset, return_value):
+        if self.call_tracker is None or not self.call_id_stack:
+            return
+
         perf_result = None
-        if self.pyrapl_enabled:
+        if self.pyrapl_enabled and self.pyrapl_stack:
             self.pyrapl_stack[-1].end()
             measurement = self.pyrapl_stack.pop()
             perf_result = {
@@ -178,20 +184,23 @@ class PyMonitoring:
                 "dram": measurement.result.dram
             }
             
-        # Make sure we have a trace to pop
-        if not self.execution_stack: return
-        json_trace = self.execution_stack.pop()
-        
-        json_trace["return_value"] = return_value
-        json_trace["end_time"] = datetime.datetime.now().isoformat()
-        if perf_result:
-            json_trace["perf_result"] = perf_result
-
-        self.log_trace(json_trace)
+        try:
+            # Get the call ID for this function
+            call_id = self.call_id_stack.pop()
+            
+            # Capture the return value
+            self.call_tracker.capture_return(call_id, return_value)
+            
+            # Commit the changes
+            self.session.commit()
+        except Exception as e:
+            logger.error(f"Error capturing function return: {e}")
+            logger.error(traceback.format_exc())
+            self.session.rollback()
 
     def get_used_globals(self, code, globals):
         """Analyze function bytecode to find accessed global variables"""
-        globals_used = set()
+        globals_used = {}
         
         # Scan bytecode for LOAD_GLOBAL operations
         for instr in dis.get_instructions(code):
@@ -210,26 +219,10 @@ class PyMonitoring:
                 if name in __builtins__:
                     continue
 
-                globals_used.add(name)
+                if name in globals:
+                    globals_used[name] = globals[name]
         
-        # Filter globals dict to only keep elements with keys in globals_used
-        filtered_globals = {k: v for k, v in globals.items() if k in globals_used}
-        return filtered_globals
-
-    def log_trace(self, data):
-        # Add to queue for processing by worker thread
-        if self.log_worker is None:
-            logger.warning("Log worker not available, skipping log")
-            return
-            
-        try:
-            if not self.log_worker.add_to_queue(data):
-                # If queue is full, log warning and try to process directly
-                logger.warning("Log queue full, processing directly")
-                if self.db_manager is not None:
-                    self.db_manager.save_to_database([data])
-        except Exception as e:
-            logger.error(f"Error logging trace: {e}")
+        return globals_used
 
 
 def pymonitor(func):

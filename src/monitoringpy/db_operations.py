@@ -9,7 +9,7 @@ import os
 import sqlite3
 import traceback
 from sqlalchemy.exc import SQLAlchemyError
-from .models import (
+from .db_models import (
     FunctionCall, Object, ObjectAttribute, ObjectItem,
     function_call_locals, function_call_globals, ObjectIdentity, ObjectVersion
 )

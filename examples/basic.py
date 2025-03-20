@@ -6,7 +6,7 @@ Basic example demonstrating custom object handling in PyMonitor.
 import os
 import monitoringpy
 
-class CustomClass:
+class MyCustomClass:
     """A simple custom class with attributes."""
     def __init__(self, x):
         self.x = x
@@ -20,7 +20,7 @@ class CustomClass:
         return self.x + self.y
 
 # Create a global instance
-gcl = CustomClass(10)
+gcl = MyCustomClass(10)
 ncl = [[1,2,3], [4,5,6]]
 
 @monitoringpy.pymonitor
@@ -38,7 +38,7 @@ if __name__ == "__main__":
     
     # Run the function with a custom object
     for i in range(5):
-        cl = CustomClass(i)
+        cl = MyCustomClass(i)
         linear_function(100*i, cl)
     
     gcl.x = 100
