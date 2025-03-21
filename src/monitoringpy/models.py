@@ -66,6 +66,7 @@ class FunctionCall(Base):
     line = Column(Integer, nullable=True)
     start_time = Column(DateTime, nullable=False)
     end_time = Column(DateTime, nullable=True)
+    call_metadata = Column(JSON, nullable=True)  # For storing additional data like PyRAPL measurements
     
     # Store references to objects
     locals_refs = Column(JSON, nullable=False, default=dict)  # Dict[str, str] mapping variable names to object refs

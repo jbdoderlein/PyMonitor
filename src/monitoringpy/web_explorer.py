@@ -111,66 +111,53 @@ def serialize_stored_value(ref: Optional[str]) -> Dict[str, Any]:
         return {"value": "<no object manager>", "type": "Error"}
         
     try:
-        # Make sure ref is a string
+        # If ref is not a string, or if it's a string but looks like a direct value
+        # (not a 32-char hex hash), we need to store it first
+        if not isinstance(ref, str) or (
+            isinstance(ref, str) and 
+            not (len(ref) == 32 and all(c in '0123456789abcdef' for c in ref.lower()))
+        ):
+            try:
+                logger.debug(f"Got direct value instead of reference, storing it first: {type(ref)}")
+                ref = object_manager.store(ref)
+                logger.debug(f"Stored value, got reference: {ref}")
+            except Exception as e:
+                logger.error(f"Failed to store direct value: {e}")
+                return {"value": f"<storage error: {str(e)}>", "type": "Error"}
+        
+        # Now we should have a proper reference string
         ref_str = str(ref)
         
-        # First try to get the actual value directly
-        try:
-            value = object_manager.get(ref_str)
-            if value is not None:
-                # Successfully reconstructed the value
-                if type(value).__name__ == 'MyCustomClass':
-                    logger.info(f"Found MyCustomClass in stored value: {value}")
-                return {
-                    "value": str(value),
-                    "type": type(value).__name__
-                }
-        except Exception as e:
-            logger.debug(f"Could not get value directly: {e}")
-        
-        # If direct access failed, try database
-        stored_obj = object_manager.session.query(StoredObject).filter(StoredObject.id == ref_str).first()
-        if not stored_obj:
-            # If we couldn't get it from database or direct access, it's truly not found
+        # Try to get the value using ObjectManager
+        value = object_manager.get(ref_str)
+        if value is None:
+            # If we couldn't get it, it's truly not found
             return {"value": f"<not found: {ref_str}>", "type": "Error"}
             
-        if stored_obj.is_primitive:
-            return {
-                "value": stored_obj.primitive_value,
-                "type": stored_obj.type_name
-            }
+        # Successfully got the value
+        if type(value).__name__ == 'MyCustomClass':
+            logger.info(f"Found MyCustomClass: {value}")
             
-        try:
-            # Try to get the actual value again (in case we missed it first time)
-            value = object_manager.get(ref_str)
-            if type(value).__name__ == 'MyCustomClass':
-                logger.info(f"Found MyCustomClass in stored object: {value}")
+        # Get code definition if available
+        code_info = None
+        if object_manager.code_manager:
+            code_info = object_manager.code_manager.get_object_code(ref_str)
+            if code_info:
+                code_info = {
+                    'name': code_info.get('name', type(value).__name__),
+                    'module_path': code_info.get('module_path', 'unknown'),
+                    'code_content': code_info.get('code', ''),
+                    'creation_time': code_info.get('creation_time', datetime.datetime.now()).isoformat()
+                }
             
-            # Get code definition if available
-            code_info = None
-            if object_manager.code_manager:
-                code_info = object_manager.code_manager.get_object_code(ref_str)
+        return {
+            "value": str(value),
+            "type": type(value).__name__,
+            "code": code_info
+        }
             
-            return {
-                "value": str(value),  # Convert to string to ensure JSON serialization
-                "type": stored_obj.type_name,
-                "code": code_info
-            }
-        except (ImportError, AttributeError) as e:
-            logger.warning(f"Import/Attribute error for {ref_str}: {e}")
-            # If we can't unpickle due to missing class, return a generic representation
-            # Still try to get code definition
-            code_info = None
-            if object_manager.code_manager:
-                code_info = object_manager.code_manager.get_object_code(ref_str)
-                
-            return {
-                "value": f"<{stored_obj.type_name} object>",
-                "type": stored_obj.type_name,
-                "code": code_info
-            }
     except Exception as e:
-        logger.warning(f"Error serializing stored value {ref}: {e}")
+        logger.error(f"Error serializing value for ref {ref}: {e}")
         return {"value": f"<error: {str(e)}>", "type": "Error"}
 
 def serialize_call_info(call_info: FunctionCallInfo) -> Dict[str, Any]:
@@ -181,16 +168,39 @@ def serialize_call_info(call_info: FunctionCallInfo) -> Dict[str, Any]:
     end_time = call_info['end_time'].isoformat() if call_info['end_time'] else None
     
     try:
+        # Handle locals and globals, ensuring we don't pass None values to serialize_stored_value
+        locals_dict = {}
+        for k, v in call_info['locals'].items():
+            if v is not None:
+                locals_dict[k] = serialize_stored_value(v)
+            else:
+                locals_dict[k] = {"value": "None", "type": "NoneType"}
+
+        globals_dict = {}
+        for k, v in call_info['globals'].items():
+            if v is not None:
+                globals_dict[k] = serialize_stored_value(v)
+            else:
+                globals_dict[k] = {"value": "None", "type": "NoneType"}
+
+        # Handle return value
+        return_value = serialize_stored_value(call_info['return_value']) if call_info['return_value'] is not None else {"value": "None", "type": "NoneType"}
+
         result = {
             'function': call_info['function'],
             'file': call_info['file'],
             'line': call_info['line'],
             'start_time': start_time,
             'end_time': end_time,
-            'locals': {k: serialize_stored_value(v) for k, v in call_info['locals'].items()},
-            'globals': {k: serialize_stored_value(v) for k, v in call_info['globals'].items()},
-            'return_value': serialize_stored_value(call_info['return_value'])
+            'locals': locals_dict,
+            'globals': globals_dict,
+            'return_value': return_value
         }
+
+        # Add RAPL data if available
+        if 'energy_data' in call_info:
+            result['energy_data'] = call_info['energy_data']
+        
         # Test JSON serialization
         try:
             json.dumps(result, cls=CustomJSONEncoder)
@@ -225,7 +235,6 @@ def create_app(tracker: FunctionCallTracker):
     @app.route('/api/object-graph')
     def get_object_graph():
         """Get the object graph data for visualization"""
-        print("Getting object graph")
         try:
             logger.info("Starting object graph generation")
             # Get all stored objects and function calls
@@ -261,15 +270,18 @@ def create_app(tracker: FunctionCallTracker):
                             items = [f"{k}: {v}" for k, v in list(value.items())[:3]]
                             label = f"{{{', '.join(items)}{'...' if len(value) > 3 else ''}}}"
                         else:
-                            # For custom objects, use their string representation
+                            # For custom objects, use type_name from database and string representation
                             try:
-                                label = str(value)
-                                logger.debug(f"Custom object string representation: {label}")
+                                value_str = str(value)
+                                # Extract any parameters from the string representation
+                                params = value_str.split('(', 1)[1].rstrip(')') if '(' in value_str else ''
+                                label = f"{obj.type_name}({params})" if params else obj.type_name
+                                logger.debug(f"Custom object label: {label}")
                             except Exception as e:
                                 logger.warning(f"Failed to get string representation of custom object: {e}")
-                                label = f"<{obj.type_name} object>"
+                                label = f"{obj.type_name}()"
                     else:
-                        label = f"<{obj.type_name}>"
+                        label = f"{obj.type_name}()"
                 except Exception as e:
                     logger.warning(f"Error processing object {obj.id}: {e}")
                     label = f"<{obj.type_name}>"
@@ -278,12 +290,67 @@ def create_app(tracker: FunctionCallTracker):
                     node_data = {
                         'id': obj.id,
                         'label': label[:50] + '...' if len(label) > 50 else label,
-                        'type': obj.type_name,
+                        'type': obj.type_name,  # This is now the actual class name
                         'isPrimitive': obj.is_primitive,
                         'nodeType': 'object'  # Mark as object node
                     }
                     logger.debug(f"Created node data: {node_data}")
                     nodes.append({'data': node_data})
+
+                    # Add code version node if available
+                    if object_manager.code_manager:
+                        try:
+                            code_info = object_manager.code_manager.get_object_code(obj.id)
+                            if code_info and isinstance(code_info, dict):
+                                # Ensure all required fields are present
+                                required_fields = {'id', 'name', 'code', 'module_path'}
+                                if not all(field in code_info for field in required_fields):
+                                    logger.warning(f"Incomplete code info for object {obj.id}: missing fields {required_fields - code_info.keys()}")
+                                    continue
+
+                                code_version_id = f"code_{code_info['id']}"
+                                if code_version_id not in node_ids:
+                                    node_ids.add(code_version_id)
+                                    print(f"code_info: {code_info}")
+                                    code_node_data = {
+                                        'id': code_version_id,
+                                        'label': f"{code_info['name']} v{code_info.get('version_number', '1')}",
+                                        'type': 'CodeVersion',
+                                        'isPrimitive': False,
+                                        'nodeType': 'code',
+                                        'className': code_info['name'],
+                                        'version': code_info.get('version_number', '1'),
+                                        'modulePath': code_info['module_path'],
+                                        'code': code_info['code']
+                                    }
+                                    nodes.append({'data': code_node_data})
+                                    logger.debug(f"Created code version node: {code_version_id}")
+
+                                    # Only create the edge if we successfully created the node
+                                    edge_data = {
+                                        'id': f"edge_code_{obj.id}_{code_version_id}",
+                                        'source': obj.id,
+                                        'target': code_version_id,
+                                        'label': 'implements',
+                                        'edgeType': 'code_version'
+                                    }
+                                    edges.append({'data': edge_data})
+                                    logger.debug(f"Created code version edge: {edge_data}")
+                                else:
+                                    # If the node already exists, just add the edge
+                                    edge_data = {
+                                        'id': f"edge_code_{obj.id}_{code_version_id}",
+                                        'source': obj.id,
+                                        'target': code_version_id,
+                                        'label': 'implements',
+                                        'edgeType': 'code_version'
+                                    }
+                                    edges.append({'data': edge_data})
+                                    logger.debug(f"Created code version edge for existing node: {edge_data}")
+                            else:
+                                logger.debug(f"No valid code info found for object {obj.id}")
+                        except Exception as e:
+                            logger.warning(f"Error creating code version node for object {obj.id}: {e}", exc_info=True)
                 except Exception as e:
                     logger.error(f"Error creating node data for object {obj.id}: {e}")
                     continue
@@ -487,47 +554,81 @@ def create_app(tracker: FunctionCallTracker):
 
     @app.route('/api/function-calls')
     def get_function_calls():
-        search = request.args.get('search', '').lower()
-        file_filter = request.args.get('file', '')
-        function_filter = request.args.get('function', '')
-
-        # Get all call IDs from history
-        all_calls = []
         try:
-            call_ids = tracker.get_call_history()
-            for call_id in call_ids:
-                try:
-                    call_info = tracker.get_call(call_id)
-                    
-                    # Apply filters
-                    if search and search not in call_info['function'].lower():
-                        continue
-                    if file_filter and file_filter != call_info['file']:
-                        continue
-                    if function_filter and function_filter != call_info['function']:
-                        continue
-                    
-                    # Add call ID to the serialized info
-                    call_dict = serialize_call_info(call_info)
-                    call_dict['id'] = call_id
-                    all_calls.append(call_dict)
-                except ValueError:
-                    continue  # Skip if call not found
-        except Exception as e:
-            logger.error(f"Error getting function calls: {e}")
-            return jsonify({'error': str(e)}), 500
+            search = request.args.get('search', '').lower()
+            file_filter = request.args.get('file', '')
+            function_filter = request.args.get('function', '')
 
-        return jsonify({'function_calls': all_calls})
+            # Get all call IDs from history
+            all_calls = []
+            
+            if not call_tracker:
+                logger.error("Call tracker is not initialized")
+                return jsonify({
+                    'error': 'Call tracker is not initialized',
+                    'function_calls': []
+                }), 500
+
+            try:
+                logger.info("Getting call history...")
+                call_ids = call_tracker.get_call_history()
+                logger.info(f"Found {len(call_ids)} calls in history")
+                
+                for call_id in call_ids:
+                    try:
+                        logger.debug(f"Getting call info for {call_id}")
+                        call_info = call_tracker.get_call(call_id)
+                        if not call_info:
+                            logger.warning(f"No call info found for ID {call_id}")
+                            continue
+                        
+                        # Apply filters
+                        if search and search not in call_info['function'].lower():
+                            continue
+                        if file_filter and file_filter != call_info['file']:
+                            continue
+                        if function_filter and function_filter != call_info['function']:
+                            continue
+                        
+                        # Add call ID to the serialized info
+                        call_dict = serialize_call_info(call_info)
+                        call_dict['id'] = call_id
+                        all_calls.append(call_dict)
+                        
+                    except Exception as e:
+                        logger.error(f"Error processing call {call_id}: {e}", exc_info=True)
+                        continue  # Skip problematic calls but continue processing others
+
+                logger.info(f"Successfully processed {len(all_calls)} calls")
+                return jsonify({
+                    'function_calls': all_calls,
+                    'total_calls': len(call_ids),
+                    'processed_calls': len(all_calls)
+                })
+                
+            except Exception as e:
+                logger.error(f"Error getting call history: {e}", exc_info=True)
+                return jsonify({
+                    'error': f"Error getting call history: {str(e)}",
+                    'function_calls': []
+                }), 500
+                
+        except Exception as e:
+            logger.error(f"Unexpected error in get_function_calls: {e}", exc_info=True)
+            return jsonify({
+                'error': f"Unexpected error: {str(e)}",
+                'function_calls': []
+            }), 500
 
     @app.route('/api/function-call/<call_id>')
     def get_function_call(call_id):
         try:
-            call_info = tracker.get_call(call_id)
+            call_info = call_tracker.get_call(call_id)
             call_dict = serialize_call_info(call_info)
             call_dict['id'] = call_id
             
             # Get call history
-            history = tracker.get_call_history()
+            history = call_tracker.get_call_history()
             call_index = history.index(call_id)
             
             # Add navigation info

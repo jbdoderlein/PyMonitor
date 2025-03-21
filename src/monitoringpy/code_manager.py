@@ -46,6 +46,23 @@ class CodeManager:
         if existing_def:
             return code_hash
             
+        # Check if we have any previous versions of this class
+        previous_def = self.session.query(CodeDefinition).filter(
+            CodeDefinition.name == cls.__name__,
+            CodeDefinition.module_path == cls.__module__
+        ).order_by(CodeDefinition.creation_time.desc()).first()
+        
+        # Get the next version number
+        next_version = 1
+        if previous_def:
+            # Get the highest version number for the previous definition
+            latest_version = self.session.query(CodeVersion).filter(
+                CodeVersion.definition_id == previous_def.id
+            ).order_by(CodeVersion.version_number.desc()).first()
+            if latest_version:
+                next_version = latest_version.version_number + 1
+                logger.info(f"Creating new version {next_version} for class {cls.__name__}")
+            
         # Create new code definition
         code_def = CodeDefinition(
             id=code_hash,
@@ -57,10 +74,10 @@ class CodeManager:
         
         self.session.add(code_def)
         
-        # Create initial version
+        # Create new version with incremented number
         version = CodeVersion(
             definition=code_def,
-            version_number=1
+            version_number=next_version
         )
         
         self.session.add(version)
@@ -114,13 +131,21 @@ class CodeManager:
         if not code_def:
             return None
             
+        # Get the latest version number
+        latest_version = self.session.query(CodeVersion).filter(
+            CodeVersion.definition_id == code_ref
+        ).order_by(CodeVersion.version_number.desc()).first()
+        
+        version_number = latest_version.version_number if latest_version else 1
+            
         return {
             'id': code_def.id,
             'name': code_def.name,
             'type': code_def.type,
             'module_path': code_def.module_path,
-            'code_content': code_def.code_content,
-            'creation_time': code_def.creation_time
+            'code': code_def.code_content,
+            'creation_time': code_def.creation_time,
+            'version_number': version_number
         }
     
     def get_object_code(self, object_ref: str) -> Optional[Dict[str, Any]]:
@@ -132,7 +157,29 @@ class CodeManager:
         if not link:
             return None
             
-        return self.get_code(link.definition_id)
+        code_def = self.session.query(CodeDefinition).filter(
+            CodeDefinition.id == link.definition_id
+        ).first()
+        
+        if not code_def:
+            return None
+            
+        # Get the latest version number
+        latest_version = self.session.query(CodeVersion).filter(
+            CodeVersion.definition_id == link.definition_id
+        ).order_by(CodeVersion.version_number.desc()).first()
+        
+        version_number = latest_version.version_number if latest_version else 1
+            
+        return {
+            'id': code_def.id,
+            'name': code_def.name,
+            'type': code_def.type,
+            'module_path': code_def.module_path,
+            'code': code_def.code_content,
+            'creation_time': code_def.creation_time,
+            'version_number': version_number
+        }
     
     def get_code_history(self, code_ref: str) -> List[Dict[str, Any]]:
         """Get the version history of a code definition."""

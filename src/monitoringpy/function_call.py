@@ -15,6 +15,7 @@ class FunctionCallInfo(TypedDict):
     locals: Dict[str, Any]
     globals: Dict[str, Any]
     return_value: Optional[Any]
+    energy_data: Optional[Dict[str, Any]]
 
 class FunctionCallTracker:
     """Track function calls and their context using object manager for efficient storage"""
@@ -22,6 +23,8 @@ class FunctionCallTracker:
     def __init__(self, session: Session) -> None:
         self.session = session
         self.object_manager = ObjectManager(session)
+        self.call_history = []
+        self.current_call = None
 
     def _store_variables(self, variables: Dict[str, Any]) -> Dict[str, str]:
         """Store variables and return a dictionary of variable names to object references"""
@@ -33,6 +36,7 @@ class FunctionCallTracker:
             try:
                 # Store the value and get its reference
                 ref = self.object_manager.store(value)
+                # Always store the reference, not the value
                 refs[name] = ref
             except Exception as e:
                 # Log warning but continue if we can't store a variable
@@ -95,24 +99,23 @@ class FunctionCallTracker:
         if not call:
             raise ValueError(f"Function call {call_id} not found")
 
-        # Resolve local variables
+        # Resolve local variables - store references, not values
         locals_dict = {}
         for name, ref in call.locals_refs.items():
-            value = self.object_manager.get(ref)
-            if value is not None:  # Only include successfully retrieved values
-                locals_dict[name] = value
+            # Store the reference, not the resolved value
+            locals_dict[name] = ref
 
-        # Resolve global variables
+        # Resolve global variables - store references, not values
         globals_dict = {}
         for name, ref in call.globals_refs.items():
-            value = self.object_manager.get(ref)
-            if value is not None:  # Only include successfully retrieved values
-                globals_dict[name] = value
+            # Store the reference, not the resolved value
+            globals_dict[name] = ref
 
-        # Resolve return value
-        return_value = None
-        if call.return_ref:
-            return_value = self.object_manager.get(call.return_ref)
+        # Store return value reference, not the resolved value
+        return_value = call.return_ref
+
+        # Get energy data from call_metadata if available
+        energy_data = call.call_metadata.get('energy_data') if call.call_metadata else None
 
         return FunctionCallInfo(
             function=call.function,
@@ -122,7 +125,8 @@ class FunctionCallTracker:
             end_time=call.end_time,
             locals=locals_dict,
             globals=globals_dict,
-            return_value=return_value
+            return_value=return_value,
+            energy_data=energy_data
         )
 
     def get_call_history(self, function_name: Optional[str] = None) -> List[str]:
@@ -134,4 +138,24 @@ class FunctionCallTracker:
         if function_name:
             query = query.filter(FunctionCall.function == function_name)
         calls = query.order_by(FunctionCall.start_time.asc()).all()
-        return [str(call.id) for call in calls] 
+        return [str(call.id) for call in calls]
+
+    def update_metadata(self, call_id: str, metadata: dict) -> None:
+        """Update the metadata for a function call.
+        
+        Args:
+            call_id: The ID of the function call to update
+            metadata: Dictionary containing metadata to store
+        """
+        try:
+            call = self.session.query(FunctionCall).filter_by(id=call_id).first()
+            if call:
+                # If there's existing metadata, merge it with the new data
+                if call.call_metadata:
+                    call.call_metadata.update(metadata)
+                else:
+                    call.call_metadata = metadata
+                self.session.commit()
+        except Exception as e:
+            print(f"Error updating metadata for call {call_id}: {e}")
+            self.session.rollback() 

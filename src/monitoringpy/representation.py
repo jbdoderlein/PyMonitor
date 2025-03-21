@@ -5,7 +5,7 @@ from enum import Enum
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 import logging
-from .models import StoredObject, ObjectVersion, ObjectIdentity
+from .models import StoredObject, ObjectVersion, ObjectIdentity, CodeObjectLink
 import datetime
 
 # Configure logging
@@ -146,9 +146,11 @@ class ObjectManager:
                 primitive_value=str(obj.value)
             )
         else:
+            # For non-primitive types, use the actual class name of the value
+            actual_type_name = type(obj.value).__name__
             stored_obj = StoredObject(
                 id=ref,
-                type_name=type(obj.value).__name__,
+                type_name=actual_type_name,  # Use the actual class name instead of our representation type
                 is_primitive=False,
                 pickle_data=pickle.dumps(obj.value)
             )
@@ -279,27 +281,73 @@ class ObjectManager:
         else:
             try:
                 return pickle.loads(stored_obj.pickle_data)
-            except (ImportError, AttributeError) as e:
-                # If we can't unpickle due to missing class, try to load it
-                if self.class_loader:
+            except (ImportError, AttributeError, ModuleNotFoundError) as e:
+                # First try to load the class using the stored code if available
+                if self.class_loader is not None and self.code_manager is not None:
                     try:
-                        # Get the code definition for this object
-                        if self.code_manager:
-                            code_info = self.code_manager.get_object_code(ref)
-                            if code_info:
-                                # Load the class
-                                cls = self.class_loader.get_class(code_info['name'], code_info['module_path'])
-                                if cls:
-                                    # Add the class to the module namespace so pickle can find it
-                                    import sys
-                                    module = sys.modules.get(code_info['module_path'])
-                                    if module:
-                                        setattr(module, code_info['name'], cls)
-                                    # Try unpickling again
+                        # Get the code definition through the link table
+                        code_link = self.session.query(CodeObjectLink).filter_by(object_id=stored_obj.id).first()
+                        if code_link:
+                            # Get the complete code info
+                            code_info = self.code_manager.get_code(code_link.definition_id)
+                            if code_info and 'code' in code_info:
+                                # Execute the code directly to recreate the class
+                                namespace = {}
+                                exec(code_info['code'], namespace)
+                                if stored_obj.type_name in namespace:
+                                    # Try unpickling again now that we have recreated the class
                                     return pickle.loads(stored_obj.pickle_data)
-                    except Exception as e2:
-                        logger.warning(f"Error loading class for object {ref}: {e2}")
-                # If we still can't unpickle, raise the original error
+                                # Store the code info for the UnpickleableObject
+                                self._last_code_info = code_info
+                    except Exception as loader_e:
+                        logger.debug(f"Failed to load class from stored code: {loader_e}")
+
+                logger.debug(f"Could not unpickle object of type {stored_obj.type_name}: {e}")
+                # If ClassLoader failed or wasn't available, create a placeholder object
+                class UnpickleableObject:
+                    def __init__(self, type_name, pickle_data=None, code_info=None):
+                        self._type_name = type_name
+                        self._pickle_data = pickle_data
+                        self._code_info = code_info
+                        # Try to get the actual content for lists/tuples
+                        self._content = None
+                        if pickle_data and type_name in ('list', 'tuple'):
+                            try:
+                                # Try to safely unpickle just the content
+                                self._content = pickle.loads(pickle_data)
+                            except:
+                                pass
+                    
+                    def __str__(self):
+                        if self._content is not None:
+                            # For lists/tuples, show the actual content
+                            return str(self._content)
+                        return f"<{self._type_name} (unpickleable)>"
+                    
+                    def __repr__(self):
+                        return self.__str__()
+                    
+                    @property
+                    def __class__(self):
+                        # This allows isinstance() checks to still work with the type name
+                        return type(self._type_name, (), {})
+
+                    @property
+                    def code(self):
+                        """Return code info in the format expected by the web interface"""
+                        if self._code_info:
+                            return {
+                                'name': self._code_info.get('name', self._type_name),
+                                'module_path': self._code_info.get('module_path', 'unknown'),
+                                'code_content': self._code_info.get('code', ''),
+                                'creation_time': self._code_info.get('creation_time', datetime.datetime.now()).isoformat()
+                            }
+                        return None
+                
+                return UnpickleableObject(stored_obj.type_name, stored_obj.pickle_data, 
+                                        getattr(self, '_last_code_info', None))
+            except Exception as e:
+                logger.error(f"Unexpected error unpickling object of type {stored_obj.type_name}: {e}")
                 raise
 
     def next_ref(self, ref: str) -> Optional[str]:

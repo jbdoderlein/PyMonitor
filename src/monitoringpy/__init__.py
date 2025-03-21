@@ -1,5 +1,4 @@
 from .monitoringpy import init_monitoring, pymonitor
-from .generate_graph import generate_dot_graph
 from .models import init_db
 from .db_operations import DatabaseManager
 from .worker import LogWorker

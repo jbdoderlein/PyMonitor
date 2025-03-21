@@ -191,6 +191,16 @@ class PyMonitoring:
             # Capture the return value
             self.call_tracker.capture_return(call_id, return_value)
             
+            # Store PyRAPL results in metadata if available
+            if perf_result:
+                self.call_tracker.update_metadata(call_id, {
+                    "energy_data": {
+                        "package": perf_result["pkg"],
+                        "dram": perf_result["dram"],
+                        "function": perf_result["label"]
+                    }
+                })
+            
             # Commit the changes
             self.session.commit()
         except Exception as e:
