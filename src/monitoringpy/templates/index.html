@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PyMonitor - Function Calls</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        body { padding-top: 20px; }
+        .function-card {
+            margin-bottom: 15px;
+            cursor: pointer;
+        }
+        .function-card:hover {
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        .detail-card { margin-top: 20px; }
+        pre {
+            background-color: #f8f9fa;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        .nav-tabs { margin-bottom: 15px; }
+        .search-box { margin-bottom: 20px; }
+        .loading {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100px;
+        }
+        .spinner-border {
+            width: 3rem;
+            height: 3rem;
+        }
+        .collapsible {
+            cursor: pointer;
+            padding: 2px 5px;
+            background-color: #f1f1f1;
+            border-radius: 3px;
+            display: inline-block;
+            margin: 2px 0;
+        }
+        .collapsible:hover {
+            background-color: #e9e9e9;
+        }
+        .collapsible-content {
+            display: none;  /* Hidden by default */
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-top: none;
+            margin-bottom: 10px;
+        }
+        .object-type {
+            color: #6c757d;
+            font-size: 0.9em;
+        }
+        .object-key {
+            color: #0d6efd;
+            font-weight: bold;
+        }
+        .object-value { color: #198754; }
+        .primitive-value { color: #333; }
+        .string-value { color: #664d03; }
+        .null-value {
+            color: #6c757d;
+            font-style: italic;
+        }
+        .top-level-container {
+            background-color: #f8f9fa;
+            border-radius: 5px;
+            padding: 10px;
+        }
+        .attributes-section {
+            border-left: 4px solid #0d6efd;
+            padding-left: 10px;
+            margin: 5px 0;
+        }
+        .code-definition {
+            background-color: #f8f9fa;
+            border-radius: 5px;
+            margin-top: 10px;
+            padding: 15px;
+        }
+        .code-definition pre {
+            margin-top: 10px;
+            background-color: #ffffff;
+            border: 1px solid #dee2e6;
+            padding: 15px;
+            border-radius: 5px;
+            max-height: 300px;
+            overflow: auto;
+        }
+        .code-info {
+            margin-bottom: 10px;
+            padding: 10px;
+            background-color: #e9ecef;
+            border-radius: 5px;
+        }
+        .object-type {
+            color: #6c757d;
+            font-size: 0.9em;
+            font-style: italic;
+        }
+        .energy-details table {
+            width: auto;
+            margin-bottom: 1rem;
+        }
+        .energy-details th,
+        .energy-details td {
+            padding: 0.3rem 1rem;
+        }
+    </style>
+</head>
+<body>
+    {% include 'navbar.html' %}
+    
+    <div class="container">
+        <header class="mb-4">
+            <h1 class="display-4">PyMonitor Database Explorer</h1>
+            <p class="lead">Exploring database: <span id="db-path" class="fw-bold"></span></p>
+        </header>
+
+        <div class="row">
+            <div class="col-md-12">
+                <div class="card search-box">
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-4">
+                                <div class="input-group">
+                                    <input type="text" id="search-input" class="form-control" placeholder="Search functions...">
+                                    <button class="btn btn-outline-secondary" type="button" id="search-button">
+                                        <i class="bi bi-search"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <select id="file-filter" class="form-select">
+                                    <option value="">All Files</option>
+                                </select>
+                            </div>
+                            <div class="col-md-4">
+                                <select id="function-filter" class="form-select">
+                                    <option value="">All Functions</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="col-md-5">
+                <h2>Function Calls</h2>
+                <div id="function-list" class="list-group">
+                    <div class="loading">
+                        <div class="spinner-border text-primary" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-7">
+                <div id="function-details">
+                    <div class="card">
+                        <div class="card-body text-center">
+                            <h3>Select a function call to view details</h3>
+                            <p class="text-muted">Click on any function call from the list to view its details</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            fetch('/api/db-info')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('db-path').textContent = data.db_path;
+                });
+
+            loadFunctionCalls();
+
+            document.getElementById('search-button').addEventListener('click', loadFunctionCalls);
+            document.getElementById('search-input').addEventListener('keyup', function(event) {
+                if (event.key === 'Enter') loadFunctionCalls();
+            });
+            document.getElementById('file-filter').addEventListener('change', loadFunctionCalls);
+            document.getElementById('function-filter').addEventListener('change', loadFunctionCalls);
+        });
+
+        function loadFunctionCalls() {
+            const searchTerm = document.getElementById('search-input').value;
+            const fileFilter = document.getElementById('file-filter').value;
+            const functionFilter = document.getElementById('function-filter').value;
+            
+            const functionList = document.getElementById('function-list');
+            functionList.innerHTML = `
+                <div class="loading">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                </div>
+            `;
+
+            fetch(`/api/function-calls?search=${searchTerm}&file=${fileFilter}&function=${functionFilter}`)
+                .then(response => response.json())
+                .then(data => {
+                    functionList.innerHTML = '';
+                    
+                    if (data.function_calls.length === 0) {
+                        functionList.innerHTML = `
+                            <div class="card">
+                                <div class="card-body text-center">
+                                    <p class="text-muted">No function calls found</p>
+                                </div>
+                            </div>
+                        `;
+                        return;
+                    }
+
+                    const fileFilter = document.getElementById('file-filter');
+                    const functionFilter = document.getElementById('function-filter');
+                    
+                    if (fileFilter.options.length <= 1) {
+                        const files = [...new Set(data.function_calls.map(call => call.file))];
+                        files.sort().forEach(file => {
+                            const option = document.createElement('option');
+                            option.value = file;
+                            option.textContent = file;
+                            fileFilter.appendChild(option);
+                        });
+                    }
+                    
+                    if (functionFilter.options.length <= 1) {
+                        const functions = [...new Set(data.function_calls.map(call => call.function))];
+                        functions.sort().forEach(func => {
+                            const option = document.createElement('option');
+                            option.value = func;
+                            option.textContent = func;
+                            functionFilter.appendChild(option);
+                        });
+                    }
+
+                    data.function_calls.forEach(call => {
+                        const card = document.createElement('div');
+                        card.className = 'card function-card';
+                        card.dataset.functionId = call.id;
+                        card.innerHTML = `
+                            <div class="card-body">
+                                <h5 class="card-title">${call.function}</h5>
+                                <h6 class="card-subtitle mb-2 text-muted">${call.file}:${call.line}</h6>
+                                <p class="card-text">
+                                    <small class="text-muted">
+                                        ${new Date(call.start_time).toLocaleString()}
+                                        ${call.end_time ? ` - ${new Date(call.end_time).toLocaleString()}` : ''}
+                                    </small>
+                                </p>
+                            </div>
+                        `;
+                        card.addEventListener('click', () => loadFunctionDetails(call.id));
+                        functionList.appendChild(card);
+                    });
+                })
+                .catch(error => {
+                    console.error('Error loading function calls:', error);
+                    functionList.innerHTML = `
+                        <div class="card">
+                            <div class="card-body text-center">
+                                <p class="text-danger">Error loading function calls</p>
+                            </div>
+                        </div>
+                    `;
+                });
+        }
+
+        function loadFunctionDetails(functionId) {
+            const detailsContainer = document.getElementById('function-details');
+            detailsContainer.dataset.functionId = functionId;
+            
+            detailsContainer.innerHTML = `
+                <div class="loading">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                </div>
+            `;
+
+            fetch(`/api/function-call/${functionId}`)
+                .then(response => response.json())
+                .then(data => {
+                    const call = data.function_call;
+                    
+                    let executionTime = '';
+                    if (call.start_time && call.end_time) {
+                        const start = new Date(call.start_time);
+                        const end = new Date(call.end_time);
+                        const diff = end - start;
+                        executionTime = `${diff} ms`;
+                    }
+
+                    detailsContainer.innerHTML = `
+                        <div class="card detail-card">
+                            <div class="card-header">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <div>
+                                        <h3>${call.function}</h3>
+                                        <h6 class="text-muted">${call.file}:${call.line}</h6>
+                                    </div>
+                                    <div>
+                                        ${call.prev_call ? `<button class="btn btn-outline-primary me-2" onclick="loadFunctionDetails('${call.prev_call}')">Previous</button>` : ''}
+                                        ${call.next_call ? `<button class="btn btn-outline-primary" onclick="loadFunctionDetails('${call.next_call}')">Next</button>` : ''}
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="card-body">
+                                <div class="row mb-3">
+                                    <div class="col-md-6">
+                                        <strong>Start Time:</strong> ${new Date(call.start_time).toLocaleString()}
+                                    </div>
+                                    <div class="col-md-6">
+                                        <strong>End Time:</strong> ${call.end_time ? new Date(call.end_time).toLocaleString() : 'N/A'}
+                                    </div>
+                                </div>
+                                <div class="row mb-3">
+                                    <div class="col-md-6">
+                                        <strong>Execution Time:</strong> ${executionTime || 'N/A'}
+                                    </div>
+                                </div>
+
+                                <ul class="nav nav-tabs" id="detailTabs" role="tablist">
+                                    <li class="nav-item" role="presentation">
+                                        <button class="nav-link active" id="locals-tab" data-bs-toggle="tab" data-bs-target="#locals" type="button" role="tab">Locals</button>
+                                    </li>
+                                    <li class="nav-item" role="presentation">
+                                        <button class="nav-link" id="globals-tab" data-bs-toggle="tab" data-bs-target="#globals" type="button" role="tab">Globals</button>
+                                    </li>
+                                    <li class="nav-item" role="presentation">
+                                        <button class="nav-link" id="return-tab" data-bs-toggle="tab" data-bs-target="#return" type="button" role="tab">Return Value</button>
+                                    </li>
+                                </ul>
+                                <div class="tab-content" id="detailTabsContent">
+                                    <div class="tab-pane fade show active" id="locals" role="tabpanel">
+                                        <div id="locals-content" class="mt-3">
+                                            ${formatObjectPretty(call.locals, 'locals', true)}
+                                        </div>
+                                    </div>
+                                    <div class="tab-pane fade" id="globals" role="tabpanel">
+                                        <div id="globals-content" class="mt-3">
+                                            ${formatObjectPretty(call.globals, 'globals', true)}
+                                        </div>
+                                    </div>
+                                    <div class="tab-pane fade" id="return" role="tabpanel">
+                                        <div id="return-content" class="mt-3">
+                                            ${formatObjectPretty(call.return_value, 'return', true)}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Energy information if available -->
+                                <div class="mb-3" id="energy-data-${call.id}" style="display: none;">
+                                    <h6>Energy Consumption:</h6>
+                                    <div class="energy-details">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                    
+                    detailsContainer.dataset.functionId = functionId;
+                    setupCollapsibles();
+                    displayEnergyData(call);
+                })
+                .catch(error => {
+                    console.error('Error loading function details:', error);
+                    detailsContainer.innerHTML = `
+                        <div class="card">
+                            <div class="card-body text-center">
+                                <p class="text-danger">Error loading function details</p>
+                            </div>
+                        </div>
+                    `;
+                });
+        }
+
+        function formatObjectPretty(obj, prefix = '', isTopLevel = false) {
+            if (obj === null || obj === undefined) {
+                return '<span class="null-value">null</span>';
+            }
+            // Handle our new value format
+            if (obj.value !== undefined) {
+                let result = '';
+                
+                if (obj.type) {
+                    result += `<span class="object-type">(${obj.type})</span> `;
+                }
+                
+                result += `<span class="object-value">${escapeHtml(obj.value)}</span>`;
+                
+                if (obj.code) {
+                    const codeId = prefix + '_code_' + Math.random().toString(36).substr(2, 9);
+                    result += `
+                        <div class="collapsible" onclick="toggleCollapsible('${codeId}')">
+                            <i class="bi bi-code-slash"></i> View Class Definition
+                        </div>
+                        <div id="${codeId}" class="collapsible-content code-definition">
+                            <div class="code-info">
+                                <strong>Class:</strong> ${obj.code.name}<br>
+                                <strong>Module:</strong> ${obj.code.module_path}<br>
+                                <strong>Created:</strong> ${new Date(obj.code.creation_time).toLocaleString()}
+                            </div>
+                            <pre><code>${escapeHtml(obj.code.code_content)}</code></pre>
+                        </div>
+                    `;
+                }
+                
+                return result;
+            }
+            
+            if (typeof obj === 'string') {
+                return `<span class="string-value">"${escapeHtml(obj)}"</span>`;
+            }
+            
+            if (typeof obj !== 'object') {
+                return `<span class="primitive-value">${obj}</span>`;
+            }
+            
+            if (Array.isArray(obj)) {
+                if (obj.length === 0) return '[]';
+                
+                const uniqueId = prefix + '_array_' + Math.random().toString(36).substr(2, 9);
+                let result = `<div class="collapsible" onclick="toggleCollapsible('${uniqueId}')">Array(${obj.length})</div>`;
+                result += `<div id="${uniqueId}" class="collapsible-content">`;
+                
+                obj.forEach((item, i) => {
+                    result += `<div>[${i}]: ${formatObjectPretty(item, uniqueId + '_' + i)}</div>`;
+                });
+                
+                result += '</div>';
+                return result;
+            }
+            
+            const keys = Object.keys(obj);
+            if (keys.length === 0) return '{}';
+            
+            return formatObjectEntriesPretty(obj, keys, prefix, isTopLevel);
+        }
+
+        function formatObjectEntriesPretty(obj, keys, prefix, isTopLevel = false) {
+            if (isTopLevel) {
+                let result = `<div class="top-level-container">`;
+                
+                for (const key of keys) {
+                    if (key.startsWith('_')) continue;
+                    
+                    const value = obj[key];
+                    const formattedValue = formatObjectPretty(value, prefix + '_' + key);
+                    result += `<div><span class="object-key">${key}</span>: ${formattedValue}</div>`;
+                }
+                
+                result += '</div>';
+                return result;
+            }
+            
+            const uniqueId = prefix + '_obj_' + Math.random().toString(36).substr(2, 9);
+            let objType = obj.type || 'Object';
+            
+            let result = `<div class="collapsible" onclick="toggleCollapsible('${uniqueId}')">${objType} {${keys.length} properties}</div>`;
+            result += `<div id="${uniqueId}" class="collapsible-content">`;
+            
+            // Show attributes section first if it exists
+            if (obj.attributes) {
+                result += `<div class="attributes-section">`;
+                for (const [key, value] of Object.entries(obj.attributes)) {
+                    const formattedValue = formatObjectPretty(value, uniqueId + '_attr_' + key);
+                    result += `<div><span class="object-key">${key}</span>: ${formattedValue}</div>`;
+                }
+                result += '</div>';
+            }
+            
+            // Show other properties
+            for (const key of keys) {
+                if (key.startsWith('_') || key === 'attributes') continue;
+                
+                const value = obj[key];
+                const formattedValue = formatObjectPretty(value, uniqueId + '_' + key);
+                result += `<div><span class="object-key">${key}</span>: ${formattedValue}</div>`;
+            }
+            
+            result += '</div>';
+            return result;
+        }
+
+        function escapeHtml(str) {
+            return str
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+
+        function toggleCollapsible(id) {
+            const content = document.getElementById(id);
+            if (content) {
+                content.style.display = content.style.display === 'block' ? 'none' : 'block';
+            }
+        }
+
+        function setupCollapsibles() {
+            // Show top-level objects and their attributes sections
+            const topLevelObjects = document.querySelectorAll('.top-level-container > div > .collapsible-content');
+            topLevelObjects.forEach(obj => {
+                obj.style.display = 'block';
+                
+                // Show attributes sections within this object
+                const attributesSection = obj.querySelector('.attributes-section');
+                if (attributesSection) {
+                    attributesSection.style.display = 'block';
+                }
+                
+                // Hide all other collapsible content
+                const otherCollapsibles = obj.querySelectorAll('.collapsible-content:not(.attributes-section)');
+                otherCollapsibles.forEach(collapsible => {
+                    collapsible.style.display = 'none';
+                });
+            });
+        }
+
+        function displayEnergyData(call) {
+            const energyDiv = document.getElementById(`energy-data-${call.id}`);
+            if (call.energy_data) {
+                const energyDetails = energyDiv.querySelector('.energy-details');
+                let html = '<table class="table table-sm">';
+                html += '<thead><tr><th>Domain</th><th>Energy (Joules)</th></tr></thead><tbody>';
+                
+                for (const [domain, value] of Object.entries(call.energy_data)) {
+                    html += `<tr>
+                        <td>${domain}</td>
+                        <td>${typeof value === 'number' ? value.toFixed(6) : value}</td>
+                    </tr>`;
+                }
+                
+                html += '</tbody></table>';
+                energyDetails.innerHTML = html;
+                energyDiv.style.display = 'block';
+            }
+        }
+    </script>
+</body>
+</html>

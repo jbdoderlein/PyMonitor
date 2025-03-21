@@ -1,0 +1,186 @@
+from sqlalchemy import Column, String, DateTime, Integer, ForeignKey, create_engine, LargeBinary, Boolean, JSON, Text
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, relationship
+from sqlalchemy.sql import func
+import datetime
+import os
+import logging
+import sqlite3
+import shutil
+
+# Configure logging
+logger = logging.getLogger(__name__)
+
+Base = declarative_base()
+
+class StoredObject(Base):
+    """Model for storing objects"""
+    __tablename__ = 'stored_objects'
+
+    id = Column(String, primary_key=True)
+    type_name = Column(String, nullable=False)
+    is_primitive = Column(Boolean, nullable=False)
+    primitive_value = Column(String, nullable=True)
+    pickle_data = Column(LargeBinary, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.now)
+
+    # Relationships
+    versions = relationship("ObjectVersion", back_populates="object", cascade="all, delete-orphan")
+    identities = relationship("ObjectIdentity", back_populates="latest_version")
+
+class ObjectVersion(Base):
+    """Model for tracking object versions"""
+    __tablename__ = 'object_versions'
+
+    id = Column(Integer, primary_key=True)
+    object_id = Column(String, ForeignKey('stored_objects.id'), nullable=False)
+    identity_id = Column(Integer, ForeignKey('object_identities.id'), nullable=False)
+    version_number = Column(Integer, nullable=False)
+    timestamp = Column(DateTime, default=datetime.datetime.now)
+
+    # Relationships
+    object = relationship("StoredObject", back_populates="versions")
+    identity = relationship("ObjectIdentity", back_populates="versions")
+
+class ObjectIdentity(Base):
+    """Model for tracking object identity across versions"""
+    __tablename__ = 'object_identities'
+
+    id = Column(Integer, primary_key=True)
+    identity_hash = Column(String, unique=True, nullable=False)
+    name = Column(String, nullable=True)
+    creation_time = Column(DateTime, default=datetime.datetime.now)
+    latest_version_id = Column(String, ForeignKey('stored_objects.id'), nullable=True)
+
+    # Relationships
+    latest_version = relationship("StoredObject", back_populates="identities")
+    versions = relationship("ObjectVersion", back_populates="identity", cascade="all, delete-orphan")
+
+class FunctionCall(Base):
+    """Model for storing function call information"""
+    __tablename__ = 'function_calls'
+
+    id = Column(Integer, primary_key=True)
+    function = Column(String, nullable=False)
+    file = Column(String, nullable=True)
+    line = Column(Integer, nullable=True)
+    start_time = Column(DateTime, nullable=False)
+    end_time = Column(DateTime, nullable=True)
+    call_metadata = Column(JSON, nullable=True)  # For storing additional data like PyRAPL measurements
+    
+    # Store references to objects
+    locals_refs = Column(JSON, nullable=False, default=dict)  # Dict[str, str] mapping variable names to object refs
+    globals_refs = Column(JSON, nullable=False, default=dict)  # Dict[str, str] mapping variable names to object refs
+    return_ref = Column(String, nullable=True)  # Reference to return value in object manager
+
+class CodeDefinition(Base):
+    """Represents a code definition (class, function, etc.)."""
+    __tablename__ = 'code_definitions'
+
+    id = Column(String, primary_key=True)  # Hash of the code content
+    name = Column(String, nullable=False)  # Class/function name
+    type = Column(String, nullable=False)  # 'class' or 'function'
+    module_path = Column(String, nullable=False)  # Full module path
+    code_content = Column(Text, nullable=False)  # The actual code
+    creation_time = Column(DateTime, server_default=func.now())
+    
+    # Relationships
+    versions = relationship("CodeVersion", back_populates="definition", cascade="all, delete-orphan")
+    objects = relationship("StoredObject", secondary="code_object_links")
+
+class CodeVersion(Base):
+    """Represents a version of a code definition."""
+    __tablename__ = 'code_versions'
+
+    id = Column(Integer, primary_key=True)
+    definition_id = Column(String, ForeignKey('code_definitions.id'), nullable=False)
+    version_number = Column(Integer, nullable=False)
+    timestamp = Column(DateTime, server_default=func.now())
+    git_commit = Column(String)  # Optional link to git commit
+    git_repo = Column(String)    # Optional link to git repository
+    
+    # Relationships
+    definition = relationship("CodeDefinition", back_populates="versions")
+
+class CodeObjectLink(Base):
+    """Links objects to their code definitions."""
+    __tablename__ = 'code_object_links'
+
+    id = Column(Integer, primary_key=True)
+    object_id = Column(String, ForeignKey('stored_objects.id'), nullable=False)
+    definition_id = Column(String, ForeignKey('code_definitions.id'), nullable=False)
+    timestamp = Column(DateTime, server_default=func.now())
+
+def init_db(db_path):
+    """Initialize the database and return session factory"""
+    # Ensure we have an absolute path
+    db_path = os.path.abspath(db_path)
+    
+    # Create the directory if it doesn't exist
+    db_dir = os.path.dirname(db_path)
+    if db_dir and not os.path.exists(db_dir):
+        os.makedirs(db_dir)
+    
+    try:
+        # Check if the database file exists and is valid
+        if os.path.exists(db_path):
+            try:
+                # Try to open the database to check if it's valid
+                conn = sqlite3.connect(db_path)
+                # Try a simple query to verify the database is functional
+                cursor = conn.cursor()
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                cursor.fetchall()
+                conn.close()
+                logger.info(f"Successfully connected to existing database at {db_path}")
+            except sqlite3.Error as e:
+                # If there's an error, the database might be corrupted
+                logger.error(f"Error connecting to database: {e}")
+                logger.warning(f"Database at {db_path} might be corrupted. Creating backup and new database.")
+                
+                # Create a backup of the potentially corrupted database
+                backup_path = f"{db_path}.backup.{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
+                try:
+                    shutil.copy2(db_path, backup_path)
+                    logger.info(f"Created backup of potentially corrupted database at {backup_path}")
+                    # Remove the original file to create a fresh database
+                    os.remove(db_path)
+                except OSError as e:
+                    logger.error(f"Failed to create backup: {e}")
+                    # If we can't create a backup, try to remove the file
+                    try:
+                        os.remove(db_path)
+                        logger.info(f"Removed potentially corrupted database at {db_path}")
+                    except OSError as e2:
+                        logger.error(f"Failed to remove corrupted database: {e2}")
+                        raise RuntimeError(f"Cannot create or access database at {db_path}. Please check file permissions.")
+    except Exception as e:
+        logger.error(f"Unexpected error during database initialization: {e}")
+    
+    # Use a standard SQLite connection string with absolute path
+    engine = create_engine(
+        f'sqlite:///{db_path}', 
+        connect_args={
+            'check_same_thread': False,
+            'timeout': 60  # Increase SQLite timeout to 60 seconds (default is 5)
+        },
+        # Increase pool size and overflow to handle more connections
+        pool_size=20,  # Default is 5
+        max_overflow=20,  # Default is 10
+        pool_timeout=60,  # Default is 30
+        pool_recycle=1800  # Recycle connections after 30 minutes
+    )
+    
+    try:
+        # Create tables if they don't exist
+        Base.metadata.create_all(engine)
+        logger.info("Database schema created successfully")
+    except Exception as e:
+        logger.error(f"Error creating database schema: {e}")
+        raise
+    
+    # Create and return session factory
+    # Set expire_on_commit=False to prevent objects from being expired after commit
+    # This helps prevent "Parent instance is not bound to a Session" errors
+    Session = sessionmaker(bind=engine, expire_on_commit=False)
+    return Session 

@@ -7,8 +7,8 @@ def main():
         description='Generate execution graph from monitoring data'
     )
     parser.add_argument(
-        'input_file',
-        help='Input JSONL file containing monitoring data'
+        'db_path',
+        help='SQLite database file containing monitoring data'
     )
     parser.add_argument(
         '-o', '--output',
@@ -24,7 +24,7 @@ def main():
     args = parser.parse_args()
 
     # Generate DOT file
-    generate_dot_graph(args.input_file, args.output)
+    generate_dot_graph(args.db_path, args.output)
     print(f"Generated DOT file: {args.output}")
 
     # Optionally generate PNG
