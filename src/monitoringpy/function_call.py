@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 import datetime
 import inspect
 from .representation import ObjectManager
-from .models import StoredObject, FunctionCall
+from .models import StoredObject, FunctionCall, StackSnapshot
 
 class FunctionCallInfo(TypedDict):
     """Type definition for function call information"""
@@ -86,9 +86,10 @@ class FunctionCallTracker:
             return_ref = self.object_manager.store(return_value)
             call.return_ref = return_ref
             call.end_time = datetime.datetime.now()
-            self.session.flush()
+            self.session.commit()
         except Exception as e:
             print(f"Warning: Could not store return value: {e}")
+            self.session.rollback()
 
     def get_call(self, call_id: str) -> FunctionCallInfo:
         """
@@ -158,4 +159,55 @@ class FunctionCallTracker:
                 self.session.commit()
         except Exception as e:
             print(f"Error updating metadata for call {call_id}: {e}")
-            self.session.rollback() 
+            self.session.rollback()
+
+    def create_stack_snapshot(self, call_id: str, line_number: int, locals_dict: Dict[str, str], globals_dict: Dict[str, str]) -> StackSnapshot:
+        """
+        Create a new stack snapshot for a function call at a specific line.
+        
+        Args:
+            call_id: The ID of the function call
+            line_number: The line number where the snapshot was taken
+            locals_dict: Dictionary of local variable references
+            globals_dict: Dictionary of global variable references
+            
+        Returns:
+            The created StackSnapshot object
+        """
+        try:
+            # Get the function call
+            call = self.session.query(FunctionCall).filter(FunctionCall.id == int(call_id)).first()
+            if not call:
+                raise ValueError(f"Function call {call_id} not found")
+            
+            # Create new snapshot
+            snapshot = StackSnapshot(
+                function_call_id=int(call_id),
+                line_number=line_number,
+                locals_refs=locals_dict,
+                globals_refs=globals_dict
+            )
+            
+            self.session.add(snapshot)
+            self.session.flush()  # This will assign an ID to the snapshot
+            
+            # Check if this is the first snapshot for this call
+            if call.first_snapshot_id is None:
+                # This is the first snapshot
+                call.first_snapshot_id = snapshot.id
+            else:
+                # Get the last snapshot and link them
+                last_snapshot = (self.session.query(StackSnapshot)
+                               .filter(StackSnapshot.function_call_id == int(call_id))
+                               .filter(StackSnapshot.next_snapshot_id.is_(None))
+                               .first())
+                if last_snapshot:
+                    last_snapshot.next_snapshot_id = snapshot.id
+                    snapshot.previous_snapshot_id = last_snapshot.id
+            
+            self.session.commit()
+            return snapshot
+            
+        except Exception as e:
+            self.session.rollback()
+            raise ValueError(f"Failed to create stack snapshot: {e}") 

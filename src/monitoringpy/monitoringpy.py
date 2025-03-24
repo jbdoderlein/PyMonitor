@@ -10,7 +10,6 @@ import traceback
 from sqlalchemy import text
 from .models import init_db
 from .function_call import FunctionCallTracker
-from .worker import LogWorker
 
 # Configure logging - only show warnings and errors
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -96,6 +95,13 @@ class PyMonitoring:
                 sys.monitoring.events.PY_RETURN,
                 self.monitor_callback_function_return
             )
+
+            sys.monitoring.register_callback(
+                self.MONITOR_TOOL_ID,
+                sys.monitoring.events.LINE,
+                self.monitor_callback_line
+            )
+            
             logger.info("Registered monitoring callbacks")
             print("Registered callbacks")
         except Exception as e:
@@ -234,15 +240,85 @@ class PyMonitoring:
         
         return globals_used
 
+    def monitor_callback_line(self, code: types.CodeType, line_number):
+        """Callback function for line events"""
+        if self.call_tracker is None:
+            return
+
+        current_frame = inspect.currentframe()
+        if current_frame is None or current_frame.f_back is None:
+            return
+            
+        # The parent frame should be the actual function being executed
+        frame = current_frame.f_back
+        
+        try:
+            # Get the current function call from the stack
+            if not self.call_id_stack:
+                return
+            current_call_id = self.call_id_stack[-1]
+            
+            # Get function's locals and globals
+            function_locals = {}
+            globals_used = {}
+            
+            # Capture locals
+            for name, value in frame.f_locals.items():
+                try:
+                    ref = self.call_tracker.object_manager.store(value)
+                    function_locals[name] = ref
+                except Exception as e:
+                    logger.warning(f"Failed to store local variable {name}: {e}")
+            
+            # Capture used globals
+            for name, value in self.get_used_globals(code, frame.f_globals).items():
+                try:
+                    ref = self.call_tracker.object_manager.store(value)
+                    globals_used[name] = ref
+                except Exception as e:
+                    logger.warning(f"Failed to store global variable {name}: {e}")
+            
+            # Create a new stack snapshot
+            snapshot = self.call_tracker.create_stack_snapshot(
+                current_call_id,
+                line_number,
+                function_locals,
+                globals_used
+            )
+            
+            # Log for debugging
+            logger.debug(f"Created stack snapshot for line {line_number} in function {code.co_name}")
+            
+        except Exception as e:
+            logger.error(f"Error in line monitoring callback: {e}")
+            logger.error(traceback.format_exc())
+
 
 def pymonitor(func):
     """
     Decorator to monitor the execution of a function.
+    Args:
+        line (bool): Whether to monitor line-by-line execution
+    """
+
+    if sys.monitoring.get_tool(sys.monitoring.PROFILER_ID) is None:
+        sys.monitoring.use_tool_id(sys.monitoring.PROFILER_ID, "py_monitoring")
+    events = sys.monitoring.events.PY_START | sys.monitoring.events.PY_RETURN
+    sys.monitoring.set_local_events(sys.monitoring.PROFILER_ID, func.__code__, events)
+    return func
+
+def pymonitor_line(func):
+    """
+    Decorator to monitor line-by-line execution of a function.
+    Args:
+        func (function): The function to monitor
     """
     if sys.monitoring.get_tool(sys.monitoring.PROFILER_ID) is None:
         sys.monitoring.use_tool_id(sys.monitoring.PROFILER_ID, "py_monitoring")
-    sys.monitoring.set_local_events(sys.monitoring.PROFILER_ID, func.__code__, sys.monitoring.events.PY_START | sys.monitoring.events.PY_RETURN)
+    events = sys.monitoring.events.LINE | sys.monitoring.events.PY_START | sys.monitoring.events.PY_RETURN
+    sys.monitoring.set_local_events(sys.monitoring.PROFILER_ID, func.__code__, events)
     return func
+
 
 def init_monitoring(*args, **kwargs):
     print("Initializing monitoring")

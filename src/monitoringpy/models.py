@@ -56,6 +56,26 @@ class ObjectIdentity(Base):
     latest_version = relationship("StoredObject", back_populates="identities")
     versions = relationship("ObjectVersion", back_populates="identity", cascade="all, delete-orphan")
 
+class StackSnapshot(Base):
+    """Model for storing stack state at each line execution"""
+    __tablename__ = 'stack_snapshots'
+
+    id = Column(Integer, primary_key=True)
+    function_call_id = Column(Integer, ForeignKey('function_calls.id'), nullable=False)
+    line_number = Column(Integer, nullable=False)
+    timestamp = Column(DateTime, default=datetime.datetime.now)
+    locals_refs = Column(JSON, nullable=False, default=dict)  # Dict[str, str] mapping variable names to object refs
+    globals_refs = Column(JSON, nullable=False, default=dict)  # Dict[str, str] mapping variable names to object refs
+    
+    # Linked list structure
+    previous_snapshot_id = Column(Integer, ForeignKey('stack_snapshots.id'), nullable=True)
+    next_snapshot_id = Column(Integer, ForeignKey('stack_snapshots.id'), nullable=True)
+    
+    # Relationships
+    function_call = relationship("FunctionCall", foreign_keys=[function_call_id], back_populates="stack_trace")
+    previous_snapshot = relationship("StackSnapshot", foreign_keys=[previous_snapshot_id], remote_side=[id], backref="next_snapshot_ref")
+    next_snapshot = relationship("StackSnapshot", foreign_keys=[next_snapshot_id], remote_side=[id], backref="previous_snapshot_ref")
+
 class FunctionCall(Base):
     """Model for storing function call information"""
     __tablename__ = 'function_calls'
@@ -72,6 +92,13 @@ class FunctionCall(Base):
     locals_refs = Column(JSON, nullable=False, default=dict)  # Dict[str, str] mapping variable names to object refs
     globals_refs = Column(JSON, nullable=False, default=dict)  # Dict[str, str] mapping variable names to object refs
     return_ref = Column(String, nullable=True)  # Reference to return value in object manager
+
+    # Reference to the first stack snapshot (if line monitoring is enabled)
+    first_snapshot_id = Column(Integer, ForeignKey('stack_snapshots.id'), nullable=True)
+    
+    # Relationships
+    stack_trace = relationship("StackSnapshot", foreign_keys=[StackSnapshot.function_call_id], back_populates="function_call")
+    first_snapshot = relationship("StackSnapshot", foreign_keys=[first_snapshot_id], overlaps="stack_trace")
 
 class CodeDefinition(Base):
     """Represents a code definition (class, function, etc.)."""

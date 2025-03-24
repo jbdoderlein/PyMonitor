@@ -25,7 +25,7 @@ except ImportError:
     sys.exit(1)
 
 from sqlalchemy.orm import Session
-from .models import init_db, StoredObject
+from .models import init_db, StoredObject, FunctionCall, StackSnapshot
 from .function_call import FunctionCallTracker, FunctionCallInfo
 from .representation import Object, Primitive, List, DictObject, CustomClass, ObjectManager
 
@@ -219,9 +219,15 @@ def serialize_call_info(call_info: FunctionCallInfo) -> Dict[str, Any]:
         raise
 
 def create_app(tracker: FunctionCallTracker):
+    global call_tracker, session, object_manager
+    
     app = Flask(__name__)
     app.json_encoder = CustomJSONEncoder  # Use our custom encoder
     CORS(app)
+    
+    call_tracker = tracker
+    session = tracker.session
+    object_manager = tracker.object_manager
 
     @app.route('/')
     def index():
@@ -231,6 +237,97 @@ def create_app(tracker: FunctionCallTracker):
     def graph():
         print("Rendering graph.html")
         return render_template('graph.html')
+
+    @app.route('/stack-traces')
+    def stack_traces():
+        """View for listing functions with stack traces"""
+        return render_template('stack_traces.html')
+
+    @app.route('/api/functions-with-traces')
+    def get_functions_with_traces():
+        """Get list of functions that have stack traces"""
+        try:
+            # Query for functions that have stack traces
+            functions = (session.query(FunctionCall)
+                       .filter(FunctionCall.first_snapshot_id.isnot(None))
+                       .all())
+            
+            result = []
+            for func in functions:
+                result.append({
+                    'id': func.id,
+                    'name': func.function,
+                    'file': func.file,
+                    'line': func.line,
+                    'start_time': func.start_time.isoformat(),
+                    'end_time': func.end_time.isoformat() if func.end_time else None,
+                    'snapshot_count': len(func.stack_trace)
+                })
+            
+            return jsonify(result)
+        except Exception as e:
+            logger.error(f"Error getting functions with traces: {e}")
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/stack-trace/<function_id>')
+    def get_stack_trace(function_id):
+        """Get the stack trace for a specific function call"""
+        try:
+            function = session.query(FunctionCall).get(function_id)
+            if not function or not function.first_snapshot:
+                return jsonify({'error': 'Function call not found or has no stack trace'}), 404
+            
+            # Build the trace by following the linked list
+            trace = []
+            current = function.first_snapshot
+            while current:
+                snapshot = {
+                    'id': current.id,
+                    'line': current.line_number,
+                    'timestamp': current.timestamp.isoformat(),
+                    'locals': {
+                        name: serialize_stored_value(ref)
+                        for name, ref in current.locals_refs.items()
+                    },
+                    'globals': {
+                        name: serialize_stored_value(ref)
+                        for name, ref in current.globals_refs.items()
+                    }
+                }
+                trace.append(snapshot)
+                current = current.next_snapshot
+            
+            return jsonify(trace)
+        except Exception as e:
+            logger.error(f"Error getting stack trace: {e}")
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/snapshot/<snapshot_id>')
+    def get_snapshot(snapshot_id):
+        """Get detailed information about a specific stack snapshot"""
+        try:
+            snapshot = session.query(StackSnapshot).get(snapshot_id)
+            if not snapshot:
+                return jsonify({'error': 'Snapshot not found'}), 404
+            
+            result = {
+                'id': snapshot.id,
+                'line': snapshot.line_number,
+                'timestamp': snapshot.timestamp.isoformat(),
+                'locals': {
+                    name: serialize_stored_value(ref)
+                    for name, ref in snapshot.locals_refs.items()
+                },
+                'globals': {
+                    name: serialize_stored_value(ref)
+                    for name, ref in snapshot.globals_refs.items()
+                }
+            }
+            
+            return jsonify(result)
+        except Exception as e:
+            logger.error(f"Error getting snapshot: {e}")
+            return jsonify({'error': str(e)}), 500
 
     @app.route('/api/object-graph')
     def get_object_graph():
