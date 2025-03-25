@@ -1,0 +1,340 @@
+{% extends "base.html" %}
+
+{% block head %}
+<!-- Load vis-network from jsDelivr instead of cdnjs -->
+<script type="text/javascript" src="https://cdn.jsdelivr.net/npm/vis-network@9.1.6/dist/vis-network.min.js"></script>
+<link href="https://cdn.jsdelivr.net/npm/vis-network@9.1.6/dist/dist/vis-network.min.css" rel="stylesheet" type="text/css" />
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid stack-trace-container">
+    <div class="row mb-3">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h4 class="mb-0">Compare Stack Traces</h4>
+                    <div class="d-flex align-items-center">
+                        <select id="function-select" class="form-select me-2">
+                            <option value="">Select a function...</option>
+                        </select>
+                        <div id="trace-selects" class="d-flex gap-2">
+                            <!-- Trace selects will be added here -->
+                        </div>
+                        <button id="add-trace" class="btn btn-outline-primary ms-2" disabled>
+                            <i class="bi bi-plus"></i> Add Trace
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-body">
+                    <div id="graph-container" style="height: calc(100vh - 200px);"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let network = null;
+let traces = new Map(); // Map of trace ID to trace data
+let selectedFunction = null;
+
+document.addEventListener('DOMContentLoaded', function() {
+    loadFunctions();
+    setupEventListeners();
+});
+
+async function loadFunctions() {
+    try {
+        const response = await fetch('/api/functions-with-traces');
+        const functions = await response.json();
+        
+        const select = document.getElementById('function-select');
+        functions.forEach(func => {
+            const option = document.createElement('option');
+            option.value = func.id;
+            option.textContent = `${func.name} (${func.file}:${func.line}) - ${func.trace_count} traces`;
+            select.appendChild(option);
+        });
+    } catch (error) {
+        console.error('Error loading functions:', error);
+    }
+}
+
+function setupEventListeners() {
+    const functionSelect = document.getElementById('function-select');
+    const addTraceBtn = document.getElementById('add-trace');
+    
+    functionSelect.addEventListener('change', async function() {
+        selectedFunction = this.value;
+        addTraceBtn.disabled = !selectedFunction;
+        if (selectedFunction) {
+            await loadTraces(selectedFunction);
+            updateTraceSelects();
+        }
+    });
+    
+    addTraceBtn.addEventListener('click', function() {
+        addTraceSelect();
+    });
+}
+
+async function loadTraces(functionId) {
+    try {
+        const response = await fetch(`/api/function-traces/${functionId}`);
+        const data = await response.json();
+        traces.clear();
+        data.traces.forEach(trace => {
+            traces.set(trace.id, trace);
+        });
+    } catch (error) {
+        console.error('Error loading traces:', error);
+    }
+}
+
+function addTraceSelect() {
+    const container = document.getElementById('trace-selects');
+    const select = document.createElement('select');
+    select.className = 'form-select trace-select';
+    
+    const defaultOption = document.createElement('option');
+    defaultOption.value = '';
+    defaultOption.textContent = 'Select trace...';
+    select.appendChild(defaultOption);
+    
+    traces.forEach((trace, id) => {
+        const option = document.createElement('option');
+        option.value = id;
+        option.textContent = `Trace ${id} (${new Date(trace.timestamp).toLocaleString()})`;
+        select.appendChild(option);
+    });
+    
+    select.addEventListener('change', updateGraph);
+    container.appendChild(select);
+}
+
+function updateTraceSelects() {
+    const container = document.getElementById('trace-selects');
+    container.innerHTML = '';
+    addTraceSelect(); // Add initial trace select
+}
+
+function updateGraph() {
+    const selectedTraces = Array.from(document.querySelectorAll('.trace-select'))
+        .map(select => select.value)
+        .filter(value => value !== '');
+    
+    if (selectedTraces.length === 0) return;
+    
+    const nodes = new vis.DataSet();
+    const edges = new vis.DataSet();
+    
+    // Track nodes by line number for linking similar states
+    const lineToNodes = new Map();
+    
+    // Fixed spacing values
+    const horizontalSpacing = 150; // Increased fixed spacing between nodes
+    const verticalSpacing = 300;   // Spacing between traces
+    
+    selectedTraces.forEach((traceId, traceIndex) => {
+        const trace = traces.get(parseInt(traceId));
+        const snapshots = trace.snapshots;
+        
+        snapshots.forEach((snapshot, index) => {
+            const nodeId = `${traceId}-${index}`;
+            const node = {
+                id: nodeId,
+                label: `Line ${snapshot.line}`,
+                group: traceIndex,
+                // Position nodes with fixed spacing, ignoring canvas size
+                y: traceIndex * verticalSpacing,
+                x: index * horizontalSpacing,
+                physics: false
+            };
+            nodes.add(node);
+            
+            // Store node reference by line number for linking similar states
+            if (!lineToNodes.has(snapshot.line)) {
+                lineToNodes.set(snapshot.line, []);
+            }
+            lineToNodes.get(snapshot.line).push(nodeId);
+            
+            // Add edge to next snapshot in same trace
+            if (index < snapshots.length - 1) {
+                edges.add({
+                    from: nodeId,
+                    to: `${traceId}-${index + 1}`,
+                    arrows: 'to',
+                    color: { color: getTraceColor(traceIndex) },
+                    smooth: {
+                        type: 'curvedCW',
+                        roundness: 0.2
+                    }
+                });
+            }
+        });
+    });
+    
+    // Add dotted edges between similar states
+    lineToNodes.forEach((nodeIds) => {
+        if (nodeIds.length > 1) {
+            for (let i = 0; i < nodeIds.length - 1; i++) {
+                edges.add({
+                    from: nodeIds[i],
+                    to: nodeIds[i + 1],
+                    dashes: true,
+                    color: { color: '#999999' },
+                    arrows: {
+                        to: {
+                            enabled: false
+                        }
+                    },
+                    smooth: {
+                        type: 'curvedCW',
+                        roundness: 0.3
+                    }
+                });
+            }
+        }
+    });
+    
+    const container = document.getElementById('graph-container');
+    const data = { nodes, edges };
+    const options = {
+        layout: {
+            hierarchical: false
+        },
+        physics: {
+            enabled: false
+        },
+        nodes: {
+            shape: 'box',
+            margin: 12,
+            widthConstraint: {
+                minimum: 100  // Increased minimum width
+            },
+            heightConstraint: {
+                minimum: 40   // Increased minimum height
+            },
+            font: {
+                size: 16,
+                color: '#ffffff'
+            },
+            fixed: {
+                x: false,
+                y: false
+            }
+        },
+        edges: {
+            smooth: {
+                type: 'curvedCW',
+                roundness: 0.2
+            },
+            length: 250  // Match horizontal spacing
+        },
+        interaction: {
+            dragNodes: true,
+            dragView: true,
+            zoomView: true
+        },
+        groups: createGroups(selectedTraces.length)
+    };
+    
+    if (network) {
+        network.destroy();
+    }
+    network = new vis.Network(container, data, options);
+    
+    // Add hover event to show variable details
+    network.on('hoverNode', function(params) {
+        const nodeId = params.node;
+        const [traceId, index] = nodeId.split('-');
+        const trace = traces.get(parseInt(traceId));
+        const snapshot = trace.snapshots[parseInt(index)];
+        
+        // Show variables in a tooltip
+        const variables = formatVariables(snapshot.locals);
+        network.body.nodes[nodeId].options.title = variables;
+    });
+
+    // After graph is created, fit the view with some padding
+    network.once('afterDrawing', function() {
+        network.fit({
+            animation: true,
+            padding: 50
+        });
+    });
+
+    // Add double-click handler to toggle physics
+    network.on('doubleClick', function() {
+        const physics = !network.physics.options.enabled;
+        network.setOptions({ physics: { enabled: physics } });
+    });
+}
+
+function formatVariables(variables) {
+    return Object.entries(variables)
+        .map(([name, data]) => `${name}: ${data.value}`)
+        .join('\n');
+}
+
+function getTraceColor(index) {
+    const colors = ['#e41a1c', '#377eb8', '#4daf4a', '#984ea3', '#ff7f00'];
+    return colors[index % colors.length];
+}
+
+function createGroups(count) {
+    const groups = {};
+    for (let i = 0; i < count; i++) {
+        const color = getTraceColor(i);
+        groups[i] = {
+            color: {
+                background: color,
+                border: color,
+                highlight: { background: color, border: '#ffffff' }
+            }
+        };
+    }
+    return groups;
+}
+</script>
+
+<style>
+    /* Container styles */
+    body {
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        height: 100vh;
+    }
+
+    .stack-trace-container {
+        height: 100vh;
+        padding: 1rem;
+        overflow: hidden;
+    }
+
+    /* Form control styles */
+    .form-select {
+        max-width: 300px;
+    }
+
+    .trace-select {
+        max-width: 200px;
+    }
+
+    /* Graph container styles */
+    #graph-container {
+        border: 1px solid #dee2e6;
+        border-radius: 0.25rem;
+    }
+</style>
+{% endblock %} 

@@ -6,8 +6,9 @@
     <title>PyMonitor - Function Calls</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/atom-one-dark.min.css">
     <style>
-        body { padding-top: 20px; }
+        body { padding-top: 0px; }
         .function-card {
             margin-bottom: 15px;
             cursor: pointer;
@@ -110,6 +111,17 @@
         .energy-details td {
             padding: 0.3rem 1rem;
         }
+        .debug-info {
+            background-color: #fef9c3;
+            border: 1px solid #facc15;
+            padding: 10px 15px;
+            margin-bottom: 15px;
+            border-radius: 5px;
+        }
+        .selected-function {
+            background-color: #e2f0fd;
+            border-left: 4px solid #0d6efd;
+        }
     </style>
 </head>
 <body>
@@ -174,9 +186,198 @@
         </div>
     </div>
 
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/languages/python.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
+        function safeStringify(obj) {
+            try {
+                return JSON.stringify(obj, null, 2);
+            } catch (error) {
+                console.error("Error stringifying object:", error);
+                return `<Error stringifying object: ${error.message}>`;
+            }
+        }
+
+        function createCollapsibleValue(value, maxLength = 500) {
+            try {
+                console.log('Creating collapsible value:', typeof value);
+                
+                // Handle null or undefined
+                if (value === null || value === undefined) {
+                    return '<span class="text-muted">null</span>';
+                }
+                
+                // Handle error messages (already formatted as strings)
+                if (typeof value === 'string' && value.startsWith('<Error')) {
+                    return `<span class="text-danger">${value}</span>`;
+                }
+                
+                // Handle the specific object format from our backend
+                if (typeof value === 'object' && value.type && value.hasOwnProperty('value')) {
+                    // For primitive types, display in a more concise way
+                    const isPrimitive = ['int', 'float', 'bool', 'str', 'NoneType'].includes(value.type);
+                    
+                    if (isPrimitive) {
+                        let valueDisplay = value.value;
+                        
+                        // Format string values
+                        if (value.type === 'str') {
+                            if (value.value.length > maxLength) {
+                                const uniqueId = Math.random().toString(36).substr(2, 9);
+                                return `
+                                    <span class="badge bg-secondary">${value.type}</span>
+                                    <button class="btn btn-sm btn-outline-secondary" type="button" onclick="toggleCollapsible('value-${uniqueId}')">
+                                        String (${value.value.length} chars)
+                                    </button>
+                                    <div id="value-${uniqueId}" class="collapsible-content">
+                                        <pre class="bg-light p-2 rounded">"${value.value.substring(0, 100)}..."</pre>
+                                    </div>
+                                `;
+                            }
+                            return `<span class="badge bg-secondary">${value.type}</span> <span class="text-success">"${value.value}"</span>`;
+                        }
+                        
+                        // Format numeric values
+                        if (value.type === 'int' || value.type === 'float') {
+                            return `<span class="badge bg-secondary">${value.type}</span> <span class="text-primary">${value.value}</span>`;
+                        }
+                        
+                        // Format boolean values
+                        if (value.type === 'bool') {
+                            return `<span class="badge bg-secondary">${value.type}</span> <span class="text-warning">${value.value}</span>`;
+                        }
+                        
+                        return `<span class="badge bg-secondary">${value.type}</span> ${value.value}`;
+                    }
+                    
+                    // For lists and other collection types
+                    if (value.type === 'list') {
+                        const buttonId = 'arr_' + Math.random().toString(36).substr(2, 9);
+                        const contentId = 'content_' + buttonId;
+                        
+                        // Try to extract actual list items if the value is a string representation
+                        let displayValue = value.value;
+                        if (typeof displayValue === 'string' && displayValue.startsWith('[') && displayValue.endsWith(']')) {
+                            return `
+                                <span class="badge bg-secondary">${value.type}</span>
+                                <button class="btn btn-sm btn-outline-secondary" type="button" onclick="toggleCollapsible('${contentId}')">
+                                    View List
+                                </button>
+                                <div id="${contentId}" class="collapsible-content">
+                                    <pre class="bg-light p-2 rounded">${displayValue}</pre>
+                                </div>
+                            `;
+                        }
+                        
+                        return `<span class="badge bg-secondary">${value.type}</span> ${displayValue}`;
+                    }
+                    
+                    // For dictionaries
+                    if (value.type === 'dict') {
+                        const buttonId = 'dict_' + Math.random().toString(36).substr(2, 9);
+                        const contentId = 'content_' + buttonId;
+                        
+                        return `
+                            <span class="badge bg-secondary">${value.type}</span>
+                            <button class="btn btn-sm btn-outline-secondary" type="button" onclick="toggleCollapsible('${contentId}')">
+                                View Dictionary
+                            </button>
+                            <div id="${contentId}" class="collapsible-content">
+                                <pre class="bg-light p-2 rounded">${value.value}</pre>
+                            </div>
+                        `;
+                    }
+                    
+                    // For custom classes
+                    return `
+                        <div>
+                            <span class="badge bg-info">${value.type}</span> ${value.value}
+                            ${value.code ? `
+                                <button class="btn btn-sm btn-outline-secondary ms-2" type="button" onclick="toggleCollapsible('code-${Math.random().toString(36).substr(2, 9)}')">
+                                    View Code
+                                </button>
+                                <div id="code-${Math.random().toString(36).substr(2, 9)}" class="collapsible-content">
+                                    <pre class="bg-light p-2 rounded"><code class="language-python">${value.code.code_content || ''}</code></pre>
+                                </div>
+                            ` : ''}
+                        </div>
+                    `;
+                }
+                
+                // For arrays, show length and make collapsible if large
+                if (Array.isArray(value)) {
+                    const buttonId = 'arr_' + Math.random().toString(36).substr(2, 9);
+                    const contentId = 'content_' + buttonId;
+                    
+                    if (value.length > 10) {
+                        return `
+                            <div>
+                                <button class="btn btn-sm btn-outline-secondary" type="button" onclick="toggleCollapsible('${contentId}')">
+                                    Array (${value.length} items)
+                                </button>
+                                <div id="${contentId}" class="collapsible-content">
+                                    <pre class="bg-light p-2 rounded">${safeStringify(value)}</pre>
+                                </div>
+                            </div>
+                        `;
+                    } else {
+                        return `<pre class="bg-light p-2 rounded">${safeStringify(value)}</pre>`;
+                    }
+                }
+                
+                // Handle plain objects
+                if (typeof value === 'object') {
+                    const keys = Object.keys(value);
+                    if (keys.length > 5) {
+                        const buttonId = 'obj_' + Math.random().toString(36).substr(2, 9);
+                        const contentId = 'content_' + buttonId;
+                        
+                        return `
+                            <div>
+                                <button class="btn btn-sm btn-outline-secondary" type="button" onclick="toggleCollapsible('${contentId}')">
+                                    Object (${keys.length} properties)
+                                </button>
+                                <div id="${contentId}" class="collapsible-content">
+                                    <pre class="bg-light p-2 rounded">${safeStringify(value)}</pre>
+                                </div>
+                            </div>
+                        `;
+                    } else {
+                        return `<pre class="bg-light p-2 rounded">${safeStringify(value)}</pre>`;
+                    }
+                }
+                
+                // For long strings
+                if (typeof value === 'string' && value.length > maxLength) {
+                    const uniqueId = Math.random().toString(36).substr(2, 9);
+                    return `
+                        <div>
+                            <button class="btn btn-sm btn-outline-secondary" type="button" onclick="toggleCollapsible('value-${uniqueId}')">
+                                String (${value.length} chars)
+                            </button>
+                            <div id="value-${uniqueId}" class="collapsible-content">
+                                <pre class="bg-light p-2 rounded">${value.substring(0, 100)}...</pre>
+                            </div>
+                        </div>
+                    `;
+                }
+                
+                // Default for other types
+                return `<pre class="bg-light p-2 rounded">${safeStringify(value)}</pre>`;
+            } catch (error) {
+                console.error("Error in createCollapsibleValue:", error);
+                return `<span class="text-danger">Error displaying value: ${error.message}</span>`;
+            }
+        }
+
         document.addEventListener('DOMContentLoaded', function() {
+            // Initialize syntax highlighting
+            if (typeof hljs !== 'undefined') {
+                hljs.configure({ languages: ['python'] });
+                hljs.highlightAll();
+            }
+            
             fetch('/api/db-info')
                 .then(response => response.json())
                 .then(data => {
@@ -262,7 +463,7 @@
                                 </p>
                             </div>
                         `;
-                        card.addEventListener('click', () => loadFunctionDetails(call.id));
+                        card.addEventListener('click', () => loadFunctionDetails(call.id, card));
                         functionList.appendChild(card);
                     });
                 })
@@ -278,7 +479,17 @@
                 });
         }
 
-        function loadFunctionDetails(functionId) {
+        function loadFunctionDetails(functionId, clickedCard) {
+            // Remove existing selection
+            document.querySelectorAll('.function-card').forEach(card => {
+                card.classList.remove('selected-function');
+            });
+            
+            // Add selection to clicked card
+            if (clickedCard) {
+                clickedCard.classList.add('selected-function');
+            }
+            
             const detailsContainer = document.getElementById('function-details');
             detailsContainer.dataset.functionId = functionId;
             
@@ -303,6 +514,33 @@
                         executionTime = `${diff} ms`;
                     }
 
+                    let codeSection = '';
+                    if (call.code && call.code.content) {
+                        codeSection = `
+                            <div class="mt-4">
+                                <button class="btn btn-primary" type="button" onclick="toggleCollapsible('codeSection')">
+                                    Show/Hide Function Code
+                                </button>
+                                <div id="codeSection" class="collapsible-content">
+                                    <div class="card mt-2">
+                                        <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+                                            <div>
+                                                <span class="badge bg-light text-dark">${call.code.module_path || 'Unknown module'}</span>
+                                                <span class="badge bg-secondary">${call.code.type || 'function'}</span>
+                                            </div>
+                                            <button class="btn btn-sm btn-light" onclick="copyToClipboard('functionCode')">
+                                                Copy Code
+                                            </button>
+                                        </div>
+                                        <div class="card-body p-0">
+                                            <pre class="m-0" style="max-height: 400px; overflow: auto;"><code id="functionCode" class="language-python">${escapeHtml(call.code.content)}</code></pre>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                    }
+
                     detailsContainer.innerHTML = `
                         <div class="card detail-card">
                             <div class="card-header">
@@ -314,6 +552,9 @@
                                     <div>
                                         ${call.prev_call ? `<button class="btn btn-outline-primary me-2" onclick="loadFunctionDetails('${call.prev_call}')">Previous</button>` : ''}
                                         ${call.next_call ? `<button class="btn btn-outline-primary" onclick="loadFunctionDetails('${call.next_call}')">Next</button>` : ''}
+                                        ${call.has_stack_trace ? `<a href="/stack-trace/${functionId}" class="btn btn-outline-info ms-2">
+                                            <i class="bi bi-layers"></i> View Stack Trace
+                                        </a>` : ''}
                                     </div>
                                 </div>
                             </div>
@@ -331,8 +572,10 @@
                                         <strong>Execution Time:</strong> ${executionTime || 'N/A'}
                                     </div>
                                 </div>
+                                
+                                ${codeSection}
 
-                                <ul class="nav nav-tabs" id="detailTabs" role="tablist">
+                                <ul class="nav nav-tabs mt-4" id="detailTabs" role="tablist">
                                     <li class="nav-item" role="presentation">
                                         <button class="nav-link active" id="locals-tab" data-bs-toggle="tab" data-bs-target="#locals" type="button" role="tab">Locals</button>
                                     </li>
@@ -346,24 +589,34 @@
                                 <div class="tab-content" id="detailTabsContent">
                                     <div class="tab-pane fade show active" id="locals" role="tabpanel">
                                         <div id="locals-content" class="mt-3">
-                                            ${formatObjectPretty(call.locals, 'locals', true)}
+                                            ${Object.entries(call.locals).map(([key, value]) => `
+                                                <div class="mb-3">
+                                                    <h6 class="object-key">${key}</h6>
+                                                    ${createCollapsibleValue(value)}
+                                                </div>
+                                            `).join('')}
                                         </div>
                                     </div>
                                     <div class="tab-pane fade" id="globals" role="tabpanel">
                                         <div id="globals-content" class="mt-3">
-                                            ${formatObjectPretty(call.globals, 'globals', true)}
+                                            ${Object.entries(call.globals).map(([key, value]) => `
+                                                <div class="mb-3">
+                                                    <h6 class="object-key">${key}</h6>
+                                                    ${createCollapsibleValue(value)}
+                                                </div>
+                                            `).join('')}
                                         </div>
                                     </div>
                                     <div class="tab-pane fade" id="return" role="tabpanel">
                                         <div id="return-content" class="mt-3">
-                                            ${formatObjectPretty(call.return_value, 'return', true)}
+                                            ${createCollapsibleValue(call.return_value)}
                                         </div>
                                     </div>
                                 </div>
 
                                 <!-- Energy information if available -->
-                                <div class="mb-3" id="energy-data-${call.id}" style="display: none;">
-                                    <h6>Energy Consumption:</h6>
+                                <div class="mb-3 mt-4" id="energy-data-${call.id}" style="display: none;">
+                                    <h5>Energy Consumption:</h5>
                                     <div class="energy-details">
                                     </div>
                                 </div>
@@ -372,7 +625,6 @@
                     `;
                     
                     detailsContainer.dataset.functionId = functionId;
-                    setupCollapsibles();
                     displayEnergyData(call);
                 })
                 .catch(error => {
@@ -387,115 +639,40 @@
                 });
         }
 
-        function formatObjectPretty(obj, prefix = '', isTopLevel = false) {
-            if (obj === null || obj === undefined) {
-                return '<span class="null-value">null</span>';
-            }
-            // Handle our new value format
-            if (obj.value !== undefined) {
-                let result = '';
-                
-                if (obj.type) {
-                    result += `<span class="object-type">(${obj.type})</span> `;
-                }
-                
-                result += `<span class="object-value">${escapeHtml(obj.value)}</span>`;
-                
-                if (obj.code) {
-                    const codeId = prefix + '_code_' + Math.random().toString(36).substr(2, 9);
-                    result += `
-                        <div class="collapsible" onclick="toggleCollapsible('${codeId}')">
-                            <i class="bi bi-code-slash"></i> View Class Definition
-                        </div>
-                        <div id="${codeId}" class="collapsible-content code-definition">
-                            <div class="code-info">
-                                <strong>Class:</strong> ${obj.code.name}<br>
-                                <strong>Module:</strong> ${obj.code.module_path}<br>
-                                <strong>Created:</strong> ${new Date(obj.code.creation_time).toLocaleString()}
-                            </div>
-                            <pre><code>${escapeHtml(obj.code.code_content)}</code></pre>
-                        </div>
-                    `;
-                }
-                
-                return result;
-            }
+        function copyToClipboard(elementId) {
+            const element = document.getElementById(elementId);
+            if (!element) return;
             
-            if (typeof obj === 'string') {
-                return `<span class="string-value">"${escapeHtml(obj)}"</span>`;
-            }
+            // Create a temporary textarea to copy the text
+            const textarea = document.createElement('textarea');
+            textarea.value = element.textContent;
+            document.body.appendChild(textarea);
+            textarea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textarea);
             
-            if (typeof obj !== 'object') {
-                return `<span class="primitive-value">${obj}</span>`;
-            }
+            // Show a temporary notification
+            const notification = document.createElement('div');
+            notification.textContent = 'Copied to clipboard!';
+            notification.style.position = 'fixed';
+            notification.style.top = '20px';
+            notification.style.right = '20px';
+            notification.style.padding = '10px 20px';
+            notification.style.backgroundColor = '#28a745';
+            notification.style.color = 'white';
+            notification.style.borderRadius = '4px';
+            notification.style.zIndex = '9999';
             
-            if (Array.isArray(obj)) {
-                if (obj.length === 0) return '[]';
-                
-                const uniqueId = prefix + '_array_' + Math.random().toString(36).substr(2, 9);
-                let result = `<div class="collapsible" onclick="toggleCollapsible('${uniqueId}')">Array(${obj.length})</div>`;
-                result += `<div id="${uniqueId}" class="collapsible-content">`;
-                
-                obj.forEach((item, i) => {
-                    result += `<div>[${i}]: ${formatObjectPretty(item, uniqueId + '_' + i)}</div>`;
-                });
-                
-                result += '</div>';
-                return result;
-            }
-            
-            const keys = Object.keys(obj);
-            if (keys.length === 0) return '{}';
-            
-            return formatObjectEntriesPretty(obj, keys, prefix, isTopLevel);
-        }
-
-        function formatObjectEntriesPretty(obj, keys, prefix, isTopLevel = false) {
-            if (isTopLevel) {
-                let result = `<div class="top-level-container">`;
-                
-                for (const key of keys) {
-                    if (key.startsWith('_')) continue;
-                    
-                    const value = obj[key];
-                    const formattedValue = formatObjectPretty(value, prefix + '_' + key);
-                    result += `<div><span class="object-key">${key}</span>: ${formattedValue}</div>`;
-                }
-                
-                result += '</div>';
-                return result;
-            }
-            
-            const uniqueId = prefix + '_obj_' + Math.random().toString(36).substr(2, 9);
-            let objType = obj.type || 'Object';
-            
-            let result = `<div class="collapsible" onclick="toggleCollapsible('${uniqueId}')">${objType} {${keys.length} properties}</div>`;
-            result += `<div id="${uniqueId}" class="collapsible-content">`;
-            
-            // Show attributes section first if it exists
-            if (obj.attributes) {
-                result += `<div class="attributes-section">`;
-                for (const [key, value] of Object.entries(obj.attributes)) {
-                    const formattedValue = formatObjectPretty(value, uniqueId + '_attr_' + key);
-                    result += `<div><span class="object-key">${key}</span>: ${formattedValue}</div>`;
-                }
-                result += '</div>';
-            }
-            
-            // Show other properties
-            for (const key of keys) {
-                if (key.startsWith('_') || key === 'attributes') continue;
-                
-                const value = obj[key];
-                const formattedValue = formatObjectPretty(value, uniqueId + '_' + key);
-                result += `<div><span class="object-key">${key}</span>: ${formattedValue}</div>`;
-            }
-            
-            result += '</div>';
-            return result;
+            document.body.appendChild(notification);
+            setTimeout(() => {
+                notification.style.opacity = '0';
+                notification.style.transition = 'opacity 0.5s';
+                setTimeout(() => document.body.removeChild(notification), 500);
+            }, 2000);
         }
 
         function escapeHtml(str) {
+            if (typeof str !== 'string') return str;
             return str
                 .replace(/&/g, "&amp;")
                 .replace(/</g, "&lt;")
@@ -508,27 +685,17 @@
             const content = document.getElementById(id);
             if (content) {
                 content.style.display = content.style.display === 'block' ? 'none' : 'block';
-            }
-        }
-
-        function setupCollapsibles() {
-            // Show top-level objects and their attributes sections
-            const topLevelObjects = document.querySelectorAll('.top-level-container > div > .collapsible-content');
-            topLevelObjects.forEach(obj => {
-                obj.style.display = 'block';
                 
-                // Show attributes sections within this object
-                const attributesSection = obj.querySelector('.attributes-section');
-                if (attributesSection) {
-                    attributesSection.style.display = 'block';
+                // Apply syntax highlighting if this is a code block
+                if (content.style.display === 'block') {
+                    const codeBlocks = content.querySelectorAll('code.language-python');
+                    if (codeBlocks.length > 0 && typeof hljs !== 'undefined') {
+                        codeBlocks.forEach(block => {
+                            hljs.highlightElement(block);
+                        });
+                    }
                 }
-                
-                // Hide all other collapsible content
-                const otherCollapsibles = obj.querySelectorAll('.collapsible-content:not(.attributes-section)');
-                otherCollapsibles.forEach(collapsible => {
-                    collapsible.style.display = 'none';
-                });
-            });
+            }
         }
 
         function displayEnergyData(call) {

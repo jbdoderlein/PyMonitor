@@ -5,8 +5,11 @@ from enum import Enum
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 import logging
-from .models import StoredObject, ObjectVersion, ObjectIdentity, CodeObjectLink
+from .models import StoredObject, ObjectVersion, ObjectIdentity, CodeObjectLink, CodeDefinition, CodeVersion
 import datetime
+import inspect
+import uuid
+import re
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -177,6 +180,48 @@ class ObjectManager:
                 logger.warning(f"Error storing class definition: {e}")
 
         return stored_obj
+
+    def store_code_definition(self, name: str, type: str, module_path: str, code_content: str, first_line_no: Optional[int] = None) -> str:
+        """Store a code definition and return its ID"""
+        # Create a hash of the code content as the ID
+        code_hash = hashlib.md5(code_content.encode()).hexdigest()
+        
+        # Check if definition already exists
+        definition = self.session.query(CodeDefinition).filter_by(id=code_hash).first()
+        if definition:
+            return code_hash
+            
+        # Create new definition
+        definition = CodeDefinition(
+            id=code_hash,
+            name=name,
+            type=type,
+            module_path=module_path,
+            code_content=code_content,
+            first_line_no=first_line_no
+        )
+        self.session.add(definition)
+        self.session.flush()
+        return code_hash
+
+    def create_code_version(self, definition_id: str) -> int:
+        """Create a new version for a code definition and return its ID"""
+        # Get the latest version number
+        latest_version = (self.session.query(CodeVersion)
+                         .filter_by(definition_id=definition_id)
+                         .order_by(CodeVersion.version_number.desc())
+                         .first())
+        
+        version_number = 1 if latest_version is None else latest_version.version_number + 1
+        
+        # Create new version
+        version = CodeVersion(
+            definition_id=definition_id,
+            version_number=version_number
+        )
+        self.session.add(version)
+        self.session.flush()
+        return version.id
 
     def store(self, value: Any) -> str:
         """Store an object and return its reference"""

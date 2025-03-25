@@ -3,7 +3,8 @@ from sqlalchemy.orm import Session
 import datetime
 import inspect
 from .representation import ObjectManager
-from .models import StoredObject, FunctionCall
+from .models import StoredObject, FunctionCall, StackSnapshot, CodeDefinition
+from sqlalchemy import text
 
 class FunctionCallInfo(TypedDict):
     """Type definition for function call information"""
@@ -16,6 +17,9 @@ class FunctionCallInfo(TypedDict):
     globals: Dict[str, Any]
     return_value: Optional[Any]
     energy_data: Optional[Dict[str, Any]]
+    code_definition_id: Optional[str]
+    code_version_id: Optional[int]
+    code: Optional[Dict[str, Any]]  # Contains code content, module_path, and type
 
 class FunctionCallTracker:
     """Track function calls and their context using object manager for efficient storage"""
@@ -43,7 +47,8 @@ class FunctionCallTracker:
                 print(f"Warning: Could not store variable {name}: {e}")
         return refs
 
-    def capture_call(self, func_name: str, locals_dict: Dict[str, Any], globals_dict: Dict[str, Any]) -> str:
+    def capture_call(self, func_name: str, locals_dict: Dict[str, Any], globals_dict: Dict[str, Any], 
+                    code_definition_id: Optional[str] = None, code_version_id: Optional[int] = None) -> str:
         """
         Capture a function call with its local and global context.
         Returns the function call ID.
@@ -64,7 +69,9 @@ class FunctionCallTracker:
             line=frame.f_lineno if frame else None,
             start_time=datetime.datetime.now(),
             locals_refs=locals_refs,
-            globals_refs=globals_refs
+            globals_refs=globals_refs,
+            code_definition_id=code_definition_id,
+            code_version_id=code_version_id
         )
         
         self.session.add(call)
@@ -86,9 +93,10 @@ class FunctionCallTracker:
             return_ref = self.object_manager.store(return_value)
             call.return_ref = return_ref
             call.end_time = datetime.datetime.now()
-            self.session.flush()
+            self.session.commit()
         except Exception as e:
             print(f"Warning: Could not store return value: {e}")
+            self.session.rollback()
 
     def get_call(self, call_id: str) -> FunctionCallInfo:
         """
@@ -117,6 +125,24 @@ class FunctionCallTracker:
         # Get energy data from call_metadata if available
         energy_data = call.call_metadata.get('energy_data') if call.call_metadata else None
 
+        # Get code information if available
+        code = None
+        if call.code_definition_id:
+            try:
+                # Use text() to create a proper SQL query with string parameter
+                sql = text("SELECT * FROM code_definitions WHERE id = :id")
+                result = self.session.execute(sql, {"id": call.code_definition_id})
+                row = result.fetchone()
+                if row:
+                    code = {
+                        'content': row.code_content,
+                        'module_path': row.module_path,
+                        'type': row.type
+                    }
+                    print(f"Found code for function call {call_id}: {code['module_path']}")
+            except Exception as e:
+                print(f"Error retrieving code definition for {call.code_definition_id}: {e}")
+
         return FunctionCallInfo(
             function=call.function,
             file=call.file,
@@ -126,7 +152,10 @@ class FunctionCallTracker:
             locals=locals_dict,
             globals=globals_dict,
             return_value=return_value,
-            energy_data=energy_data
+            energy_data=energy_data,
+            code_definition_id=call.code_definition_id,
+            code_version_id=call.code_version_id,
+            code=code
         )
 
     def get_call_history(self, function_name: Optional[str] = None) -> List[str]:
@@ -158,4 +187,55 @@ class FunctionCallTracker:
                 self.session.commit()
         except Exception as e:
             print(f"Error updating metadata for call {call_id}: {e}")
-            self.session.rollback() 
+            self.session.rollback()
+
+    def create_stack_snapshot(self, call_id: str, line_number: int, locals_dict: Dict[str, str], globals_dict: Dict[str, str]) -> StackSnapshot:
+        """
+        Create a new stack snapshot for a function call at a specific line.
+        
+        Args:
+            call_id: The ID of the function call
+            line_number: The line number where the snapshot was taken
+            locals_dict: Dictionary of local variable references
+            globals_dict: Dictionary of global variable references
+            
+        Returns:
+            The created StackSnapshot object
+        """
+        try:
+            # Get the function call
+            call = self.session.query(FunctionCall).filter(FunctionCall.id == int(call_id)).first()
+            if not call:
+                raise ValueError(f"Function call {call_id} not found")
+            
+            # Create new snapshot
+            snapshot = StackSnapshot(
+                function_call_id=int(call_id),
+                line_number=line_number,
+                locals_refs=locals_dict,
+                globals_refs=globals_dict
+            )
+            
+            self.session.add(snapshot)
+            self.session.flush()  # This will assign an ID to the snapshot
+            
+            # Check if this is the first snapshot for this call
+            if call.first_snapshot_id is None:
+                # This is the first snapshot
+                call.first_snapshot_id = snapshot.id
+            else:
+                # Get the last snapshot and link them
+                last_snapshot = (self.session.query(StackSnapshot)
+                               .filter(StackSnapshot.function_call_id == int(call_id))
+                               .filter(StackSnapshot.next_snapshot_id.is_(None))
+                               .first())
+                if last_snapshot:
+                    last_snapshot.next_snapshot_id = snapshot.id
+                    snapshot.previous_snapshot_id = last_snapshot.id
+            
+            self.session.commit()
+            return snapshot
+            
+        except Exception as e:
+            self.session.rollback()
+            raise ValueError(f"Failed to create stack snapshot: {e}") 
