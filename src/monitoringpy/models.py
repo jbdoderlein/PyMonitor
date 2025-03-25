@@ -96,9 +96,15 @@ class FunctionCall(Base):
     # Reference to the first stack snapshot (if line monitoring is enabled)
     first_snapshot_id = Column(Integer, ForeignKey('stack_snapshots.id'), nullable=True)
     
+    # Code version tracking
+    code_definition_id = Column(String, ForeignKey('code_definitions.id'), nullable=True)
+    code_version_id = Column(Integer, ForeignKey('code_versions.id'), nullable=True)
+    
     # Relationships
     stack_trace = relationship("StackSnapshot", foreign_keys=[StackSnapshot.function_call_id], back_populates="function_call")
     first_snapshot = relationship("StackSnapshot", foreign_keys=[first_snapshot_id], overlaps="stack_trace")
+    code_definition = relationship("CodeDefinition")
+    code_version = relationship("CodeVersion")
 
 class CodeDefinition(Base):
     """Represents a code definition (class, function, etc.)."""
@@ -109,6 +115,7 @@ class CodeDefinition(Base):
     type = Column(String, nullable=False)  # 'class' or 'function'
     module_path = Column(String, nullable=False)  # Full module path
     code_content = Column(Text, nullable=False)  # The actual code
+    first_line_no = Column(Integer, nullable=True)  # Line offset in the file
     creation_time = Column(DateTime, server_default=func.now())
     
     # Relationships

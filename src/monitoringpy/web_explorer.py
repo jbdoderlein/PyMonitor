@@ -25,7 +25,10 @@ except ImportError:
     sys.exit(1)
 
 from sqlalchemy.orm import Session
-from .models import init_db, StoredObject, FunctionCall, StackSnapshot
+from .models import (
+    init_db, StoredObject, FunctionCall, StackSnapshot, 
+    CodeDefinition
+)
 from .function_call import FunctionCallTracker, FunctionCallInfo
 from .representation import Object, Primitive, List, DictObject, CustomClass, ObjectManager
 
@@ -162,6 +165,8 @@ def serialize_stored_value(ref: Optional[str]) -> Dict[str, Any]:
 
 def serialize_call_info(call_info: FunctionCallInfo) -> Dict[str, Any]:
     """Serialize FunctionCallInfo to JSON-compatible dictionary"""
+    global session  # Access the global session variable
+    
     logger.debug("Serializing call info")
     # Convert timestamps to ISO format strings first
     start_time = call_info['start_time'].isoformat() if call_info['start_time'] else None
@@ -194,12 +199,54 @@ def serialize_call_info(call_info: FunctionCallInfo) -> Dict[str, Any]:
             'end_time': end_time,
             'locals': locals_dict,
             'globals': globals_dict,
-            'return_value': return_value
+            'return_value': return_value,
+            'has_stack_trace': False  # Default value
         }
+
+        # Check if this function call has a stack trace
+        try:
+            if session:
+                call = session.query(FunctionCall).filter_by(id=int(call_info.get('id', 0))).first()
+                if call and call.first_snapshot_id:
+                    result['has_stack_trace'] = True
+        except Exception as e:
+            logger.warning(f"Failed to check for stack trace: {e}")
+            if session and "transaction has been rolled back" in str(e):
+                try:
+                    session.rollback()
+                except:
+                    pass
 
         # Add RAPL data if available
         if 'energy_data' in call_info:
             result['energy_data'] = call_info['energy_data']
+            
+        # Add code information if available
+        if 'code' in call_info and call_info['code']:
+            result['code'] = call_info['code']
+        elif 'code_definition_id' in call_info and call_info['code_definition_id'] and session:
+            try:
+                # Use raw SQL query to avoid SQLAlchemy parameter binding issues with string IDs
+                from sqlalchemy import text
+                sql = text("SELECT * FROM code_definitions WHERE id = :id")
+                query_result = session.execute(sql, {"id": call_info['code_definition_id']})
+                row = query_result.fetchone()
+                if row:
+                    result['code'] = {
+                        'content': row.code_content,
+                        'module_path': row.module_path,
+                        'type': row.type,
+                        'first_line_no': row.first_line_no
+                    }
+                    logger.info(f"Found code definition for {call_info['function']}")
+            except Exception as e:
+                logger.warning(f"Failed to get code definition: {e}")
+                # Ensure session is valid for future queries
+                if session and "transaction has been rolled back" in str(e):
+                    try:
+                        session.rollback()
+                    except:
+                        pass
         
         # Test JSON serialization
         try:
@@ -243,26 +290,48 @@ def create_app(tracker: FunctionCallTracker):
         """View for listing functions with stack traces"""
         return render_template('stack_traces.html')
 
+    @app.route('/stack-trace/<function_id>')
+    def stack_trace(function_id):
+        """View for displaying a specific function's stack trace"""
+        return render_template('stack_trace.html')
+
+    @app.route('/compare-traces')
+    def compare_traces():
+        return render_template('compare_traces.html')
+
     @app.route('/api/functions-with-traces')
     def get_functions_with_traces():
         """Get list of functions that have stack traces"""
         try:
-            # Query for functions that have stack traces
-            functions = (session.query(FunctionCall)
+            if not session:
+                return jsonify({'error': 'Database session not initialized'}), 500
+                
+            # Query for unique functions that have stack traces
+            functions = (session.query(FunctionCall.function, FunctionCall.file, FunctionCall.line)
                        .filter(FunctionCall.first_snapshot_id.isnot(None))
+                       .group_by(FunctionCall.function, FunctionCall.file, FunctionCall.line)
                        .all())
             
             result = []
             for func in functions:
+                # Get all calls for this function to count total traces
+                calls = (session.query(FunctionCall)
+                        .filter(FunctionCall.function == func.function,
+                               FunctionCall.file == func.file,
+                               FunctionCall.line == func.line,
+                               FunctionCall.first_snapshot_id.isnot(None))
+                        .all())
+                
                 result.append({
-                    'id': func.id,
+                    'id': calls[0].id if calls else None,  # Use first call's ID as reference
                     'name': func.function,
                     'file': func.file,
                     'line': func.line,
-                    'start_time': func.start_time.isoformat(),
-                    'end_time': func.end_time.isoformat() if func.end_time else None,
-                    'snapshot_count': len(func.stack_trace)
+                    'trace_count': len(calls)
                 })
+            
+            # Sort by function name
+            result.sort(key=lambda x: x['name'])
             
             return jsonify(result)
         except Exception as e:
@@ -273,31 +342,90 @@ def create_app(tracker: FunctionCallTracker):
     def get_stack_trace(function_id):
         """Get the stack trace for a specific function call"""
         try:
+            if not session:
+                return jsonify({'error': 'Database session not initialized'}), 500
+                
+            # Get the function call by ID
             function = session.query(FunctionCall).get(function_id)
             if not function or not function.first_snapshot:
                 return jsonify({'error': 'Function call not found or has no stack trace'}), 404
             
+            # Create result dictionary with function info
+            result = {
+                'function_id': function.id,
+                'function_name': function.function,
+                'file': function.file,
+                'line': function.line,
+                'start_time': function.start_time.isoformat() if function.start_time else None,
+                'end_time': function.end_time.isoformat() if function.end_time else None,
+                'snapshots': []
+            }
+            
+            # Try to get the source code from the database instead of the file system
+            try:
+                # First check if there's a code_definition_id associated with this function call
+                if hasattr(function, 'code_definition_id') and function.code_definition_id:
+                    # Use raw SQL query to avoid SQLAlchemy parameter binding issues with string IDs
+                    from sqlalchemy import text
+                    sql = text("SELECT * FROM code_definitions WHERE id = :id")
+                    query_result = session.execute(sql, {"id": function.code_definition_id})
+                    row = query_result.fetchone()
+                    if row:
+                        result['code'] = {
+                            'content': row.code_content,
+                            'module_path': row.module_path,
+                            'type': row.type,
+                            'first_line_no': row.first_line_no
+                        }
+                        logger.info(f"Found code definition in database for function {function.function}")
+                # If no code in database, fall back to file system as before
+                elif os.path.exists(function.file):
+                    with open(function.file, 'r') as f:
+                        content = f.read()
+                        result['code'] = {
+                            'content': content,
+                            'file': function.file,
+                            'first_line_no': 1  # Default to 1 when reading from file
+                        }
+                    logger.info(f"Read code from file: {function.file}")
+            except Exception as e:
+                logger.error(f"Error reading source code: {e}")
+                
             # Build the trace by following the linked list
-            trace = []
             current = function.first_snapshot
             while current:
                 snapshot = {
                     'id': current.id,
                     'line': current.line_number,
-                    'timestamp': current.timestamp.isoformat(),
-                    'locals': {
-                        name: serialize_stored_value(ref)
-                        for name, ref in current.locals_refs.items()
-                    },
-                    'globals': {
-                        name: serialize_stored_value(ref)
-                        for name, ref in current.globals_refs.items()
-                    }
+                    'timestamp': current.timestamp.isoformat() if current.timestamp else None,
+                    'locals': {},
+                    'globals': {}
                 }
-                trace.append(snapshot)
+                
+                # Add local variables
+                if current.locals_refs:
+                    for name, ref in current.locals_refs.items():
+                        if ref and object_manager:
+                            try:
+                                snapshot['locals'][name] = serialize_stored_value(ref)
+                            except Exception as e:
+                                logger.error(f"Error serializing local variable {name}: {e}")
+                                snapshot['locals'][name] = {"value": f"<error: {str(e)}>", "type": "Error"}
+                
+                # Add global variables
+                if current.globals_refs:
+                    for name, ref in current.globals_refs.items():
+                        if ref and object_manager:
+                            try:
+                                snapshot['globals'][name] = serialize_stored_value(ref)
+                            except Exception as e:
+                                logger.error(f"Error serializing global variable {name}: {e}")
+                                snapshot['globals'][name] = {"value": f"<error: {str(e)}>", "type": "Error"}
+                
+                result['snapshots'].append(snapshot)
                 current = current.next_snapshot
             
-            return jsonify(trace)
+            return jsonify(result)
         except Exception as e:
             logger.error(f"Error getting stack trace: {e}")
             return jsonify({'error': str(e)}), 500
@@ -717,6 +845,11 @@ def create_app(tracker: FunctionCallTracker):
                 'function_calls': []
             }), 500
 
+    @app.route('/function-call/<call_id>')
+    def function_call(call_id):
+        """View for a specific function call"""
+        return render_template('function_call.html')
+
     @app.route('/api/function-call/<call_id>')
     def get_function_call(call_id):
         try:
@@ -726,17 +859,151 @@ def create_app(tracker: FunctionCallTracker):
             
             # Get call history
             history = call_tracker.get_call_history()
-            call_index = history.index(call_id)
             
-            # Add navigation info
-            call_dict['prev_call'] = history[call_index - 1] if call_index > 0 else None
-            call_dict['next_call'] = history[call_index + 1] if call_index < len(history) - 1 else None
+            try:
+                call_index = history.index(call_id)
+                # Add navigation info
+                call_dict['prev_call'] = history[call_index - 1] if call_index > 0 else None
+                call_dict['next_call'] = history[call_index + 1] if call_index < len(history) - 1 else None
+            except (ValueError, IndexError) as e:
+                logger.warning(f"Error finding call in history: {e}")
+                call_dict['prev_call'] = None
+                call_dict['next_call'] = None
+            
+            # Get stack trace for this call
+            try:
+                if call_tracker and session:
+                    call = session.query(FunctionCall).filter_by(id=int(call_id)).first()
+                    if call and call.first_snapshot_id:
+                        stack_snapshots = []
+                        current_snapshot = session.query(StackSnapshot).filter_by(id=call.first_snapshot_id).first()
+                        
+                        while current_snapshot:
+                            snapshot_data = {
+                                'line': current_snapshot.line_number,
+                                'timestamp': current_snapshot.timestamp.isoformat(),
+                                'locals': {},
+                                'globals': {}
+                            }
+                            
+                            # Process local variables
+                            for name, ref in current_snapshot.locals_refs.items():
+                                try:
+                                    snapshot_data['locals'][name] = serialize_stored_value(ref)
+                                except Exception as e:
+                                    logger.error(f"Error serializing local {name}: {e}")
+                                    snapshot_data['locals'][name] = {'value': f"<Error: {str(e)}>", 'type': 'Error'}
+                            
+                            # Process global variables
+                            for name, ref in current_snapshot.globals_refs.items():
+                                try:
+                                    snapshot_data['globals'][name] = serialize_stored_value(ref)
+                                except Exception as e:
+                                    logger.error(f"Error serializing global {name}: {e}")
+                                    snapshot_data['globals'][name] = {'value': f"<Error: {str(e)}>", 'type': 'Error'}
+                            
+                            stack_snapshots.append(snapshot_data)
+                            
+                            # Get next snapshot
+                            if current_snapshot.next_snapshot_id:
+                                current_snapshot = session.query(StackSnapshot).filter_by(id=current_snapshot.next_snapshot_id).first()
+                            else:
+                                break
+                        
+                        call_dict['stack_trace'] = stack_snapshots
+            except Exception as e:
+                logger.error(f"Error getting stack trace: {e}")
+                call_dict['stack_trace'] = []
             
             return jsonify({'function_call': call_dict})
         except ValueError as e:
             return jsonify({'error': 'Function call not found'}), 404
         except Exception as e:
             logger.error(f"Error getting function call: {e}")
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/function-traces/<int:function_id>')
+    def get_function_traces(function_id):
+        """Get all traces for a specific function"""
+        try:
+            if not session:
+                return jsonify({'error': 'Database session not initialized'}), 500
+            
+            # Get the function call to get its details
+            function = session.query(FunctionCall).get(function_id)
+            if not function:
+                return jsonify({'error': 'Function not found'}), 404
+            
+            # Get all calls for this function that have traces
+            function_calls = (session.query(FunctionCall)
+                .filter(FunctionCall.function == function.function,
+                       FunctionCall.file == function.file,
+                       FunctionCall.line == function.line,
+                       FunctionCall.first_snapshot_id.isnot(None))
+                .order_by(FunctionCall.start_time.desc())
+                .all())
+            
+            result = {
+                'traces': [{
+                    'id': call.id,
+                    'timestamp': call.start_time.isoformat() if call.start_time else None,
+                    'snapshots': []
+                } for call in function_calls]
+            }
+            
+            # For each function call, get its stack snapshots
+            for trace in result['traces']:
+                call = next(c for c in function_calls if c.id == trace['id'])
+                current_snapshot = call.first_snapshot
+                
+                while current_snapshot:
+                    snapshot_data = {
+                        'line': current_snapshot.line_number,
+                        'locals': {},
+                        'globals': {}
+                    }
+                    
+                    # Add local variables
+                    if current_snapshot.locals_refs:
+                        for name, ref in current_snapshot.locals_refs.items():
+                            if ref and object_manager:
+                                try:
+                                    value = object_manager.get(ref)
+                                    snapshot_data['locals'][name] = {
+                                        'type': type(value).__name__,
+                                        'value': str(value)
+                                    }
+                                except Exception as e:
+                                    logger.error(f"Error getting local variable {name}: {e}")
+                                    snapshot_data['locals'][name] = {
+                                        'type': 'Error',
+                                        'value': f"<error: {str(e)}>"
+                                    }
+                    
+                    # Add global variables
+                    if current_snapshot.globals_refs:
+                        for name, ref in current_snapshot.globals_refs.items():
+                            if ref and object_manager:
+                                try:
+                                    value = object_manager.get(ref)
+                                    snapshot_data['globals'][name] = {
+                                        'type': type(value).__name__,
+                                        'value': str(value)
+                                    }
+                                except Exception as e:
+                                    logger.error(f"Error getting global variable {name}: {e}")
+                                    snapshot_data['globals'][name] = {
+                                        'type': 'Error',
+                                        'value': f"<error: {str(e)}>"
+                                    }
+                    
+                    trace['snapshots'].append(snapshot_data)
+                    current_snapshot = current_snapshot.next_snapshot
+            
+            return jsonify(result)
+                
+        except Exception as e:
+            logger.error(f"Error getting function traces: {e}")
             return jsonify({'error': str(e)}), 500
 
     return app
