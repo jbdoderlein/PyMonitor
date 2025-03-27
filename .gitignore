@@ -47,3 +47,7 @@ config.local.py
 .coverage
 htmlcov/
 .pytest_cache/
+
+# MCP Server
+*.log
+.cursor/mcp.json
