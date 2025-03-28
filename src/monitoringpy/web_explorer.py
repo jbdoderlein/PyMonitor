@@ -320,15 +320,42 @@ def create_app(tracker: FunctionCallTracker):
                                FunctionCall.file == func.file,
                                FunctionCall.line == func.line,
                                FunctionCall.first_snapshot_id.isnot(None))
+                        .order_by(FunctionCall.start_time.desc())  # Get most recent first
                         .all())
                 
-                result.append({
-                    'id': calls[0].id if calls else None,  # Use first call's ID as reference
-                    'name': func.function,
-                    'file': func.file,
-                    'line': func.line,
-                    'trace_count': len(calls)
-                })
+                if calls:
+                    # Process each call for this function
+                    traces = []
+                    total_snapshots = 0
+                    
+                    for call in calls:
+                        # Count snapshots for this call
+                        snapshot_count = 0
+                        current_snapshot = call.first_snapshot
+                        while current_snapshot:
+                            snapshot_count += 1
+                            current_snapshot = current_snapshot.next_snapshot
+                        
+                        total_snapshots += snapshot_count
+                        
+                        # Add trace info
+                        traces.append({
+                            'id': call.id,
+                            'timestamp': call.start_time.isoformat() if call.start_time else None,
+                            'snapshot_count': snapshot_count,
+                            'execution_time': (call.end_time - call.start_time).total_seconds() if call.end_time and call.start_time else None
+                        })
+                    
+                    result.append({
+                        'id': calls[0].id,  # Use first call as reference
+                        'name': func.function,
+                        'file': func.file,
+                        'line': func.line,
+                        'trace_count': len(calls),
+                        'total_snapshots': total_snapshots,
+                        'last_executed': calls[0].start_time.isoformat() if calls[0].start_time else None,
+                        'traces': traces  # Include all traces
+                    })
             
             # Sort by function name
             result.sort(key=lambda x: x['name'])
