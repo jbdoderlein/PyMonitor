@@ -147,62 +147,61 @@ class CodeObjectLink(Base):
 
 def init_db(db_path):
     """Initialize the database and return session factory"""
-    # Ensure we have an absolute path
-    db_path = os.path.abspath(db_path)
-    
-    # Create the directory if it doesn't exist
-    db_dir = os.path.dirname(db_path)
-    if db_dir and not os.path.exists(db_dir):
-        os.makedirs(db_dir)
-    
-    try:
-        # Check if the database file exists and is valid
-        if os.path.exists(db_path):
-            try:
-                # Try to open the database to check if it's valid
-                conn = sqlite3.connect(db_path)
-                # Try a simple query to verify the database is functional
-                cursor = conn.cursor()
-                cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-                cursor.fetchall()
-                conn.close()
-                logger.info(f"Successfully connected to existing database at {db_path}")
-            except sqlite3.Error as e:
-                # If there's an error, the database might be corrupted
-                logger.error(f"Error connecting to database: {e}")
-                logger.warning(f"Database at {db_path} might be corrupted. Creating backup and new database.")
-                
-                # Create a backup of the potentially corrupted database
-                backup_path = f"{db_path}.backup.{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
+    if db_path != ":memory:":
+        # Ensure we have an absolute path for file-based databases
+        db_path = os.path.abspath(db_path)
+        
+        # Create the directory if it doesn't exist
+        db_dir = os.path.dirname(db_path)
+        if db_dir and not os.path.exists(db_dir):
+            os.makedirs(db_dir)
+        
+        try:
+            # Check if the database file exists and is valid
+            if os.path.exists(db_path):
                 try:
-                    shutil.copy2(db_path, backup_path)
-                    logger.info(f"Created backup of potentially corrupted database at {backup_path}")
-                    # Remove the original file to create a fresh database
-                    os.remove(db_path)
-                except OSError as e:
-                    logger.error(f"Failed to create backup: {e}")
-                    # If we can't create a backup, try to remove the file
+                    # Try to open the database to check if it's valid
+                    conn = sqlite3.connect(db_path)
+                    # Try a simple query to verify the database is functional
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                    cursor.fetchall()
+                    conn.close()
+                    logger.info(f"Successfully connected to existing database at {db_path}")
+                except sqlite3.Error as e:
+                    # If there's an error, the database might be corrupted
+                    logger.error(f"Error connecting to database: {e}")
+                    logger.warning(f"Database at {db_path} might be corrupted. Creating backup and new database.")
+                    
+                    # Create a backup of the potentially corrupted database
+                    backup_path = f"{db_path}.backup.{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
                     try:
+                        shutil.copy2(db_path, backup_path)
+                        logger.info(f"Created backup of potentially corrupted database at {backup_path}")
+                        # Remove the original file to create a fresh database
                         os.remove(db_path)
-                        logger.info(f"Removed potentially corrupted database at {db_path}")
-                    except OSError as e2:
-                        logger.error(f"Failed to remove corrupted database: {e2}")
-                        raise RuntimeError(f"Cannot create or access database at {db_path}. Please check file permissions.")
-    except Exception as e:
-        logger.error(f"Unexpected error during database initialization: {e}")
+                    except OSError as e:
+                        logger.error(f"Failed to create backup: {e}")
+                        # If we can't create a backup, try to remove the file
+                        try:
+                            os.remove(db_path)
+                            logger.info(f"Removed potentially corrupted database at {db_path}")
+                        except OSError as e2:
+                            logger.error(f"Failed to remove corrupted database: {e2}")
+                            raise RuntimeError(f"Cannot create or access database at {db_path}. Please check file permissions.")
+        except Exception as e:
+            logger.error(f"Unexpected error during database initialization: {e}")
     
-    # Use a standard SQLite connection string with absolute path
+    # Use appropriate SQLite connection string
+    connection_string = 'sqlite:///:memory:' if db_path == ':memory:' else f'sqlite:///{db_path}'
+    
+    # Create engine with appropriate parameters
+    # SQLite doesn't support pool_size, max_overflow, or pool_timeout
     engine = create_engine(
-        f'sqlite:///{db_path}', 
+        connection_string, 
         connect_args={
             'check_same_thread': False,
-            'timeout': 60  # Increase SQLite timeout to 60 seconds (default is 5)
-        },
-        # Increase pool size and overflow to handle more connections
-        pool_size=20,  # Default is 5
-        max_overflow=20,  # Default is 10
-        pool_timeout=60,  # Default is 30
-        pool_recycle=1800  # Recycle connections after 30 minutes
+        }
     )
     
     try:
