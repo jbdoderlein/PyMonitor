@@ -9,12 +9,13 @@ import os
 from typing import Optional
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.exc import SQLAlchemyError
 
 # Add the parent directory to the path so we can import the package
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.monitoringpy.models import Base, init_db
-from src.monitoringpy.representation import ObjectManager, Primitive, List, DictObject, CustomClass
+from monitoringpy.core.models import Base, init_db, StoredObject, ObjectVersion, ObjectIdentity
+from monitoringpy.core.representation import ObjectManager, ObjectType, Primitive, List, DictObject, CustomClass
 
 class TestClass:
     def __init__(self, value):
@@ -183,6 +184,33 @@ class TestObjectManager(unittest.TestCase):
         self.assertIsNotNone(loaded)
         if loaded is not None:
             self.assertEqual(loaded.value, 42)
+
+    def test_error_cases(self):
+        """Test error cases and invalid inputs"""
+        # Test invalid primitive type
+        with self.assertRaises(TypeError):
+            # type: ignore
+            Primitive([1, 2, 3])  # Should raise TypeError for non-primitive
+
+        # Test invalid list type
+        with self.assertRaises(TypeError):
+            # type: ignore
+            List("not a list")  # Should raise TypeError for non-list
+
+        # Test invalid dict type
+        with self.assertRaises(TypeError):
+            # type: ignore
+            DictObject("not a dict")  # Should raise TypeError for non-dict
+
+        # Test invalid custom class type
+        with self.assertRaises(TypeError):
+            # type: ignore
+            CustomClass([1, 2, 3])  # Should raise TypeError for primitive/structured type
+
+        # Test non-existent reference
+        self.assertIsNone(self.manager.get("non_existent_ref"))
+        self.assertIsNone(self.manager.next_ref("non_existent_ref"))
+        self.assertEqual(self.manager.get_history("non_existent_ref"), [])
 
 if __name__ == '__main__':
     unittest.main(failfast=True) 

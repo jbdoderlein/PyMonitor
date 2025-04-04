@@ -91,7 +91,7 @@
 <script>
     document.addEventListener('DOMContentLoaded', function() {
         // Fetch and display functions with traces
-        fetch('/api/functions-with-traces')
+        fetch('/api/functions-with-stack-recordings')
             .then(response => response.json())
             .then(data => {
                 const functionsList = document.getElementById('functions-list');
@@ -103,9 +103,9 @@
                     header.className = 'function-header';
                     header.innerHTML = `
                         <h5 class="function-name mb-0">
-                            ${func.name}
+                            ${func.function}
                             <small class="text-muted">
-                                (${func.trace_count} traces, ${func.total_snapshots} total snapshots)
+                                (${func.trace_count} traces, ${func.total_snapshots || 0} total snapshots)
                             </small>
                         </h5>
                         <div class="function-meta">
@@ -119,40 +119,39 @@
                     const traceContainer = document.createElement('div');
                     traceContainer.className = 'trace-container';
                     
-                    // Sort traces by timestamp in descending order (most recent first)
-                    const sortedTraces = func.traces.sort((a, b) => 
-                        new Date(b.timestamp) - new Date(a.timestamp)
-                    );
-                    
-                    // Create trace boxes for each trace
-                    sortedTraces.forEach((trace, index) => {
-                        const traceBox = document.createElement('a');
-                        traceBox.href = `/stack-trace/${trace.id}`;
-                        traceBox.className = 'trace-box';
-                        
-                        const executionTime = trace.execution_time ? 
-                            `${trace.execution_time.toFixed(6)} seconds` : 
-                            'Unknown duration';
-                        
-                        traceBox.innerHTML = `
-                            <div class="trace-title">
-                                Trace #${index + 1}
-                            </div>
-                            <div class="trace-details">
-                                <div class="trace-info-row">
-                                    <strong>Executed:</strong> ${new Date(trace.timestamp).toLocaleString()}
+                    if (func.traces && func.traces.length > 0) {
+                        // Create trace boxes for each trace
+                        func.traces.forEach((trace, index) => {
+                            const traceBox = document.createElement('a');
+                            traceBox.href = `/stack-recording/${trace.id}`;
+                            traceBox.className = 'trace-box';
+                            
+                            const executionTime = trace.execution_time ? 
+                                `${trace.execution_time.toFixed(6)} seconds` : 
+                                'Unknown duration';
+                            
+                            traceBox.innerHTML = `
+                                <div class="trace-title">
+                                    Trace #${index + 1}
                                 </div>
-                                <div class="trace-info-row">
-                                    <strong>Snapshots:</strong> ${trace.snapshot_count}
+                                <div class="trace-details">
+                                    <div class="trace-info-row">
+                                        <strong>Executed:</strong> ${new Date(trace.timestamp || Date.now()).toLocaleString()}
+                                    </div>
+                                    <div class="trace-info-row">
+                                        <strong>Snapshots:</strong> ${trace.snapshot_count || 0}
+                                    </div>
+                                    <div class="trace-info-row">
+                                        <strong>Duration:</strong> <span class="trace-duration">${executionTime}</span>
+                                    </div>
                                 </div>
-                                <div class="trace-info-row">
-                                    <strong>Duration:</strong> <span class="trace-duration">${executionTime}</span>
-                                </div>
-                            </div>
-                        `;
-                        
-                        traceContainer.appendChild(traceBox);
-                    });
+                            `;
+                            
+                            traceContainer.appendChild(traceBox);
+                        });
+                    } else {
+                        traceContainer.innerHTML = '<div class="alert alert-info">No traces available for this function</div>';
+                    }
                     
                     body.appendChild(traceContainer);
                     card.appendChild(header);
@@ -163,7 +162,7 @@
             .catch(error => {
                 console.error('Error:', error);
                 document.getElementById('functions-list').innerHTML = 
-                    '<div class="alert alert-danger">Error loading stack traces</div>';
+                    '<div class="alert alert-danger">Error loading stack traces: ' + error.message + '</div>';
             });
     });
 </script>

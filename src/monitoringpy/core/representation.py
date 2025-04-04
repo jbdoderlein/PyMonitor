@@ -1,5 +1,5 @@
 import pickle
-from typing import Any, Dict, Optional, Union, TypeVar, Generic
+from typing import Any, Dict, Optional, Union, TypeVar, Generic, List, Sequence
 import hashlib
 from enum import Enum
 from sqlalchemy.orm import Session
@@ -114,8 +114,7 @@ class ObjectManager:
     def __init__(self, session: Session):
         self.session = session
         try:
-            from .code_manager import CodeManager
-            from .class_loader import ClassLoader
+            from .code_manager import CodeManager, ClassLoader # type: ignore
             self.code_manager = CodeManager(session)
             self.class_loader = ClassLoader(session)
         except ImportError:
@@ -221,7 +220,7 @@ class ObjectManager:
         )
         self.session.add(version)
         self.session.flush()
-        return version.id
+        return version.id # type: ignore
 
     def store(self, value: Any) -> str:
         """Store an object and return its reference"""
@@ -433,3 +432,61 @@ class ObjectManager:
         ).order_by(ObjectVersion.version_number.asc()).all()
 
         return [version.object_id for version in versions]
+
+    def rehydrate(self, ref: Optional[str]) -> Any:
+        """
+        Rehydrate an object from its reference.
+        
+        Args:
+            ref: The reference to the stored object
+            
+        Returns:
+            The rehydrated object
+            
+        Raises:
+            ValueError: If the reference is invalid or object cannot be rehydrated
+        """
+        if ref is None:
+            return None
+        try:
+            return self.get(ref)
+        except Exception as e:
+            raise ValueError(f"Could not rehydrate object with reference {ref}: {e}")
+
+    def rehydrate_dict(self, refs: Dict[str, Optional[str]]) -> Dict[str, Any]:
+        """
+        Rehydrate a dictionary of references to their actual values.
+        
+        Args:
+            refs: Dictionary of names to object references
+            
+        Returns:
+            Dictionary of names to rehydrated values
+        """
+        result = {}
+        for name, ref in refs.items():
+            try:
+                result[name] = self.rehydrate(ref)
+            except ValueError as e:
+                logger.warning(f"Could not rehydrate value for {name}: {e}")
+                result[name] = f"<Error rehydrating {ref}: {str(e)}>"
+        return result
+
+    def rehydrate_sequence(self, refs: Sequence[Optional[str]]) -> list:
+        """
+        Rehydrate a sequence of references to their actual values.
+        
+        Args:
+            refs: Sequence of object references
+            
+        Returns:
+            List of rehydrated values
+        """
+        result = []
+        for ref in refs:
+            try:
+                result.append(self.rehydrate(ref))
+            except ValueError as e:
+                logger.warning(f"Could not rehydrate value: {e}")
+                result.append(f"<Error rehydrating {ref}: {str(e)}>")
+        return result
