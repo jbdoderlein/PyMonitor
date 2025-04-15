@@ -535,6 +535,12 @@ async def get_function_calls(
         # Convert to a serializable format
         result = []
         for fc in function_calls:
+            # get locals
+            locals_data = {}
+            for name, value in fc.locals_refs.items():
+                locals_data[name] = serialize_stored_value(value)
+            # get return value
+            return_value = serialize_stored_value(fc.return_ref)
             call_data = {
                 "id": fc.id,
                 "function": fc.function,
@@ -543,7 +549,9 @@ async def get_function_calls(
                 "start_time": fc.start_time.isoformat() if fc.start_time else None,
                 "end_time": fc.end_time.isoformat() if fc.end_time else None,
                 "duration": (fc.end_time - fc.start_time).total_seconds() if fc.end_time and fc.start_time else None,
-                "has_stack_recording": session.query(StackSnapshot).filter(StackSnapshot.function_call_id == fc.id).count() > 0
+                "has_stack_recording": session.query(StackSnapshot).filter(StackSnapshot.function_call_id == fc.id).count() > 0,
+                "locals": locals_data,
+                "return_value": return_value
             }
             
             # Apply filters
