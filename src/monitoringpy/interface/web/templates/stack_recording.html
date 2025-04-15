@@ -118,6 +118,7 @@
     let selectedSnapshotIndex = 0;
     let isPlaying = false;
     let playInterval = null;
+    let firstLineOffset = 1; // Store the line offset globally
     
     async function loadStackTrace(functionId) {
         try {
@@ -140,10 +141,16 @@
             
             // Adapt to new API format - frames are the snapshots
             const snapshots = data.frames || [];
-            
+
             // Display source code
-            if (data.code) {
-                displayCode(data.code, data.function.line);
+            if (data.function.code) {
+                // Store first_line_no globally for use with line highlighting
+                if (typeof data.function.code === 'object' && 
+                    data.function.line && 
+                    !isNaN(data.function.line)) {
+                    firstLineOffset = parseInt(data.function.line);
+                }
+                displayCode(data.function.code, data.function.line);
             } else {
                 document.getElementById('code-container').textContent = 'Source code not available';
             }
@@ -176,9 +183,7 @@
         if (typeof code === 'object' && code.content) {
             codeContent = code.content;
             // Use the first line number from the code object if available
-            if (code.first_line_no && !isNaN(code.first_line_no)) {
-                firstLineNo = parseInt(code.first_line_no);
-            }
+            firstLineNo = functionLine;
         } else if (typeof code === 'string') {
             codeContent = code;
         } else {
@@ -216,13 +221,8 @@
             });
         });
         
-        // Scroll to function definition line
-        setTimeout(() => {
-            const lineElement = document.getElementById(`code-line-${functionLine}`);
-            if (lineElement) {
-                lineElement.scrollIntoView({ block: 'center' });
-            }
-        }, 100);
+        
+        
     }
     
     function createTimeline(snapshots) {
@@ -345,7 +345,7 @@
         // Update global counter
         updateGlobalCounter(index);
         
-        // Highlight the current line in the code
+        // Highlight the current line in the code - the snapshot.line is in the source file's line numbers
         highlightLine(snapshot.line);
         
         // Add snapshot navigation if multiple snapshots exist for this line
@@ -502,7 +502,9 @@
             line.classList.remove('highlighted-line');
         });
         
-        // Highlight the current line
+        // Highlight the current line, accounting for the line offset
+        // The lineNumber from the API is already in terms of the source file's line numbers,
+        // so we don't need to adjust it further
         const lineElement = document.getElementById(`code-line-${lineNumber}`);
         if (lineElement) {
             lineElement.classList.add('highlighted-line');
