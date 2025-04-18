@@ -7,7 +7,7 @@
             <div class="card mb-3">
                 <div class="card-header">
                     <h4 id="function-name" class="mb-0">Loading function...</h4>
-                    <p id="function-info" class="text-muted mb-0">Module: <span id="module-path"></span>, Line: <span id="line-number"></span></p>
+                    <p id="function-info" class="text-muted mb-0">Module: <span id="module-path"></span>, Line: <span id="line-number"></span>, Time: <span id="function-time"></span></p>
                 </div>
             </div>
         </div>
@@ -118,10 +118,11 @@
     let selectedSnapshotIndex = 0;
     let isPlaying = false;
     let playInterval = null;
+    let firstLineOffset = 1; // Store the line offset globally
     
     async function loadStackTrace(functionId) {
         try {
-            const response = await fetch(`/api/stack-trace/${functionId}`);
+            const response = await fetch(getApiUrl(`/api/stack-recording/${functionId}`));
             if (!response.ok) {
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
@@ -130,34 +131,44 @@
             currentStackData = data;
             
             // Display function metadata
-            document.getElementById('function-name').textContent = data.function_name;
+            document.getElementById('function-name').textContent = data.function.name || data.function.function;
             
             // Extract and display module path instead of full file path
-            const modulePath = data.file.split('/').pop().replace('.py', '');
+            const file = data.function.file || '';
+            const modulePath = file.split('/').pop().replace('.py', '');
             document.getElementById('module-path').textContent = modulePath;
-            document.getElementById('line-number').textContent = data.line;
+            document.getElementById('line-number').textContent = data.function.line;
             
+            // Adapt to new API format - frames are the snapshots
+            const snapshots = data.frames || [];
+
             // Display source code
-            if (data.code) {
-                displayCode(data.code, data.line);
+            if (data.function.code) {
+                // Store first_line_no globally for use with line highlighting
+                if (typeof data.function.code === 'object' && 
+                    data.function.line && 
+                    !isNaN(data.function.line)) {
+                    firstLineOffset = parseInt(data.function.line);
+                }
+                displayCode(data.function.code, data.function.line);
             } else {
                 document.getElementById('code-container').textContent = 'Source code not available';
             }
             
             // Create timeline
-            createTimeline(data.snapshots);
+            createTimeline(snapshots);
             
             // Setup playback controls
             setupPlaybackControls();
             
             // Display initial snapshot
-            if (data.snapshots && data.snapshots.length > 0) {
+            if (snapshots && snapshots.length > 0) {
                 displaySnapshot(0);
                 updateGlobalCounter(0);
             }
         } catch (error) {
-            console.error('Error loading stack trace:', error);
-            document.getElementById('function-name').textContent = 'Error loading stack trace';
+            console.error('Error loading stack recording:', error);
+            document.getElementById('function-name').textContent = 'Error loading stack recording';
             document.getElementById('function-info').textContent = error.message;
         }
     }
@@ -172,9 +183,7 @@
         if (typeof code === 'object' && code.content) {
             codeContent = code.content;
             // Use the first line number from the code object if available
-            if (code.first_line_no && !isNaN(code.first_line_no)) {
-                firstLineNo = parseInt(code.first_line_no);
-            }
+            firstLineNo = functionLine;
         } else if (typeof code === 'string') {
             codeContent = code;
         } else {
@@ -212,20 +221,15 @@
             });
         });
         
-        // Scroll to function definition line
-        setTimeout(() => {
-            const lineElement = document.getElementById(`code-line-${functionLine}`);
-            if (lineElement) {
-                lineElement.scrollIntoView({ block: 'center' });
-            }
-        }, 100);
+        
+        
     }
     
     function createTimeline(snapshots) {
         const timelineContainer = document.getElementById('timeline-container');
         
         if (!snapshots || snapshots.length === 0) {
-            timelineContainer.innerHTML = '<div class="alert alert-warning">No stack trace snapshots available</div>';
+            timelineContainer.innerHTML = '<div class="alert alert-warning">No stack recording snapshots available</div>';
             return;
         }
         
@@ -328,12 +332,12 @@
     }
     
     function displaySnapshot(index) {
-        if (!currentStackData || !currentStackData.snapshots || index >= currentStackData.snapshots.length) {
+        if (!currentStackData || !currentStackData.frames || index >= currentStackData.frames.length) {
             return;
         }
         
         selectedSnapshotIndex = index;
-        const snapshot = currentStackData.snapshots[index];
+        const snapshot = currentStackData.frames[index];
         
         // Update current line
         document.getElementById('current-line').textContent = snapshot.line;
@@ -341,7 +345,7 @@
         // Update global counter
         updateGlobalCounter(index);
         
-        // Highlight the current line in the code
+        // Highlight the current line in the code - the snapshot.line is in the source file's line numbers
         highlightLine(snapshot.line);
         
         // Add snapshot navigation if multiple snapshots exist for this line
@@ -356,7 +360,7 @@
     
     function addSnapshotNavigation(lineNumber, currentIndex) {
         // Find all snapshots for this line
-        const snapshotsForLine = currentStackData.snapshots
+        const snapshotsForLine = currentStackData.frames
             .map((snapshot, index) => ({ snapshot, index }))
             .filter(item => item.snapshot.line === lineNumber);
             
@@ -498,7 +502,9 @@
             line.classList.remove('highlighted-line');
         });
         
-        // Highlight the current line
+        // Highlight the current line, accounting for the line offset
+        // The lineNumber from the API is already in terms of the source file's line numbers,
+        // so we don't need to adjust it further
         const lineElement = document.getElementById(`code-line-${lineNumber}`);
         if (lineElement) {
             lineElement.classList.add('highlighted-line');
@@ -507,7 +513,7 @@
     }
     
     function selectLineByNumber(lineNumber) {
-        if (!currentStackData || !currentStackData.snapshots) return;
+        if (!currentStackData || !currentStackData.frames) return;
         
         // Find the closest snapshot for this line
         let closestIndex = 0;
@@ -515,7 +521,7 @@
         let matchingIndices = [];
         
         // Find exact matching lines and also the closest snapshot
-        currentStackData.snapshots.forEach((snapshot, index) => {
+        currentStackData.frames.forEach((snapshot, index) => {
             const distance = Math.abs(snapshot.line - lineNumber);
             
             // If this line exactly matches, add it to matching indices
@@ -582,13 +588,13 @@
                 playButton.innerHTML = '<i class="bi bi-pause-fill"></i>';
                 
                 // If we're at the end, start from beginning
-                if (selectedSnapshotIndex >= currentStackData.snapshots.length - 1) {
+                if (selectedSnapshotIndex >= currentStackData.frames.length - 1) {
                     selectedSnapshotIndex = 0;
                 }
                 
                 // Play next snapshot every 500ms
                 playInterval = setInterval(() => {
-                    if (selectedSnapshotIndex < currentStackData.snapshots.length - 1) {
+                    if (selectedSnapshotIndex < currentStackData.frames.length - 1) {
                         selectedSnapshotIndex++;
                         displaySnapshot(selectedSnapshotIndex);
                     } else {
@@ -613,7 +619,7 @@
         // Next button click handler
         nextButton.addEventListener('click', function() {
             stopPlayback();
-            if (selectedSnapshotIndex < currentStackData.snapshots.length - 1) {
+            if (selectedSnapshotIndex < currentStackData.frames.length - 1) {
                 selectedSnapshotIndex++;
                 displaySnapshot(selectedSnapshotIndex);
             }
@@ -629,8 +635,8 @@
     }
 
     function updateGlobalCounter(currentIndex) {
-        if (currentStackData && currentStackData.snapshots) {
-            const total = currentStackData.snapshots.length;
+        if (currentStackData && currentStackData.frames) {
+            const total = currentStackData.frames.length;
             document.getElementById('global-counter').textContent = `${currentIndex + 1}/${total}`;
         }
     }

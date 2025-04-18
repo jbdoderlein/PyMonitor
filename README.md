@@ -12,6 +12,7 @@ PyMonitor is a powerful Python monitoring and introspection tool that allows you
 - **Custom Object Support**: Handles custom classes, nested objects, and complex data structures
 - **Automatic Schema Migration**: Seamlessly upgrade database schemas when the library is updated
 - **Object Versioning**: Track changes to objects over time with detailed version history
+- **Function Reanimation**: Replay previous function executions using stored arguments
 
 ## Installation
 
@@ -114,6 +115,30 @@ result = compute_intensive_function()
 # Stop monitoring
 stop_monitoring()
 ```
+
+## Function Reanimation
+
+PyMonitor allows you to replay previous function executions using the stored arguments:
+
+```python
+import monitoringpy
+
+# Load the arguments from a previous function execution
+args, kwargs = monitoringpy.load_execution_data("123", "monitoring.db")
+
+# Import the function manually
+from your_module import your_function
+
+# Execute the function with the same arguments
+result = your_function(*args, **kwargs)
+print(f"Result: {result}")
+
+# Or use the shorthand method that handles everything
+result = monitoringpy.reanimate_function("123", "monitoring.db")
+print(f"Result: {result}")
+```
+
+For detailed documentation on the reanimation features, see [docs/reanimation.md](docs/reanimation.md).
 
 ## Web Explorer
 

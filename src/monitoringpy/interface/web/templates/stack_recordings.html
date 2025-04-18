@@ -1,0 +1,181 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container mt-4">
+    <h1 class="mb-4">Stack Recordings</h1>
+
+    <div class="row">
+        <div class="col-md-12">
+            <div class="table-responsive">
+                <table class="table table-striped table-hover" id="stack-recordings-table">
+                    <thead>
+                        <tr>
+                            <th>Function</th>
+                            <th>File</th>
+                            <th>Line</th>
+                            <th>Traces</th>
+                            <th>First Occurrence</th>
+                            <th>Last Occurrence</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="stack-recordings-body">
+                        <tr>
+                            <td colspan="7" class="text-center">
+                                <div class="spinner-border text-primary" role="status">
+                                    <span class="visually-hidden">Loading...</span>
+                                </div>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block styles %}
+<style>
+    .function-card {
+        margin-bottom: 20px;
+        border: none;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    .trace-box {
+        border: 1px solid #e0e0e0;
+        padding: 20px;
+        margin: 10px 0;
+        border-radius: 8px;
+        transition: all 0.2s ease;
+        background-color: white;
+        display: block;
+        color: inherit;
+        text-decoration: none !important;
+    }
+    .trace-box:hover {
+        background-color: #f8f9fa;
+        cursor: pointer;
+        transform: translateY(-2px);
+        box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        border-color: #d0d0d0;
+    }
+    .trace-box:active {
+        transform: translateY(-1px);
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .trace-details {
+        font-size: 0.95em;
+        color: #555;
+        line-height: 1.6;
+    }
+    .trace-title {
+        font-size: 1.1em;
+        font-weight: 600;
+        margin-bottom: 12px;
+        color: #2c3e50;
+    }
+    .trace-container {
+        display: flex;
+        flex-direction: column;
+        gap: 15px;
+        padding: 5px;
+    }
+    .function-header {
+        padding: 20px;
+        background-color: #f8f9fa;
+        border-bottom: 1px solid #dee2e6;
+        border-radius: 8px 8px 0 0;
+    }
+    .function-name {
+        color: #2c3e50;
+        margin-bottom: 5px;
+    }
+    .function-meta {
+        color: #6c757d;
+        font-size: 0.9em;
+    }
+    .card-body {
+        padding: 20px;
+        background-color: #fff;
+        border-radius: 0 0 8px 8px;
+    }
+    .trace-details strong {
+        color: #2c3e50;
+        font-weight: 600;
+        min-width: 100px;
+        display: inline-block;
+    }
+    .trace-info-row {
+        margin-bottom: 8px;
+    }
+    .trace-duration {
+        color: #2980b9;
+    }
+</style>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        loadStackRecordings();
+    });
+    
+    async function loadStackRecordings() {
+        try {
+            const response = await fetch(getApiUrl('/api/functions-with-stack-recordings'));
+            
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            
+            const data = await response.json();
+            const tableBody = document.getElementById('stack-recordings-body');
+            
+            if (data.length === 0) {
+                tableBody.innerHTML = `
+                    <tr>
+                        <td colspan="7" class="text-center">No functions with stack recordings found</td>
+                    </tr>
+                `;
+                return;
+            }
+            
+            // Sort data by function name
+            data.sort((a, b) => a.function.localeCompare(b.function));
+            
+            // Render table rows
+            let tableHtml = '';
+            for (const func of data) {
+                const firstTime = func.first_occurrence ? new Date(func.first_occurrence).toLocaleString() : 'N/A';
+                const lastTime = func.last_occurrence ? new Date(func.last_occurrence).toLocaleString() : 'N/A';
+                
+                tableHtml += `
+                    <tr>
+                        <td>${func.function}</td>
+                        <td>${func.file || 'unknown'}</td>
+                        <td>${func.line || 'N/A'}</td>
+                        <td>${func.trace_count}</td>
+                        <td>${firstTime}</td>
+                        <td>${lastTime}</td>
+                        <td>
+                            <a href="/stack-recording/${func.id}" class="btn btn-sm btn-primary">View</a>
+                        </td>
+                    </tr>
+                `;
+            }
+            
+            tableBody.innerHTML = tableHtml;
+        } catch (error) {
+            console.error('Error loading stack recordings:', error);
+            document.getElementById('stack-recordings-body').innerHTML = `
+                <tr>
+                    <td colspan="7" class="text-center text-danger">
+                        Error loading data: ${error.message}
+                    </td>
+                </tr>
+            `;
+        }
+    }
+</script>
+{% endblock %} 

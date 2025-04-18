@@ -25,6 +25,16 @@ except ImportError:
 
 class PyMonitoring:
     _instance = None
+    
+    @classmethod
+    def get_instance(cls) -> 'PyMonitoring':
+        """Get the current PyMonitoring instance.
+        
+        Returns:
+            The current PyMonitoring instance or None if not initialized
+        """
+        return cls._instance
+
     def __init__(self, db_path="monitoring.db", pyrapl_enabled=False, queue_size=1000, flush_interval=1.0):
         if hasattr(self, 'initialized') and self._instance is not None:
             print("PyMonitoring already initialized")
@@ -58,7 +68,7 @@ class PyMonitoring:
             
             # Initialize the function call tracker
             self.session = Session()
-            self.call_tracker = FunctionCallTracker(self.session)
+            self.call_tracker = FunctionCallTracker(self.session, monitor=self)
             
             logger.info(f"Database initialized successfully at {self.db_path}")
         except Exception as e:
@@ -193,6 +203,10 @@ class PyMonitoring:
             code_def_id = None
             code_version_id = None
 
+        # Get the actual file and line number from the code object
+        file_name = code.co_filename
+        line_number = code.co_firstlineno
+
         # Capture the function call
         try:
             call_id = self.call_tracker.capture_call(
@@ -200,7 +214,9 @@ class PyMonitoring:
                 function_locals,
                 globals_used,
                 code_definition_id=code_def_id,
-                code_version_id=code_version_id
+                code_version_id=code_version_id,
+                file_name=file_name,
+                line_number=line_number
             )
             self.call_id_stack.append(call_id)
             
@@ -300,6 +316,9 @@ class PyMonitoring:
             # Capture locals
             for name, value in frame.f_locals.items():
                 try:
+                    # Skip special variables and functions
+                    if name.startswith('__') or callable(value):
+                        continue
                     ref = self.call_tracker.object_manager.store(value)
                     function_locals[name] = ref
                 except Exception as e:
@@ -314,19 +333,80 @@ class PyMonitoring:
                     logger.warning(f"Failed to store global variable {name}: {e}")
             
             # Create a new stack snapshot
-            snapshot = self.call_tracker.create_stack_snapshot(
-                current_call_id,
-                line_number,
-                function_locals,
-                globals_used
-            )
-            
-            # Log for debugging
-            logger.debug(f"Created stack snapshot for line {line_number} in function {code.co_name}")
+            try:
+                snapshot = self.call_tracker.create_stack_snapshot(
+                    current_call_id,
+                    line_number,
+                    function_locals,
+                    globals_used
+                )
+                
+                # Log for debugging
+                logger.debug(f"Created stack snapshot for line {line_number} in function {code.co_name}")
+                
+                # Commit to ensure the snapshot is saved
+                self.session.commit()
+                
+            except Exception as e:
+                logger.error(f"Error creating stack snapshot: {e}")
+                logger.error(traceback.format_exc())
+                self.session.rollback()
             
         except Exception as e:
             logger.error(f"Error in line monitoring callback: {e}")
             logger.error(traceback.format_exc())
+
+    class FunctionTracker:
+        """Context manager for tracking function execution."""
+        
+        def __init__(self, monitor: 'PyMonitoring', func_name: str, args: tuple, kwargs: dict):
+            self.monitor = monitor
+            self.func_name = func_name
+            self.args = args
+            self.kwargs = kwargs
+            self.return_value = None
+            self.exception = None
+            self.stack_trace = None
+            self.start_time = None
+            self.end_time = None
+            
+        def __enter__(self):
+            self.start_time = datetime.datetime.now()
+            # Get current stack trace
+            self.stack_trace = ''.join(traceback.format_stack())
+            return self
+            
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            self.end_time = datetime.datetime.now()
+            if exc_type is not None:
+                self.exception = exc_val
+                self.stack_trace = ''.join(traceback.format_exception(exc_type, exc_val, exc_tb))
+            
+            # Store the function call with all collected information
+            if self.monitor.call_tracker is not None:
+                self.monitor.call_tracker.store_function_call(
+                    function=self.func_name,
+                    start_time=self.start_time,
+                    end_time=self.end_time,
+                    args=self.args,
+                    kwargs=self.kwargs,
+                    return_value=self.return_value,
+                    exception=str(self.exception) if self.exception else None,
+                    stack_trace=self.stack_trace
+                )
+
+    def track_function(self, func_name: str, args: tuple, kwargs: dict) -> 'FunctionTracker':
+        """Create a context manager for tracking a function's execution.
+        
+        Args:
+            func_name: Name of the function to track
+            args: Positional arguments passed to the function
+            kwargs: Keyword arguments passed to the function
+            
+        Returns:
+            A context manager for tracking the function
+        """
+        return self.FunctionTracker(self, func_name, args, kwargs)
 
 
 def pymonitor(func):
@@ -350,8 +430,20 @@ def pymonitor_line(func):
     """
     if sys.monitoring.get_tool(sys.monitoring.PROFILER_ID) is None:
         sys.monitoring.use_tool_id(sys.monitoring.PROFILER_ID, "py_monitoring")
-    events = sys.monitoring.events.LINE | sys.monitoring.events.PY_START | sys.monitoring.events.PY_RETURN
+    
+    # Enable all necessary events: LINE for line monitoring, PY_START and PY_RETURN for function context
+    events = (sys.monitoring.events.LINE | 
+             sys.monitoring.events.PY_START | 
+             sys.monitoring.events.PY_RETURN)
+    
+    # Set events for this specific function
     sys.monitoring.set_local_events(sys.monitoring.PROFILER_ID, func.__code__, events)
+    
+    # Store the function code for argument name lookup
+    monitor = PyMonitoring.get_instance()
+    if monitor is not None:
+        monitor.monitored_functions[func.__name__] = func.__code__
+    
     return func
 
 

@@ -1,14 +1,77 @@
-from .monitoringpy import init_monitoring, pymonitor, pymonitor_line
-from .models import init_db
-#from .db_operations import DatabaseManager
+"""
+PyMonitor - A Python execution monitoring and analysis tool.
+"""
 
-# Import web explorer if Flask is available
-try:
-    from .web_explorer import run_explorer
-except ImportError:
-    # Flask is not installed, provide a function that gives a helpful error
-    def run_explorer(*args, **kwargs):
-        print("Flask is required for the web explorer. Install it with: pip install flask flask-cors")
-        print("Then you can use: python -m monitoringpy.web_explorer your_database.db")
+import functools
+import traceback
+from typing import Any, Optional, Callable, Tuple, Dict, List, Union
 
-__version__ = "0.1.0"
+from .core import (
+    init_db,
+    init_monitoring,
+    pymonitor,
+    pymonitor_line,
+    PyMonitoring,
+    FunctionCallTracker,
+    CodeManager,
+    ObjectManager,
+    StoredObject,
+    ObjectVersion,
+    ObjectIdentity,
+    StackSnapshot,
+    FunctionCall,
+    CodeDefinition,
+    CodeVersion,
+    CodeObjectLink,
+    delete_function_execution,
+    load_execution_data,
+    reanimate_function,
+    load_snapshot,
+    load_snapshot_in_frame,
+)
+
+from .core.monitoring import pymonitor
+
+from .interface import (
+    WebExplorer,
+    MCPServer,
+)
+
+__version__ = '0.1.0'
+
+
+__all__ = [
+    # Core functionality
+    'init_db',
+    'PyMonitoring',
+    'FunctionCallTracker',
+    'CodeManager',
+    'ObjectManager',
+    #decorators
+    'pymonitor_line',
+    'pymonitor',
+    'init_monitoring',
+    # Models
+    'StoredObject',
+    'ObjectVersion',
+    'ObjectIdentity',
+    'StackSnapshot',
+    'FunctionCall',
+    'CodeDefinition',
+    'CodeVersion',
+    'CodeObjectLink',
+    # Interfaces
+    'WebExplorer',
+    'MCPServer',
+    # Monitoring
+    'init_monitoring',
+    'pymonitor_line',
+    'pymonitor',
+    # Reanimation 
+    'load_execution_data',
+    'reanimate_function',
+    'delete_function_execution',
+    'load_snapshot',
+    'load_snapshot_in_frame',
+]
+

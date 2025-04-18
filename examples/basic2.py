@@ -56,7 +56,7 @@ if __name__ == "__main__":
         "binary_search": []
     }
     for i in range(1,10):
-        list_size = i*1000
+        list_size = i*100
         arr = random.sample(range(1, list_size*10), list_size)
         arr.sort()
         target = random.randint(1, list_size*10)

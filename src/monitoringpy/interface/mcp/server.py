@@ -16,66 +16,173 @@ from mcp.server.models import InitializationOptions
 import mcp.types as types
 from mcp.server import NotificationOptions, Server
 import mcp.server.stdio
-from pydantic import AnyUrl
 
-from .models import init_db, StoredObject, FunctionCall, StackSnapshot, CodeDefinition
-from .function_call import FunctionCallTracker
-from .representation import ObjectManager
+from monitoringpy.core import (
+    init_db, StoredObject, FunctionCall, StackSnapshot, 
+    CodeDefinition, FunctionCallTracker, ObjectManager
+)
 
-# Configure logging to both file and console
-log_dir = Path.home() / ".pymonitor" / "logs"
-log_dir.mkdir(parents=True, exist_ok=True)
-log_file = log_dir / f"mcp_server_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-
-# Create file handler
-file_handler = logging.FileHandler(log_file)
-file_handler.setLevel(logging.DEBUG)
-
-# Create console handler
-console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.INFO)
-
-# Create formatters and add them to the handlers
-file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-console_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-file_handler.setFormatter(file_formatter)
-console_handler.setFormatter(console_formatter)
-
-# Get the logger and add the handlers
+# Get the logger but don't configure it yet
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-logger.addHandler(file_handler)
-logger.addHandler(console_handler)
 
-logger.info(f"Starting MCP server with log file: {log_file}")
-
-class FunctionCallInfo:
-    """Information about a function call"""
-    def __init__(self):
-        self.function: str = ""
-        self.file: str = ""
-        self.line: int = 0
-        self.start_time: Optional[datetime.datetime] = None
-        self.end_time: Optional[datetime.datetime] = None
-        self.locals: Dict[str, Any] = {}
-        self.globals: Dict[str, Any] = {}
-        self.return_value: Optional[Any] = None
-        self.id: Optional[str] = None
-        self.prev_call: Optional[str] = None
-        self.next_call: Optional[str] = None
-        self.stack_trace: Optional[List[Dict[str, Any]]] = None
-
-class PyMonitorDatabase:
+class MCPServer:
+    """MCP Server for PyMonitor"""
+    
     def __init__(self, db_path: str):
+        """Initialize the MCP server.
+        
+        Args:
+            db_path: Path to the SQLite database file
+        """
         self.db_path = str(Path(db_path).expanduser())
-        if not os.path.exists(self.db_path):
-            raise FileNotFoundError(f"Database file not found: {self.db_path}")
+        self.setup_logging()
         
         # Initialize database and components
         Session = init_db(self.db_path)
         self.session = Session()
         self.object_manager = ObjectManager(self.session)
         self.call_tracker = FunctionCallTracker(self.session)
+        self.server = None
+
+    def setup_logging(self):
+        """Set up logging configuration"""
+        # Configure logging to both file and console
+        log_dir = Path.home() / ".pymonitor" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / f"mcp_server_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+
+        # Create file handler
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setLevel(logging.DEBUG)
+
+        # Create console handler
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+
+        # Create formatters and add them to the handlers
+        file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        console_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        file_handler.setFormatter(file_formatter)
+        console_handler.setFormatter(console_formatter)
+
+        # Add the handlers to the logger
+        logger.setLevel(logging.DEBUG)
+        logger.addHandler(file_handler)
+        logger.addHandler(console_handler)
+
+        logger.info(f"Starting MCP server with log file: {log_file}")
+
+    async def start(self):
+        """Start the MCP server"""
+        self.server = Server(
+            name="PyMonitor MCP Server",
+            version="1.0.0",
+            initialization_options=InitializationOptions(
+                notification_options=NotificationOptions(
+                    should_notify_on_initialization=True
+                )
+            )
+        )
+
+        @self.server.list_tools()
+        async def handle_list_tools() -> List[types.Tool]:
+            """List available tools"""
+            return [
+                types.Tool(
+                    name="list_function_calls",
+                    description="List all function calls with optional filters",
+                    parameters=[
+                        types.Parameter(
+                            name="search",
+                            description="Search term to filter function names",
+                            type="string",
+                            required=False
+                        ),
+                        types.Parameter(
+                            name="file",
+                            description="Filter by file path",
+                            type="string",
+                            required=False
+                        ),
+                        types.Parameter(
+                            name="function",
+                            description="Filter by exact function name",
+                            type="string",
+                            required=False
+                        )
+                    ]
+                ),
+                types.Tool(
+                    name="get_function_call",
+                    description="Get detailed information about a specific function call",
+                    parameters=[
+                        types.Parameter(
+                            name="call_id",
+                            description="ID of the function call to get",
+                            type="string",
+                            required=True
+                        )
+                    ]
+                ),
+                types.Tool(
+                    name="get_object_graph",
+                    description="Get the object graph data for visualization",
+                    parameters=[
+                        types.Parameter(
+                            name="random_string",
+                            description="Dummy parameter for no-parameter tools",
+                            type="string",
+                            required=True
+                        )
+                    ]
+                )
+            ]
+
+        @self.server.call_tool()
+        async def handle_call_tool(
+            name: str, arguments: Dict[str, Any] | None
+        ) -> List[types.TextContent | types.ImageContent | types.EmbeddedResource]:
+            """Handle tool calls"""
+            try:
+                if name == "list_function_calls":
+                    search = arguments.get("search", "") if arguments else ""
+                    file_filter = arguments.get("file", "") if arguments else ""
+                    function_filter = arguments.get("function", "") if arguments else ""
+                    
+                    calls = self.get_function_calls(search, file_filter, function_filter)
+                    return [types.TextContent(text=str(calls))]
+                
+                elif name == "get_function_call":
+                    if not arguments or "call_id" not in arguments:
+                        raise ValueError("call_id is required")
+                    
+                    call_info = self.get_function_call(arguments["call_id"])
+                    if call_info is None:
+                        return [types.TextContent(text="Function call not found")]
+                    return [types.TextContent(text=str(call_info))]
+                
+                elif name == "get_object_graph":
+                    graph = self.get_object_graph()
+                    return [types.TextContent(text=str(graph))]
+                
+                else:
+                    return [types.TextContent(text=f"Unknown tool: {name}")]
+            
+            except Exception as e:
+                logger.error(f"Error handling tool call: {e}")
+                return [types.TextContent(text=f"Error: {str(e)}")]
+
+        try:
+            await self.server.start()
+        finally:
+            if self.session:
+                self.session.close()
+
+    def close(self):
+        """Close the database session"""
+        if self.session:
+            self.session.close()
+            self.session = None
 
     def get_function_calls(self, search: str = "", file_filter: str = "", function_filter: str = "") -> List[Dict[str, Any]]:
         """Get function calls with optional filters"""
@@ -126,7 +233,7 @@ class PyMonitorDatabase:
                 call_dict['prev_call'] = None
                 call_dict['next_call'] = None
             
-            # Get stack trace if available
+            # Get stack recording if available
             call = self.session.query(FunctionCall).filter_by(id=int(call_id)).first()
             if call and call.first_snapshot_id:
                 stack_snapshots = []
@@ -134,10 +241,11 @@ class PyMonitorDatabase:
                 
                 while current_snapshot:
                     snapshot_data = {
-                        'line': current_snapshot.line_number,
-                        'timestamp': current_snapshot.timestamp.isoformat(),
-                        'locals': {},
-                        'globals': {}
+                        'id': current_snapshot.id,
+                        'line_number': current_snapshot.line_number,
+                        'locals_refs': current_snapshot.locals_refs,
+                        'globals_refs': current_snapshot.globals_refs,
+                        'timestamp': current_snapshot.timestamp.isoformat() if current_snapshot.timestamp else None,
                     }
                     
                     # Process local variables
@@ -164,7 +272,7 @@ class PyMonitorDatabase:
                     else:
                         break
                 
-                call_dict['stack_trace'] = stack_snapshots
+                call_dict['stack_recording'] = stack_snapshots
             
             return call_dict
         except Exception as e:
@@ -356,150 +464,20 @@ class PyMonitorDatabase:
 
 async def main(db_path: str):
     """Run the MCP server"""
-    logger.info(f"Starting PyMonitor MCP Server with DB path: {db_path}")
-    
+    server = MCPServer(db_path)
     try:
-        logger.debug("Initializing database connection")
-        db = PyMonitorDatabase(db_path)
-        logger.debug("Database connection initialized successfully")
-        
-        logger.debug("Creating MCP server instance")
-        server = Server("pymonitor-explorer")
-        logger.debug("MCP server instance created")
-        
-        # Register handlers
-        logger.debug("Registering handlers")
-        
-        @server.list_tools()
-        async def handle_list_tools() -> List[types.Tool]:
-            """List available tools"""
-            logger.debug("Handling list_tools request")
-            tools = [
-                types.Tool(
-                    name="list_function_calls",
-                    description="List all function calls with optional filters",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "search": {"type": "string", "description": "Search term to filter function names"},
-                            "file": {"type": "string", "description": "Filter by file path"},
-                            "function": {"type": "string", "description": "Filter by exact function name"},
-                        },
-                    },
-                ),
-                types.Tool(
-                    name="get_function_call",
-                    description="Get detailed information about a specific function call",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "call_id": {"type": "string", "description": "ID of the function call to get"},
-                        },
-                        "required": ["call_id"],
-                    },
-                ),
-                types.Tool(
-                    name="get_object_graph",
-                    description="Get the object graph data for visualization",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {},
-                    },
-                ),
-            ]
-            logger.debug(f"Returning {len(tools)} tools")
-            return tools
-        
-        @server.call_tool()
-        async def handle_call_tool(
-            name: str, arguments: Dict[str, Any] | None
-        ) -> List[types.TextContent | types.ImageContent | types.EmbeddedResource]:
-            """Handle tool calls"""
-            logger.debug(f"Handling tool call: {name} with arguments: {arguments}")
-            if not arguments:
-                arguments = {}
-            
-            try:
-                if name == "list_function_calls":
-                    logger.debug("Executing list_function_calls")
-                    calls = db.get_function_calls(
-                        search=arguments.get("search", ""),
-                        file_filter=arguments.get("file", ""),
-                        function_filter=arguments.get("function", "")
-                    )
-                    logger.debug(f"Found {len(calls)} function calls")
-                    return [types.TextContent(type="text", text=str(calls))]
-                
-                elif name == "get_function_call":
-                    logger.debug("Executing get_function_call")
-                    if "call_id" not in arguments:
-                        raise ValueError("Missing required argument: call_id")
-                    
-                    call_info = db.get_function_call(arguments["call_id"])
-                    if not call_info:
-                        raise ValueError(f"Function call not found: {arguments['call_id']}")
-                    
-                    logger.debug("Successfully retrieved function call info")
-                    return [types.TextContent(type="text", text=str(call_info))]
-                
-                elif name == "get_object_graph":
-                    logger.debug("Executing get_object_graph")
-                    graph_data = db.get_object_graph()
-                    logger.debug(f"Generated graph with {len(graph_data['nodes'])} nodes and {len(graph_data['edges'])} edges")
-                    return [types.TextContent(type="text", text=str(graph_data))]
-                
-                else:
-                    raise ValueError(f"Unknown tool: {name}")
-            
-            except Exception as e:
-                logger.error(f"Error handling tool call {name}: {e}", exc_info=True)
-                raise
-        
-        # Run the server with stdio transport
-        logger.debug("Setting up stdio transport")
-        async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
-            logger.info("Server running with stdio transport")
-            try:
-                logger.debug("Starting server with initialization options")
-                await server.run(
-                    read_stream,
-                    write_stream,
-                    InitializationOptions(
-                        server_name="pymonitor",
-                        server_version="0.1.0",
-                        capabilities=server.get_capabilities(
-                            notification_options=NotificationOptions(),
-                            experimental_capabilities={},
-                        ),
-                    ),
-                )
-            except Exception as e:
-                logger.error("Error during server run", exc_info=True)
-                raise
-    
-    except Exception as e:
-        logger.error("Fatal server error", exc_info=True)
-        raise
+        await server.start()
     finally:
-        if hasattr(db, 'session'):
-            logger.debug("Closing database session")
-            db.session.close()
-            logger.debug("Database session closed")
+        server.close()
 
 def __main__():
     """Entry point for running as a module"""
-    try:
-        parser = argparse.ArgumentParser(description="PyMonitor MCP Server")
-        parser.add_argument("--db-path", required=True, help="Path to the database file")
-        args = parser.parse_args()
-        
-        logger.info(f"Starting server with database path: {args.db_path}")
-        db_path = args.db_path
-        import asyncio
-        asyncio.run(main(db_path))
-    except Exception as e:
-        logger.error("Error in main entry point", exc_info=True)
-        raise
+    parser = argparse.ArgumentParser(description="PyMonitor MCP Server")
+    parser.add_argument("db_path", help="Path to the database file to explore")
+    args = parser.parse_args()
+    
+    import asyncio
+    asyncio.run(main(args.db_path))
 
 if __name__ == "__main__":
     __main__() 

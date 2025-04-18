@@ -72,7 +72,7 @@ class StackSnapshot(Base):
     next_snapshot_id = Column(Integer, ForeignKey('stack_snapshots.id'), nullable=True)
     
     # Relationships
-    function_call = relationship("FunctionCall", foreign_keys=[function_call_id], back_populates="stack_trace")
+    function_call = relationship("FunctionCall", foreign_keys=[function_call_id], back_populates="stack_recording")
     previous_snapshot = relationship("StackSnapshot", foreign_keys=[previous_snapshot_id], remote_side=[id], backref="next_snapshot_ref")
     next_snapshot = relationship("StackSnapshot", foreign_keys=[next_snapshot_id], remote_side=[id], backref="previous_snapshot_ref")
 
@@ -93,6 +93,10 @@ class FunctionCall(Base):
     globals_refs = Column(JSON, nullable=False, default=dict)  # Dict[str, str] mapping variable names to object refs
     return_ref = Column(String, nullable=True)  # Reference to return value in object manager
 
+    # Store error information
+    exception = Column(String, nullable=True)  # Exception information if any
+    error_stack_trace = Column(Text, nullable=True)  # Stack trace at the time of error
+
     # Reference to the first stack snapshot (if line monitoring is enabled)
     first_snapshot_id = Column(Integer, ForeignKey('stack_snapshots.id'), nullable=True)
     
@@ -101,8 +105,8 @@ class FunctionCall(Base):
     code_version_id = Column(Integer, ForeignKey('code_versions.id'), nullable=True)
     
     # Relationships
-    stack_trace = relationship("StackSnapshot", foreign_keys=[StackSnapshot.function_call_id], back_populates="function_call")
-    first_snapshot = relationship("StackSnapshot", foreign_keys=[first_snapshot_id], overlaps="stack_trace")
+    stack_recording = relationship("StackSnapshot", foreign_keys=[StackSnapshot.function_call_id], back_populates="function_call")
+    first_snapshot = relationship("StackSnapshot", foreign_keys=[first_snapshot_id], overlaps="stack_recording")
     code_definition = relationship("CodeDefinition")
     code_version = relationship("CodeVersion")
 

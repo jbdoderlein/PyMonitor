@@ -54,14 +54,14 @@ document.addEventListener('DOMContentLoaded', function() {
 
 async function loadFunctions() {
     try {
-        const response = await fetch('/api/functions-with-traces');
+        const response = await fetch(getApiUrl('/api/functions-with-stack-recordings'));
         const functions = await response.json();
         
         const select = document.getElementById('function-select');
         functions.forEach(func => {
             const option = document.createElement('option');
             option.value = func.id;
-            option.textContent = `${func.name} (${func.file}:${func.line}) - ${func.trace_count} traces`;
+            option.textContent = `${func.function} (${func.file}:${func.line}) - ${func.trace_count} traces`;
             select.appendChild(option);
         });
     } catch (error) {
@@ -89,10 +89,14 @@ function setupEventListeners() {
 
 async function loadTraces(functionId) {
     try {
-        const response = await fetch(`/api/function-traces/${functionId}`);
+        const response = await fetch(getApiUrl(`/api/function-traces/${functionId}`));
         const data = await response.json();
         traces.clear();
-        data.traces.forEach(trace => {
+        
+        // Handle case where the data is returned directly or nested in a 'traces' property
+        const traceData = Array.isArray(data) ? data : (data.traces || []);
+        
+        traceData.forEach(trace => {
             traces.set(trace.id, trace);
         });
     } catch (error) {
