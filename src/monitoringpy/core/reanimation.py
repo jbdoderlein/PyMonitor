@@ -12,6 +12,7 @@ import sys
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from . import init_db, FunctionCallTracker, ObjectManager
+from . import models
 
 
 def load_execution_data(function_execution_id: str, db_path: str) -> Tuple[List[Any], Dict[str, Any]]:
@@ -194,3 +195,127 @@ def reanimate_function(function_execution_id: str, db_path: str,
     finally:
         # Close the session
         session.close() 
+
+def load_snapshot(snapshot_id: str, db_path: str) -> Dict[str, Any]:
+    """
+    Load the snapshot data for a given snapshot ID.
+    
+    This function connects to the database, retrieves the stack snapshot data,
+    and returns the locals and globals dictionaries from that snapshot.
+    
+    Args:
+        snapshot_id: The ID of the stack snapshot to load
+        db_path: Path to the database file containing the snapshot data
+        
+    Returns:
+        A dictionary containing the following keys:
+        - 'locals': Dictionary of local variables
+        - 'globals': Dictionary of global variables
+        
+    Example:
+        ```python
+        import monitoringpy
+        
+        # Load a specific snapshot
+        snapshot_data = monitoringpy.load_snapshot("123", "monitoring.db")
+        
+        # Access the local and global variables
+        local_vars = snapshot_data['locals']
+        global_vars = snapshot_data['globals']
+        ```
+    """
+    # Initialize database connection
+    Session = init_db(db_path)
+    session = Session()
+    
+    try:
+        # Create an ObjectManager to retrieve the stored objects
+        obj_manager = ObjectManager(session)
+        
+        # Query the StackSnapshot table for the given ID
+        snapshot = session.query(models.StackSnapshot).filter_by(id=snapshot_id).first()
+        
+        if not snapshot:
+            raise ValueError(f"Snapshot with ID {snapshot_id} not found")
+        
+        # Rehydrate the locals and globals dictionaries
+        locals_dict = obj_manager.rehydrate_dict(snapshot.locals_refs)
+        globals_dict = obj_manager.rehydrate_dict(snapshot.globals_refs)
+        
+        return {
+            'locals': locals_dict,
+            'globals': globals_dict
+        }
+        
+    finally:
+        # Close the session
+        session.close()
+
+
+def load_snapshot_in_frame(snapshot_id: str, db_path: str, frame=None) -> None:
+    """
+    Load a snapshot directly into the provided frame's locals and globals dictionaries.
+    
+    This function connects to the database, retrieves the stack snapshot data,
+    and updates the provided frame's local and global variables with the values from the snapshot.
+    
+    Args:
+        snapshot_id: The ID of the stack snapshot to load
+        db_path: Path to the database file containing the snapshot data
+        frame: The frame to update (defaults to the current frame if None)
+        
+    Returns:
+        None
+        
+    Example:
+        ```python
+        import monitoringpy
+        import inspect
+        
+        # Load a snapshot directly into the current execution frame
+        monitoringpy.load_snapshot_in_frame("123", "monitoring.db", inspect.currentframe())
+        
+        # Now all local variables from the snapshot are available in the current scope
+        ```
+    """
+    import inspect
+    
+    # Use current frame if none provided
+    if frame is None:
+        current_frame = inspect.currentframe()
+        if current_frame is not None:
+            frame = current_frame.f_back
+    
+    # Validate that we have a valid frame
+    if frame is None:
+        raise ValueError("No valid frame was provided or could be determined")
+    
+    # Get the frame's locals and globals dictionaries
+    frame_locals = frame.f_locals
+    frame_globals = frame.f_globals
+    
+    # Load the snapshot data
+    snapshot_data = load_snapshot(snapshot_id, db_path)
+    
+    # Update the frame's locals with the snapshot's locals
+    frame_locals.update(snapshot_data['locals'])
+    
+    # Update the frame's globals with the snapshot's globals
+    # Only update globals that don't conflict with builtins or module-level constants
+    for key, value in snapshot_data['globals'].items():
+        # Skip updating certain globals that might cause issues
+        if not (key.startswith('__') and key.endswith('__')):
+            frame_globals[key] = value
+    
+    # Force update of the frame locals (needed in some Python implementations)
+    # This uses ctypes to access CPython internals safely
+    try:
+        import ctypes
+        ctypes.pythonapi.PyFrame_LocalsToFast(
+            ctypes.py_object(frame),
+            ctypes.c_int(0)
+        )
+    except (ImportError, AttributeError):
+        # If ctypes is not available or PyFrame_LocalsToFast doesn't exist,
+        # we've done our best with the frame.f_locals.update() above
+        pass 

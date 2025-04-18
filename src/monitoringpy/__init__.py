@@ -26,6 +26,8 @@ from .core import (
     delete_function_execution,
     load_execution_data,
     reanimate_function,
+    load_snapshot,
+    load_snapshot_in_frame,
 )
 
 from .core.monitoring import pymonitor
@@ -69,5 +71,7 @@ __all__ = [
     'load_execution_data',
     'reanimate_function',
     'delete_function_execution',
+    'load_snapshot',
+    'load_snapshot_in_frame',
 ]
 
