@@ -7,6 +7,7 @@ import datetime
 import logging
 import os
 import traceback
+import sqlite3
 from sqlalchemy import text
 from .models import init_db
 from .function_call import FunctionCallTracker
@@ -27,7 +28,7 @@ class PyMonitoring:
     _instance = None
     
     @classmethod
-    def get_instance(cls) -> 'PyMonitoring':
+    def get_instance(cls) -> 'PyMonitoring | None':
         """Get the current PyMonitoring instance.
         
         Returns:
@@ -147,10 +148,92 @@ class PyMonitoring:
                 logger.error(traceback.format_exc())
         logger.info("PyMonitoring shutdown completed")
 
+    def export_db(self, target_file_path: str):
+        """Exports the current monitoring database to a specified file.
+
+        This is particularly useful when using an in-memory database (":memory:")
+        to persist the collected data before the application exits.
+
+        Args:
+            target_file_path: The path to the file where the database should be saved.
+
+        Raises:
+            ValueError: If the monitoring session is not available or the database
+                        connection cannot be established.
+            Exception: Any exceptions raised during the database backup process.
+        """
+        logger.info(f"Attempting to export database to {target_file_path}")
+        if not hasattr(self, 'session') or self.session is None:
+            raise ValueError("Monitoring session is not initialized or available.")
+
+        source_engine = self.session.get_bind()
+        if source_engine is None:
+            raise ValueError("Could not get database engine from session.")
+
+        # Ensure any pending changes are committed to release potential locks
+        try:
+            logger.info("Committing session before export...")
+            self.session.commit()
+            logger.info("Session committed.")
+        except Exception as e:
+            logger.error(f"Error committing session before export: {e}. Attempting rollback.")
+            try:
+                self.session.rollback()
+            except Exception as rb_e:
+                logger.error(f"Rollback failed: {rb_e}")
+            # Depending on the error, we might want to raise it or just log and proceed cautiously
+            # For now, let's log and continue, the backup might still work or fail later.
+            # raise ValueError(f"Failed to commit session before export: {e}") from e
+
+        source_conn = None
+        target_conn = None
+        try:
+            # Get the raw DBAPI connection from the engine
+            dbapi_connection = source_engine.raw_connection() # type: ignore
+            
+            # Extract the actual sqlite3 connection object
+            # This might be nested depending on SQLAlchemy version/setup
+            if hasattr(dbapi_connection, 'connection'): # Standard DBAPI connection wrapper
+                source_conn = dbapi_connection.connection # type: ignore
+            else: # Might be the raw connection itself
+                source_conn = dbapi_connection
+
+            # Verify it's an SQLite connection
+            if not isinstance(source_conn, sqlite3.Connection):
+                 raise TypeError(f"Database connection is not a sqlite3 connection. Type is {type(source_conn)}")
+            
+            # Create a connection to the target file database
+            logger.info(f"Creating target database connection: {target_file_path}")
+            target_conn = sqlite3.connect(target_file_path)
+
+            # Perform the backup
+            logger.info("Starting database backup...")
+            with target_conn: # 'with target_conn' handles commit/rollback on the target
+                logger.debug(f"Attempting backup from {source_conn} to {target_conn}")
+                source_conn.backup(target_conn)
+                logger.debug("Backup call finished.")
+            logger.info("Database backup completed successfully.")
+
+        except sqlite3.Error as e:
+            logger.error(f"SQLite error during database export: {e}")
+            logger.error(traceback.format_exc())
+            raise  # Re-raise the exception
+        except Exception as e:
+            logger.error(f"An unexpected error occurred during database export: {e}")
+            logger.error(traceback.format_exc())
+            raise # Re-raise the exception
+        finally:
+            # Ensure the target connection is closed
+            if target_conn:
+                target_conn.close()
+                logger.info(f"Closed target database connection: {target_file_path}")
+            # We don't close the source_conn as it's managed by SQLAlchemy engine
+            # Release the raw connection obtained from the engine
+            # dbapi_connection.close() # Let SQLAlchemy manage the lifecycle of the raw connection pool
+
     def monitor_callback_function_start(self, code: types.CodeType, offset):
         if self.call_tracker is None:
             return
-
         current_frame = inspect.currentframe()
         if current_frame is None or current_frame.f_back is None: 
             return
@@ -169,6 +252,16 @@ class PyMonitoring:
         
         # Get used globals
         globals_used = self.get_used_globals(code, frame.f_globals)
+        
+        # Get ignored variables from the function object itself
+        ignored_variables = []
+        func_obj = frame.f_globals.get(code.co_name)
+        if func_obj and hasattr(func_obj, '_pymonitor_ignore'):
+            ignored_variables = func_obj._pymonitor_ignore or [] # Ensure it's a list
+            
+        # Filter locals and globals based on the ignore list
+        function_locals = {k: v for k, v in function_locals.items() if k not in ignored_variables}
+        globals_used = {k: v for k, v in globals_used.items() if k not in ignored_variables}
 
         # Try to get the function's source code and create code version
         try:
@@ -409,18 +502,27 @@ class PyMonitoring:
         return self.FunctionTracker(self, func_name, args, kwargs)
 
 
-def pymonitor(func):
+def pymonitor(ignore=None):
     """
-    Decorator to monitor the execution of a function.
+    Decorator factory to monitor the execution of a function.
     Args:
-        line (bool): Whether to monitor line-by-line execution
+        ignore (list[str], optional): A list of names to ignore during monitoring. Defaults to None.
     """
+    if ignore is None:
+        ignore = []
 
-    if sys.monitoring.get_tool(sys.monitoring.PROFILER_ID) is None:
-        sys.monitoring.use_tool_id(sys.monitoring.PROFILER_ID, "py_monitoring")
-    events = sys.monitoring.events.PY_START | sys.monitoring.events.PY_RETURN
-    sys.monitoring.set_local_events(sys.monitoring.PROFILER_ID, func.__code__, events)
-    return func
+    def _decorator(func):
+        if sys.monitoring.get_tool(sys.monitoring.PROFILER_ID) is None:
+            sys.monitoring.use_tool_id(sys.monitoring.PROFILER_ID, "py_monitoring")
+        
+        events = sys.monitoring.events.PY_START | sys.monitoring.events.PY_RETURN
+        sys.monitoring.set_local_events(sys.monitoring.PROFILER_ID, func.__code__, events)
+        
+        # Store ignore list directly on the function object
+        func._pymonitor_ignore = ignore
+        
+        return func
+    return _decorator
 
 def pymonitor_line(func):
     """
