@@ -19,7 +19,8 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from monitoringpy.core import (
     init_db, StoredObject, FunctionCall, StackSnapshot, 
-    CodeDefinition, FunctionCallTracker, ObjectManager
+    CodeDefinition, FunctionCallTracker, ObjectManager,
+    MonitoringSession
 )
 from monitoringpy.core.representation import Object, Primitive, List as ListObj, DictObject, CustomClass
 
@@ -200,6 +201,13 @@ def serialize_call_info(call_info: Dict[str, Any]) -> Dict[str, Any]:
     # Process return value
     if "return_value" in call_info:
         result["return_value"] = serialize_stored_value(call_info["return_value"])
+        
+    # Add call_metadata if present
+    if "call_metadata" in call_info and call_info["call_metadata"] is not None:
+        # Assuming call_metadata is already JSON-serializable
+        result["call_metadata"] = call_info["call_metadata"]
+    else:
+        result["call_metadata"] = None
     
     return result
 
@@ -599,6 +607,112 @@ async def get_function_call(call_id: str):
         logger.error(f"Error getting function call: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/sessions")
+async def get_monitoring_sessions():
+    """Get all monitoring sessions"""
+    global session
+    
+    try:
+        if session is None:
+            raise ValueError("Session is not initialized")
+                
+        # Query all monitoring sessions
+        monitoring_sessions = session.query(MonitoringSession).all()
+        
+        # Convert sessions to a serializable format
+        result = []
+        for ms in monitoring_sessions:
+            session_data = {
+                "id": ms.id,
+                "name": ms.name,
+                "description": ms.description,
+                "start_time": ms.start_time.isoformat() if ms.start_time else None,
+                "end_time": ms.end_time.isoformat() if ms.end_time else None,
+                "function_count": len(ms.function_calls_map) if ms.function_calls_map else 0,
+                "total_calls": sum(len(calls) for calls in ms.function_calls_map.values()) if ms.function_calls_map else 0,
+                "metadata": ms.session_metadata
+            }
+            result.append(session_data)
+        
+        # Sort sessions by start_time in descending order (newest first)
+        result.sort(key=lambda x: x["start_time"] if x["start_time"] else "", reverse=True)
+        
+        return {"sessions": result}
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error getting monitoring sessions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/session/{session_id}")
+async def get_monitoring_session(session_id: int):
+    """Get details of a specific monitoring session"""
+    global session
+    
+    try:
+        if session is None:
+            raise ValueError("Session is not initialized")
+                
+        # Query the monitoring session
+        monitoring_session = session.query(MonitoringSession).filter(MonitoringSession.id == session_id).first()
+        if not monitoring_session:
+            raise ValueError(f"Monitoring session {session_id} not found")
+        
+        # Get all function calls for this session
+        function_calls = []
+        if monitoring_session.function_calls_map:
+            for func_name, call_ids in monitoring_session.function_calls_map.items():
+                for call_id in call_ids:
+                    # Get the function call from the database
+                    func_call = session.query(FunctionCall).filter(FunctionCall.id == call_id).first()
+                    if func_call:
+                        call_data = {
+                            "id": func_call.id,
+                            "function": func_call.function,
+                            "file": func_call.file,
+                            "line": func_call.line,
+                            "start_time": func_call.start_time.isoformat() if func_call.start_time else None,
+                            "end_time": func_call.end_time.isoformat() if func_call.end_time else None,
+                            "duration": (func_call.end_time - func_call.start_time).total_seconds() if func_call.end_time and func_call.start_time else None,
+                            "has_stack_recording": session.query(StackSnapshot).filter(StackSnapshot.function_call_id == func_call.id).count() > 0
+                        }
+                        function_calls.append(call_data)
+        
+        # Calculate common variables information for display
+        common_vars_info = {}
+        if monitoring_session.common_globals:
+            for func_name, var_names in monitoring_session.common_globals.items():
+                if func_name not in common_vars_info:
+                    common_vars_info[func_name] = {"globals": [], "locals": []}
+                common_vars_info[func_name]["globals"] = var_names
+        
+        if monitoring_session.common_locals:
+            for func_name, var_names in monitoring_session.common_locals.items():
+                if func_name not in common_vars_info:
+                    common_vars_info[func_name] = {"globals": [], "locals": []}
+                common_vars_info[func_name]["locals"] = var_names
+        
+        # Serialize the monitoring session
+        result = {
+            "id": monitoring_session.id,
+            "name": monitoring_session.name,
+            "description": monitoring_session.description,
+            "start_time": monitoring_session.start_time.isoformat() if monitoring_session.start_time else None,
+            "end_time": monitoring_session.end_time.isoformat() if monitoring_session.end_time else None,
+            "function_calls_map": monitoring_session.function_calls_map,
+            "common_variables": common_vars_info,
+            "common_globals": monitoring_session.common_globals,
+            "common_locals": monitoring_session.common_locals,
+            "metadata": monitoring_session.session_metadata,
+            "function_calls": function_calls
+        }
+        
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404 if "not found" in str(e) else 500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error getting monitoring session: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 def initialize_db(db_file: str):
     """Initialize the database with the given file path"""

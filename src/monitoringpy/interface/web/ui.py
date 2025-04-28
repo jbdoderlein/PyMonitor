@@ -86,6 +86,13 @@ def create_ui_app(tracker, api_server_url=None):
     def function_call(call_id):
         return render_template('function_call.html', call_id=call_id)
     
+    @app.route('/sessions')
+    def sessions():
+        return render_template('sessions.html')
+    
+    @app.route('/session/<session_id>')
+    def session_detail(session_id):
+        return render_template('session_detail.html', session_id=session_id)
     
     return app
 

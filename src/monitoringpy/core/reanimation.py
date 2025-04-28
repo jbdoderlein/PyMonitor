@@ -142,6 +142,7 @@ def reanimate_function(function_execution_id: str, db_path: str,
     try:
         # Create a FunctionCallTracker
         call_tracker = FunctionCallTracker(session)
+        obj_manager = ObjectManager(session)
         
         # Get the function call details
         call_info = call_tracker.get_call(function_execution_id)
@@ -171,8 +172,17 @@ def reanimate_function(function_execution_id: str, db_path: str,
             if file_dir and file_dir not in sys.path and os.path.exists(file_dir):
                 sys.path.insert(0, file_dir)
                 
-            # Import the module
-            module = importlib.import_module(module_name)
+            # Check if the module is already imported
+            if module_name in sys.modules:
+                print(f"Reloading module {module_name} from {file_dir}")
+
+                #reload the module
+                importlib.reload(sys.modules[module_name])
+                module = sys.modules[module_name]
+            else:
+                print(f"Importing module {module_name} from {file_dir}")
+                module = importlib.import_module(module_name)
+            
         else:
             # If we can't determine the module path, look for the module path in code info
             module_path = call_info['code'].get('module_path') if call_info['code'] else None
@@ -188,6 +198,17 @@ def reanimate_function(function_execution_id: str, db_path: str,
         
         # Load the execution data
         args, kwargs = load_execution_data(function_execution_id, db_path)
+
+        # init the global variables
+        globals_dict = obj_manager.rehydrate_dict(call_info['globals'])
+        for key, value in globals_dict.items():
+            setattr(module, key, value)
+        # Set the function's globals to the rehydrated globals
+        # This is a workaround for Python's function closure behavior
+        # and may not work in all cases
+        function.__globals__.update(globals_dict)
+        
+
         
         # Execute the function
         return function(*args, **kwargs)

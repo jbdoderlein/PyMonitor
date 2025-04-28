@@ -17,6 +17,9 @@
                     <a class="nav-link" href="/compare-traces">Compare Traces</a>
                 </li>
                 <li class="nav-item">
+                    <a class="nav-link" id="sessionsView" href="/sessions">Sessions</a>
+                </li>
+                <li class="nav-item">
                     <a class="nav-link" id="graphView" href="/graph">Object Graph</a>
                 </li>
             </ul>
@@ -34,6 +37,8 @@ document.addEventListener('DOMContentLoaded', function() {
         document.getElementById('graphView').classList.add('active');
     } else if (path === '/stack-recordings' || path.startsWith('/stack-recording/')) {
         document.getElementById('stackTraceView').classList.add('active');
+    } else if (path === '/sessions' || path.startsWith('/session/')) {
+        document.getElementById('sessionsView').classList.add('active');
     }
 });
 </script>

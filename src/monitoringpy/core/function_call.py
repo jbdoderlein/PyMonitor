@@ -50,7 +50,8 @@ class FunctionCallTracker:
 
     def capture_call(self, func_name: str, locals_dict: Dict[str, Any], globals_dict: Dict[str, Any], 
                     code_definition_id: Optional[str] = None, code_version_id: Optional[int] = None,
-                    file_name: Optional[str] = None, line_number: Optional[int] = None) -> str:
+                    file_name: Optional[str] = None, line_number: Optional[int] = None,
+                    initial_metadata: Optional[Dict[str, Any]] = None) -> str:
         """
         Capture a function call with its local and global context.
         Returns the function call ID.
@@ -68,7 +69,8 @@ class FunctionCallTracker:
             locals_refs=locals_refs,
             globals_refs=globals_refs,
             code_definition_id=code_definition_id,
-            code_version_id=code_version_id
+            code_version_id=code_version_id,
+            call_metadata=initial_metadata
         )
         
         self.session.add(call)

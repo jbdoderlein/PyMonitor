@@ -6,4 +6,5 @@ matplotlib>=3.7.0
 numpy>=1.24.0
 pyrapl>=0.2.3; platform_system != "Windows" 
 fastapi>=0.100.0
-uvicorn>=0.22.0 
+uvicorn>=0.22.0
+pygame>=2.5.0 

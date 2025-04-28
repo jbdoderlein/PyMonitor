@@ -110,6 +110,10 @@ class FunctionCall(Base):
     code_definition = relationship("CodeDefinition")
     code_version = relationship("CodeVersion")
 
+    # New session relationship
+    session_id = Column(Integer, ForeignKey('monitoring_sessions.id'), nullable=True)
+    session = relationship("MonitoringSession", back_populates="function_calls")
+
 class CodeDefinition(Base):
     """Represents a code definition (class, function, etc.)."""
     __tablename__ = 'code_definitions'
@@ -148,6 +152,29 @@ class CodeObjectLink(Base):
     object_id = Column(String, ForeignKey('stored_objects.id'), nullable=False)
     definition_id = Column(String, ForeignKey('code_definitions.id'), nullable=False)
     timestamp = Column(DateTime, server_default=func.now())
+
+class MonitoringSession(Base):
+    """Model for grouping function calls into a logical session"""
+    __tablename__ = 'monitoring_sessions'
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String, nullable=True)  # Optional name for the session
+    description = Column(String, nullable=True)  # Optional description
+    start_time = Column(DateTime, nullable=False, default=datetime.datetime.now)
+    end_time = Column(DateTime, nullable=True)  # Will be filled when session ends
+    
+    # Store the structure: function_name -> ordered list of function call ids
+    function_calls_map = Column(JSON, nullable=False, default=dict)  # Dict[str, List[int]]
+    
+    # Store precalculated data
+    common_globals = Column(JSON, nullable=False, default=dict)  # Dict[function_name, List[var_name]]
+    common_locals = Column(JSON, nullable=False, default=dict)   # Dict[function_name, List[var_name]]
+    
+    # Metadata about the session - renamed to avoid SQLAlchemy reserved name conflict
+    session_metadata = Column(JSON, nullable=True)  # For any additional data
+    
+    # Relationships
+    function_calls = relationship("FunctionCall", back_populates="session")
 
 def init_db(db_path):
     """Initialize the database and return session factory"""
