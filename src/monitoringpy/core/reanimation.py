@@ -208,76 +208,74 @@ def reanimate_function(function_execution_id: str, db_path: str,
             # Import the module
             module = importlib.import_module(module_path)
         
-        # Get the function object
-        # function = getattr(module, function_name) # OLD WAY: Load from current disk code
-        
-        # --- NEW WAY: Load function definition from database --- 
+        # --- Get Function Object --- 
+        # 1. Get the function object from the currently loaded module
+        try:
+            function_from_disk = getattr(module, function_name)
+            if not callable(function_from_disk):
+                 raise AttributeError(f"Attribute '{function_name}' in module '{module.__name__}' is not callable.")
+        except AttributeError:
+             raise ValueError(f"Could not find function '{function_name}' in module '{module.__name__}'. Cannot proceed with reanimation.")
+
+        # 2. Try to create a function using historical code from DB
         code_def_id = call_info.get('code_definition_id')
-        function = None
+        reanimated_function = None # Initialize
+        historical_code_obj = None
+
         if code_def_id:
             code_def = session.get(models.CodeDefinition, code_def_id)
             if code_def and code_def.code_content:
-                # Prepare execution namespace with rehydrated globals
-                exec_namespace = {} 
-                # Load and inject globals FIRST, so the function def can see them
-                globals_dict = _load_globals_from_info(call_info, obj_manager, ignore_globals)
-                exec_namespace.update(globals_dict)
-                
                 try:
                     # Compile the stored code string
-                    # Use code_def.name as filename if available, else fallback
                     filename = cast(str, code_def.name) if (code_def and code_def.name) else '<string_from_db>'
-                    code_obj = compile(cast(str, code_def.code_content), filename, 'exec')
+                    # Compile in 'exec' mode initially as it contains the function def
+                    historical_code_obj = compile(cast(str, code_def.code_content), filename, 'exec')
                     
-                    # Execute the compiled code object in the prepared namespace
-                    exec(code_obj, exec_namespace)
-                    
-                    # Find the function object within the namespace
-                    if function_name in exec_namespace and callable(exec_namespace[function_name]):
-                        function = exec_namespace[function_name]
-                        # Try to update the function's __globals__ - might be needed
-                        try:
-                           function.__globals__.update(globals_dict)
-                        except (AttributeError, TypeError):
-                            pass # Ignore if it fails (e.g., for built-ins)
+                    # Find the actual function code object within the compiled code
+                    # (Assuming the stored code is just the function definition)
+                    func_code = None
+                    for const in historical_code_obj.co_consts:
+                        if isinstance(const, types.CodeType) and const.co_name == function_name:
+                            func_code = const
+                            break
+                            
+                    if func_code:
+                        # --- Direct Modification Approach --- 
+                        # Directly replace the code object of the function loaded from disk
+                        function_from_disk.__code__ = func_code
+                        logger.info(f"Successfully replaced code for function '{function_name}' with historical code from definition {code_def_id}")
+                        # No need to create a new function object
+                        # reanimated_function = None # Keep this None or remove
                     else:
-                        logger.warning(f"Function '{function_name}' not found or not callable after executing stored code for call {function_execution_id}.")
+                         logger.warning(f"Could not find function code object named '{function_name}' within compiled historical code {code_def_id}. Using disk version.")
+                         # Fallback handled below
+
                 except SyntaxError as compile_err:
-                    logger.error(f"Syntax error compiling stored code for call {function_execution_id}: {compile_err}")
-                    raise ValueError(f"Failed to compile function from stored code: {compile_err}") from compile_err
-                except Exception as exec_err:
-                    logger.error(f"Error executing stored code for call {function_execution_id}: {exec_err}")
-                    raise ValueError(f"Failed to execute function from stored code: {exec_err}") from exec_err
+                    logger.error(f"Syntax error compiling stored code for call {function_execution_id} (ID: {code_def_id}): {compile_err}")
+                    # Fallback handled below
+                except Exception as e:
+                    logger.error(f"Error processing historical code {code_def_id} for call {function_execution_id}: {e}")
+                    # Fallback handled below
             else:
                 logger.warning(f"Could not find CodeDefinition or code_content for ID {code_def_id} associated with call {function_execution_id}.")
-        
-        if function is None:
-            # Fallback or error if function couldn't be defined from DB code
-            # For now, let's try the old way as a fallback, but log a warning.
-            # In the future, we might want to make this a hard error.
-            logger.warning(f"Could not define function '{function_name}' from DB code for call {function_execution_id}. Falling back to loading from disk.")
-            if module:
-                 try:
-                      function = getattr(module, function_name)
-                 except AttributeError:
-                      raise ValueError(f"Function '{function_name}' not found in module '{module.__name__}' (fallback attempt).")
-            else:
-                raise ValueError(f"Cannot fall back to loading from disk: Module for function '{function_name}' was not loaded.")
-        # --- End NEW WAY ---
-        
+
+        # 3. Use the function from disk (potentially modified)
+        function_to_execute = function_from_disk
+        # --- End Get Function Object ---
+
         # Load the execution data (args, kwargs)
         args, kwargs = _load_execution_data_from_info(call_info, obj_manager)
         
-        # Initialize the global variables (this might be redundant if exec worked, but safe)
-        # We already loaded globals_dict for the exec namespace
-        if not globals_dict: # Load if not already loaded for exec
-            globals_dict = _load_globals_from_info(call_info, obj_manager, ignore_globals)
+        # Load globals (needed for injection)
+        globals_dict = _load_globals_from_info(call_info, obj_manager, ignore_globals)
         
-        # Inject globals into module (if loaded) and function context
-        _inject_globals(module, function, globals_dict)
-        
-        # Execute the function (monitor is disabled)
-        result = function(*args, **kwargs)
+        # Inject globals into module (if loaded) and the EXECUTION function context
+        # NOTE: We inject into function_to_execute.__globals__ which might 
+        #       already be the same dict as function_from_disk.__globals__
+        _inject_globals(module, function_to_execute, globals_dict)
+
+        # Execute the chosen function (monitor is disabled)
+        result = function_to_execute(*args, **kwargs)
         return result
         
     finally:

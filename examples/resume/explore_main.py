@@ -4,8 +4,9 @@ from typing import List, Optional, Any, Dict, Callable
 import tkinter.ttk as ttk
 from sqlalchemy.orm import Session as SQLASession
 import typing
+import logging
 
-DB = "main.db"
+DB = "examples/resume/main.db"
 FUNCTION_NAME = "play_game"
 
 # 2. Data Retrieval Functions
@@ -62,6 +63,10 @@ def get_branch_depth(session: SQLASession, call_id: int, max_depth=10) -> int:
 # Initialize a live monitor instance for recording replays
 # Use the main DB so replay branches are stored alongside original trace
 live_monitor = monitoringpy.init_monitoring(db_path=DB)
+
+# Set logging level to INFO to see more details
+logging.getLogger().setLevel(logging.WARNING)
+
 # Start a session for this live monitor; needed for replay_session_from
 # We don't necessarily need the ID unless we explicitly manage this session later
 live_monitor_session_id = monitoringpy.start_session("Replay Recording Session")

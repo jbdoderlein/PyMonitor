@@ -5,7 +5,7 @@ GAME_N = 0
 @monitoringpy.pymonitor()
 def play_game():
     global GAME_N
-    GAME_N += 2
+    GAME_N += 1
     print(f"Playing game {GAME_N}")
 
 if __name__ == "__main__":
