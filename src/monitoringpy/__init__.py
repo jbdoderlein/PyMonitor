@@ -21,7 +21,6 @@ from .core import (
     StackSnapshot,
     FunctionCall,
     CodeDefinition,
-    CodeVersion,
     CodeObjectLink,
     MonitoringSession,
     delete_function_execution,
@@ -32,6 +31,8 @@ from .core import (
     start_session,
     end_session,
     session_context,
+    run_with_state,
+    replay_session_from,
 )
 
 from .core.monitoring import pymonitor
@@ -65,7 +66,6 @@ __all__ = [
     'StackSnapshot',
     'FunctionCall',
     'CodeDefinition',
-    'CodeVersion',
     'CodeObjectLink',
     'MonitoringSession',
     # Interfaces
@@ -82,9 +82,11 @@ __all__ = [
     # Reanimation 
     'load_execution_data',
     'reanimate_function',
+    'run_with_state',
     'delete_function_execution',
     'load_snapshot',
     'load_snapshot_in_frame',
+    'replay_session_from',
     # Wrapped modules
     'pygame',
 ]

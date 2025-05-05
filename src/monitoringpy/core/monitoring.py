@@ -12,6 +12,9 @@ from sqlalchemy import text, inspect as sqlainspect
 from sqlalchemy.orm.attributes import instance_state
 from .models import init_db, FunctionCall, MonitoringSession
 from .function_call import FunctionCallTracker
+from typing import Optional
+import time
+import typing
 
 # Configure logging - only show warnings and errors
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -50,9 +53,15 @@ class PyMonitoring:
         self.monitored_functions = {}
         self.MONITOR_TOOL_ID = sys.monitoring.PROFILER_ID
         
+        # Recording flag
+        self.is_recording_enabled = True
+        
         # Current session information
         self.current_session = None  # Current monitoring session
         self.session_function_calls = {}  # Dict mapping function names to lists of call IDs
+        self._current_session_first_call_id = None # ID of the first call in the current session chain
+        self._current_session_last_call_id = None  # ID of the last call in the current session chain
+        self._parent_id_for_next_call: Optional[int] = None # Correct type hint
         
         # Initialize the database and managers
         try:
@@ -276,6 +285,9 @@ class PyMonitoring:
             
             self.current_session = new_session
             self.session_function_calls = {}  # Reset the function calls map
+            # Reset linked list trackers for the new session
+            self._current_session_first_call_id = None
+            self._current_session_last_call_id = None
             
             logger.info(f"Started new monitoring session {new_session.id}: {name}")
             return new_session.id
@@ -307,14 +319,23 @@ class PyMonitoring:
             # Calculate common variables for each function in the session
             self._calculate_common_variables()
             
-            # Commit the changes
+            # Set the entry point for the session's call chain
+            if self._current_session_first_call_id is not None:
+                logger.info(f"Setting entry point for session {session_id} to call {self._current_session_first_call_id}")
+                setattr(self.current_session, 'entry_point_call_id', self._current_session_first_call_id)
+            else:
+                logger.warning(f"No first function call recorded for session {session_id}. Entry point not set.")
+                
+            # Commit the changes including the entry point
             self.session.commit()
             
             logger.info(f"Ended monitoring session {session_id}")
             
-            # Reset current session
+            # Reset current session and linked list trackers
             self.current_session = None
             self.session_function_calls = {}
+            self._current_session_first_call_id = None
+            self._current_session_last_call_id = None
             
             return session_id
             
@@ -382,6 +403,10 @@ class PyMonitoring:
         self.session_function_calls[function_name].append(call_id)
     
     def monitor_callback_function_start(self, code: types.CodeType, offset):
+        # Check if recording is enabled
+        if not self.is_recording_enabled:
+            return
+            
         if self.call_tracker is None:
             return
         current_frame = inspect.currentframe()
@@ -434,24 +459,19 @@ class PyMonitoring:
                 first_line_no = inspect.getsourcelines(func_obj)[1]  # This gets the starting line number
                 module_path = func_obj.__module__ or 'unknown'
                 
-                # Create code definition and version with line offset info
+                # Get code definition ID by storing/retrieving
                 code_def_id = self.call_tracker.object_manager.store_code_definition(
-                    name=code.co_name,
+                    name=code.co_name, 
                     type='function',
                     module_path=module_path,
-                    code_content=source_code,
-                    first_line_no=first_line_no  # Store the first line number
+                    code_content=source_code, 
+                    first_line_no=first_line_no
                 )
-                
-                # Create a new version
-                code_version_id = self.call_tracker.object_manager.create_code_version(code_def_id)
             else:
                 code_def_id = None
-                code_version_id = None
         except Exception as e:
             logger.warning(f"Failed to capture function code: {e}")
             code_def_id = None
-            code_version_id = None
 
         # Execute start hooks and collect initial metadata
         start_metadata = {}
@@ -480,18 +500,61 @@ class PyMonitoring:
         
         # Capture the function call
         try:
+            # Store the ID of the previous call to link it later
+            prev_call_id_for_linking = self._current_session_last_call_id
+            
+            # Check if a parent ID was set for replay
+            parent_id = self._parent_id_for_next_call
+            if parent_id is not None:
+                # Reset the flag immediately after reading it
+                self._parent_id_for_next_call = None 
+                logger.info(f"Replay detected: Setting parent_call_id to {parent_id} for next call.")
+            
+            # Capture the call, providing the previous call ID and potential parent ID
             call_id = self.call_tracker.capture_call(
                 function_qualname,
                 function_locals,
                 globals_used,
                 code_definition_id=code_def_id,
-                code_version_id=code_version_id,
                 file_name=file_name,
                 line_number=line_number,
-                initial_metadata=start_metadata # Pass initial metadata
+                initial_metadata=start_metadata, 
+                previous_call_id=self._current_session_last_call_id, 
+                parent_call_id=parent_id # Pass the determined parent_id
             )
+            
+            if call_id is None:
+                # If capture_call failed, log and exit
+                logger.error(f"Failed to capture function call for {function_qualname}. Aborting linking.")
+                return
+
             self.call_id_stack.append(call_id)
             
+            # --- Link the calls ---
+            # If this is the first call in the session, store its ID as the entry point
+            if self._current_session_first_call_id is None:
+                self._current_session_first_call_id = call_id
+                logger.debug(f"Set first call ID for session to {call_id}")
+
+            # If there was a previous call, update its next_call_id
+            if prev_call_id_for_linking is not None:
+                try:
+                    prev_call = self.session.get(FunctionCall, prev_call_id_for_linking)
+                    if prev_call:
+                        logger.debug(f"Linking previous call {prev_call_id_for_linking} to new call {call_id}")
+                        prev_call.next_call_id = typing.cast(typing.Optional[int], call_id)
+                        self.session.add(prev_call) # Add to session to ensure update is tracked
+                        self.session.flush() # Flush to ensure the update is sent before potential commit later
+                    else:
+                        logger.warning(f"Could not find previous call with ID {prev_call_id_for_linking} to link.")
+                except Exception as link_exc:
+                    logger.error(f"Error linking call {prev_call_id_for_linking} to {call_id}: {link_exc}")
+                    # Don't rollback here, allow the rest of the process to continue if possible
+
+            # Update the last call ID to the current one for the next link
+            self._current_session_last_call_id = call_id
+            # --- End Linking ---
+
             # Store return hooks if any for later execution
             if return_hooks:
                 self.active_return_hooks[call_id] = return_hooks
@@ -508,6 +571,10 @@ class PyMonitoring:
             logger.error(traceback.format_exc())
 
     def monitor_callback_function_return(self, code: types.CodeType, offset, return_value):
+        # Check if recording is enabled
+        if not self.is_recording_enabled:
+            return
+            
         if self.call_tracker is None or not self.call_id_stack:
             return
 
@@ -560,8 +627,20 @@ class PyMonitoring:
             logger.error(traceback.format_exc())
             self.session.rollback()
 
-    def get_used_globals(self, code, globals):
-        """Analyze function bytecode to find accessed global variables"""
+    def get_used_globals(self, code, globals, processed_functions=None):
+        """Analyze function bytecode to find accessed global variables
+        
+        Args:
+            code: The code object to analyze
+            globals: The globals dictionary
+            processed_functions: Set of function names already processed to avoid infinite recursion
+            
+        Returns:
+            Dictionary of global variables used by the function and its called functions
+        """
+        if processed_functions is None:
+            processed_functions = set()
+            
         globals_used = {}
         
         # Scan bytecode for LOAD_GLOBAL operations
@@ -574,10 +653,23 @@ class PyMonitoring:
                 # Skip built-in variables
                 if name in sys.builtin_module_names:
                     continue
-                # Skip if it s a function
-                if name in globals and isinstance(globals[name], types.FunctionType):
+                # Skip if it's a module
+                if name in globals and isinstance(globals[name], types.ModuleType):
                     continue
-                # Skip if it s a default function(like print, len, etc)
+                # Process user-defined functions recursively
+                if name in globals and isinstance(globals[name], types.FunctionType):
+                    # Store the function itself if needed
+                    # globals_used[name] = globals[name]
+                    
+                    # Recursively process function if not already processed
+                    if name not in processed_functions:
+                        processed_functions.add(name)
+                        func_code = globals[name].__code__
+                        func_globals = globals[name].__globals__
+                        nested_globals = self.get_used_globals(func_code, func_globals, processed_functions)
+                        globals_used.update(nested_globals)
+                    continue
+                # Skip if it's a default function(like print, len, etc)
                 if name in __builtins__:
                     continue
 
@@ -588,6 +680,10 @@ class PyMonitoring:
 
     def monitor_callback_line(self, code: types.CodeType, line_number):
         """Callback function for line events"""
+        # Check if recording is enabled
+        if not self.is_recording_enabled:
+            return
+            
         if self.call_tracker is None:
             return
 

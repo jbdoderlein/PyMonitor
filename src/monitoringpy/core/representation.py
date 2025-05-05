@@ -5,7 +5,7 @@ from enum import Enum
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 import logging
-from .models import StoredObject, ObjectVersion, ObjectIdentity, CodeObjectLink, CodeDefinition, CodeVersion
+from .models import StoredObject, ObjectVersion, ObjectIdentity, CodeObjectLink, CodeDefinition
 import datetime
 import inspect
 import uuid
@@ -202,25 +202,6 @@ class ObjectManager:
         self.session.add(definition)
         self.session.flush()
         return code_hash
-
-    def create_code_version(self, definition_id: str) -> int:
-        """Create a new version for a code definition and return its ID"""
-        # Get the latest version number
-        latest_version = (self.session.query(CodeVersion)
-                         .filter_by(definition_id=definition_id)
-                         .order_by(CodeVersion.version_number.desc())
-                         .first())
-        
-        version_number = 1 if latest_version is None else latest_version.version_number + 1
-        
-        # Create new version
-        version = CodeVersion(
-            definition_id=definition_id,
-            version_number=version_number
-        )
-        self.session.add(version)
-        self.session.flush()
-        return version.id # type: ignore
 
     def store(self, value: Any) -> str:
         """Store an object and return its reference"""

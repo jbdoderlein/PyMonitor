@@ -5,7 +5,7 @@ from typing import Optional, Dict, List, Any, Type
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 import logging
-from .models import CodeDefinition, CodeVersion, CodeObjectLink, StoredObject
+from .models import CodeDefinition, CodeObjectLink, StoredObject
 
 logger = logging.getLogger(__name__)
 
@@ -104,14 +104,6 @@ class CodeManager:
         
         # Get the next version number
         next_version = 1
-        if previous_def:
-            # Get the highest version number for the previous definition
-            latest_version = self.session.query(CodeVersion).filter(
-                CodeVersion.definition_id == previous_def.id
-            ).order_by(CodeVersion.version_number.desc()).first()
-            if latest_version:
-                next_version = latest_version.version_number + 1
-                logger.info(f"Creating new version {next_version} for class {cls.__name__}")
             
         # Create new code definition
         code_def = CodeDefinition(
@@ -125,12 +117,7 @@ class CodeManager:
         self.session.add(code_def)
         
         # Create new version with incremented number
-        version = CodeVersion(
-            definition=code_def,
-            version_number=next_version
-        )
         
-        self.session.add(version)
         
         try:
             self.session.flush()
@@ -182,12 +169,9 @@ class CodeManager:
             return None
             
         # Get the latest version number
-        latest_version = self.session.query(CodeVersion).filter(
-            CodeVersion.definition_id == code_ref
-        ).order_by(CodeVersion.version_number.desc()).first()
         
-        version_number = latest_version.version_number if latest_version else 1
-            
+        
+
         return {
             'id': code_def.id,
             'name': code_def.name,
@@ -195,7 +179,6 @@ class CodeManager:
             'module_path': code_def.module_path,
             'code': code_def.code_content,
             'creation_time': code_def.creation_time,
-            'version_number': version_number
         }
     
     def get_object_code(self, object_ref: str) -> Optional[Dict[str, Any]]:
@@ -213,13 +196,7 @@ class CodeManager:
         
         if not code_def:
             return None
-            
-        # Get the latest version number
-        latest_version = self.session.query(CodeVersion).filter(
-            CodeVersion.definition_id == link.definition_id
-        ).order_by(CodeVersion.version_number.desc()).first()
         
-        version_number = latest_version.version_number if latest_version else 1
             
         return {
             'id': code_def.id,
@@ -228,21 +205,8 @@ class CodeManager:
             'module_path': code_def.module_path,
             'code': code_def.code_content,
             'creation_time': code_def.creation_time,
-            'version_number': version_number
         }
-    
-    def get_code_history(self, code_ref: str) -> List[Dict[str, Any]]:
-        """Get the version history of a code definition."""
-        versions = self.session.query(CodeVersion).filter(
-            CodeVersion.definition_id == code_ref
-        ).order_by(CodeVersion.version_number.asc()).all()
-        
-        return [{
-            'version_number': v.version_number,
-            'timestamp': v.timestamp,
-            'git_commit': v.git_commit,
-            'git_repo': v.git_repo
-        } for v in versions]
+
 
     def get_class(self, class_name: str, module_path: str) -> Optional[Type]:
         """Get a class by name and module path. Creates it from stored definition if needed.

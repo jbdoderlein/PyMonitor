@@ -315,11 +315,12 @@ async def get_stack_recording(function_id: str):
             # Process each snapshot
             for stack_snapshot in snapshots:
                 frame_info = {
-                    "function": function_call.function,
-                    "file": function_call.file,
-                    "line": stack_snapshot.line_number,
-                    "locals": {},
-                    "globals": {},
+                    "frame_id": stack_snapshot.frame_id,
+                    "function_name": stack_snapshot.function_name,
+                    "file_name": stack_snapshot.file_name,
+                    "line_number": stack_snapshot.line_number,
+                    "locals": stack_snapshot.locals_refs,
+                    "globals_subset": stack_snapshot.globals_refs,
                     "snapshot_id": str(stack_snapshot.id),
                     "timestamp": stack_snapshot.timestamp.isoformat() if stack_snapshot.timestamp else None,
                     "previous_snapshot_id": str(stack_snapshot.previous_snapshot_id) if stack_snapshot.previous_snapshot_id else None,
@@ -331,10 +332,6 @@ async def get_stack_recording(function_id: str):
                 # Add code information if available
                 if code:
                     frame_info["code"] = code
-                
-                # Add code version ID if available
-                if function_call.code_version_id:
-                    frame_info["code_version_id"] = function_call.code_version_id
                 
                 # Add call metadata if available
                 if function_call.call_metadata:
@@ -355,10 +352,10 @@ async def get_stack_recording(function_id: str):
                         # Filter out module-level imports and other large objects
                         if not name.startswith("__") and not name.endswith("__"):
                             try:
-                                frame_info["globals"][name] = serialize_stored_value(value)
+                                frame_info["globals_subset"][name] = serialize_stored_value(value)
                             except Exception as e:
                                 logger.error(f"Error serializing global {name}: {e}")
-                                frame_info["globals"][name] = {"value": f"<error: {str(e)}>", "type": "Error"}
+                                frame_info["globals_subset"][name] = {"value": f"<error: {str(e)}>", "type": "Error"}
                 
                 frames.append(frame_info)
         except Exception as e:
@@ -375,8 +372,6 @@ async def get_stack_recording(function_id: str):
                 "time": function_call.start_time.isoformat() if function_call.start_time else None,
                 "end_time": function_call.end_time.isoformat() if function_call.end_time else None,
                 "code_definition_id": function_call.code_definition_id,
-                "code_version_id": function_call.code_version_id,
-                "code": code,
                 "call_metadata": function_call.call_metadata
             },
             "frames": frames
