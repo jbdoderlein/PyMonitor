@@ -449,6 +449,8 @@ def run_explorer(db_path: str, function_name: Optional[str] = None):
         print(f"Error: Could not find monitoring session in {DB_PATH}")
         return # Exit if no session found
     
+
+    
     # Determine initial entry point
     initial_entry_point_id = None
     if current_session_info.entry_point_call_id:
@@ -476,13 +478,18 @@ def run_explorer(db_path: str, function_name: Optional[str] = None):
             # Consider disabling buttons or exiting
 
     active_branch_root_id = initial_entry_point_id 
-    logger.info(f"Initial active branch root ID set to: {active_branch_root_id}")
+    assert isinstance(active_branch_root_id, int), f"Expected active_branch_root_id to be an integer, got {type(active_branch_root_id)}"
+    if TARGET_FUNCTION_NAME is None:
+        TARGET_FUNCTION_NAME = call_tracker.get_call(str(active_branch_root_id))["function"]
+    else:
+        logger.info(f"Initial active branch root ID set to: {active_branch_root_id} (for function: {TARGET_FUNCTION_NAME})")
+    
 
 
     # --- Setup Tkinter UI ---
     root = tk.Tk()
     root.title(f"PyMonitor Explorer - {os.path.basename(DB_PATH)}")
-    root.geometry("600x400") # Increased width
+    root.geometry("600x600") # Increased width
 
     # Main UI Frames
     main_frame = tk.Frame(root)
@@ -584,7 +591,7 @@ if __name__ == "__main__":
                         help="Optional: Specific function name to focus on for globals", 
                         default=None)
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging (INFO level)")
-    
+    parser.add_argument("-pg", "--pygame", action="store_true", help="Activate pygame screen reuse")
     args = parser.parse_args()
 
     if not os.path.exists(args.db_path):
@@ -595,5 +602,9 @@ if __name__ == "__main__":
         logging.getLogger().setLevel(logging.INFO)
     else:
          logging.getLogger().setLevel(logging.WARNING) # Default to WARNING otherwise
+
+    if args.pygame:
+        from monitoringpy import pygame
+        pygame.set_screen_reuse(True)
 
     run_explorer(args.db_path, args.function_name)

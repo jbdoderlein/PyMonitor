@@ -42,7 +42,6 @@ class PyMonitoring:
 
     def __init__(self, db_path="monitoring.db", pyrapl_enabled=False, queue_size=1000, flush_interval=1.0):
         if hasattr(self, 'initialized') and self._instance is not None:
-            print("PyMonitoring already initialized")
             return
         self.initialized = True
         self.db_path = db_path
@@ -66,7 +65,6 @@ class PyMonitoring:
         # Initialize the database and managers
         try:
             # First, initialize the database and ensure tables are created
-            print(f"Initializing database at {self.db_path}")
             Session = init_db(self.db_path)
             
             # Create a test session to verify database access
@@ -75,7 +73,6 @@ class PyMonitoring:
                 # Try a simple query to verify database access
                 test_session.execute(text("SELECT 1"))
                 test_session.commit()
-                print("Database connection test successful")
             except Exception as e:
                 logger.error(f"Database connection test failed: {e}")
                 raise
@@ -90,7 +87,6 @@ class PyMonitoring:
         except Exception as e:
             logger.error(f"Failed to initialize database: {e}")
             logger.error(traceback.format_exc())
-            print(f"ERROR: Failed to initialize monitoring database: {e}")
             # Create a fallback in-memory database
             try:
                 logger.warning("Attempting to create in-memory database as fallback")
@@ -98,11 +94,9 @@ class PyMonitoring:
                 self.session = Session()
                 self.call_tracker = FunctionCallTracker(self.session)
                 logger.info("In-memory database initialized as fallback")
-                print("WARNING: Using in-memory database as fallback. Data will not be persisted.")
             except Exception as e2:
                 logger.critical(f"Failed to initialize in-memory database: {e2}")
                 logger.critical(traceback.format_exc())
-                print(f"CRITICAL ERROR: Failed to initialize monitoring. Monitoring will be disabled.")
                 self.call_tracker = None
                 return
         
@@ -129,25 +123,19 @@ class PyMonitoring:
             )
             
             logger.info("Registered monitoring callbacks")
-            print("Registered callbacks")
         except Exception as e:
             logger.error(f"Failed to register monitoring callbacks: {e}")
-            print(f"ERROR: Failed to register monitoring callbacks: {e}")
         
         self.pyrapl_enabled = pyrapl_enabled and pyRAPL is not None
-        print(f"PyRAPL enabled: {self.pyrapl_enabled}")
         if self.pyrapl_enabled:
             try:
                 pyRAPL.setup() # type: ignore
-                print("PyRAPL initialized successfully")
             except Exception as e:
                 logger.warning(f"PyRAPL error: {e}")
                 self.pyrapl_enabled = False
-                print(f"WARNING: Failed to initialize PyRAPL: {e}")
         
         PyMonitoring._instance = self
         logger.info("Monitoring initialized successfully")
-        print("Monitoring initialized")
 
     def shutdown(self):
         """Gracefully shut down monitoring"""
@@ -542,7 +530,7 @@ class PyMonitoring:
                     prev_call = self.session.get(FunctionCall, prev_call_id_for_linking)
                     if prev_call:
                         logger.debug(f"Linking previous call {prev_call_id_for_linking} to new call {call_id}")
-                        prev_call.next_call_id = typing.cast(typing.Optional[int], call_id)
+                        prev_call.next_call_id = typing.cast(typing.Optional[int], call_id) # type: ignore
                         self.session.add(prev_call) # Add to session to ensure update is tracked
                         self.session.flush() # Flush to ensure the update is sent before potential commit later
                     else:
@@ -809,7 +797,6 @@ def pymonitor_line(func):
 
 
 def init_monitoring(*args, **kwargs):
-    print("Initializing monitoring")
     monitor = PyMonitoring(*args, **kwargs)
     return monitor
 

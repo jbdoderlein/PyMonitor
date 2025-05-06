@@ -23,6 +23,7 @@ class FunctionCallInfo(TypedDict):
     energy_data: Optional[Dict[str, Any]]
     code_definition_id: Optional[str]
     code: Optional[Dict[str, Any]]  # Contains code content, module_path, and type
+    call_metadata: Optional[Dict[str, Any]] # Add field for general metadata
 
 class FunctionCallTracker:
     """Track function calls and their context using object manager for efficient storage"""
@@ -176,7 +177,8 @@ class FunctionCallTracker:
             return_value=return_value,
             energy_data=energy_data,
             code_definition_id=call.code_definition_id,
-            code=code
+            code=code,
+            call_metadata=call.call_metadata
         )
 
     def get_call_history(self, function_name: Optional[str] = None) -> List[str]:

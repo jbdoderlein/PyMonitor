@@ -49,7 +49,6 @@ def modified_set_mode(size=(0, 0), flags=0, depth=0, display=0, vsync=0):
         Surface object representing the screen
     """
     global _current_screen, _reuse_screen
-    
     # If reuse flag is set and we have a valid screen, return it
     if _reuse_screen and _current_screen is not None:
         return _current_screen
@@ -133,7 +132,7 @@ def capture_buffered_pygame_events(monitor : PyMonitoring, code, offset, return_
         # Retrieve and clear the buffer in one step
         collected_events_raw = monitor._pygame_event_buffer # type: ignore
         monitor._pygame_event_buffer = [] # type: ignore
-        events = {"events":list(map(lambda event: event.dict, collected_events_raw))}
+        events = {"events":list(map(lambda event: event.dict | {"type": event.type}, collected_events_raw))}
         return monitor.call_tracker._store_variables(events) # type: ignore
     else:
         return {}

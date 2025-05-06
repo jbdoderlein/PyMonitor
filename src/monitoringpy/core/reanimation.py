@@ -191,7 +191,6 @@ def reanimate_function(function_execution_id: str, db_path: str,
                 
             # Check if the module is already imported
             if module_name in sys.modules:
-
                 #reload the module
                 importlib.reload(sys.modules[module_name])
                 module = sys.modules[module_name]
@@ -627,6 +626,20 @@ def _load_execution_data_from_info(call_info: FunctionCallInfo, obj_manager: Obj
 
     return args, kwargs
 
+def _load_pygame_event(call_info: FunctionCallInfo, obj_manager: ObjectManager) -> Tuple[List[Any], Dict[str, Any]]:
+    """Rehydrates Pygame event from call_info locals."""
+    if metadata:=call_info.get('call_metadata'):
+        if "events" in metadata:
+            metadata_dict = obj_manager.rehydrate_dict(metadata)
+            pygame = sys.modules['pygame']
+            print(f"Posting pygame events: {metadata_dict}")
+            for event in metadata_dict["events"]:
+                type = event["type"]
+                del event["type"]
+                print(f"Posting pygame event: {event}")
+                pygame.event.post(pygame.event.Event(type, event))
+
+
 # Helper function
 def _load_globals_from_info(call_info: FunctionCallInfo, obj_manager: ObjectManager, 
                             ignore_globals: Optional[List[str]]) -> Dict[str, Any]:
@@ -722,6 +735,9 @@ def replay_session_from(
         # 4. Inject Initial Globals
         _inject_globals(start_module, start_function, current_globals)
 
+        # 4.1 Inject Pygame Event if present
+        _load_pygame_event(start_call_info, read_obj_manager)
+
         # --- Start Replay Execution --- 
         
         # 5. Execute First Call (monitor will record)
@@ -781,6 +797,13 @@ def replay_session_from(
                  print(f"Error loading locals for call {original_next_call_id}: {locals_exc}. Skipping call.")
                  original_current_call_id = original_next_call_id
                  continue
+            
+            try:
+                _load_pygame_event(next_call_info, read_obj_manager)
+            except Exception as pygame_exc:
+                print(f"Error loading pygame event for call {original_next_call_id}: {pygame_exc}. Skipping call.")
+                original_current_call_id = original_next_call_id
+                continue
 
             # Execute the next function (monitor records it, linking automatically)
             print(f"Executing next replay call: {next_function.__name__}...")
