@@ -65,7 +65,7 @@ def get_branch_depth(session: SQLASession, call_id: int, max_depth=10) -> int:
 live_monitor = monitoringpy.init_monitoring(db_path=DB)
 
 # Set logging level to INFO to see more details
-logging.getLogger().setLevel(logging.WARNING)
+logging.getLogger().setLevel(logging.ERROR)
 
 # Start a session for this live monitor; needed for replay_session_from
 # We don't necessarily need the ID unless we explicitly manage this session later
