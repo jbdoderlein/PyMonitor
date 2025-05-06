@@ -20,7 +20,7 @@ for attr_name in dir(original_pygame):
 
 # Define a version attribute to indicate this is the wrapped version
 try:
-    __version__ = original_pygame.__version__ + '-monitoringpy'
+    __version__ = getattr(original_pygame, '__version__', 'unknown') + '-monitoringpy'
 except AttributeError:
     __version__ = 'unknown-monitoringpy'
 

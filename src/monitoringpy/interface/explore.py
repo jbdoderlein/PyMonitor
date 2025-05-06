@@ -54,6 +54,7 @@ root: Optional[tk.Tk] = None
 sliders_frame: Optional[tk.Frame] = None
 checkbox_frame: Optional[tk.Frame] = None
 play_pause_button: Optional[tk.Button] = None
+status_label: Optional[tk.Label] = None
 
 
 # --- Data Retrieval Functions (Adapted from example) ---
@@ -75,18 +76,60 @@ def get_branch_roots(session: SQLASession) -> List[int]:
     return sorted(list(set(int_roots)))
 
 def get_branch_sequence(session: SQLASession, root_call_id: int) -> List[int]:
+    """
+    Get a sequence of function call IDs that form a single branch.
+    This ensures that each branch sequence only contains calls belonging strictly to that branch,
+    stopping at points where child branches start.
+    
+    Args:
+        session: The database session
+        root_call_id: The ID of the root function call of the branch
+        
+    Returns:
+        A list of function call IDs in sequence order
+    """
     if session is None: return []
     sequence = []
     current_call_id: Optional[int] = root_call_id
-    while current_call_id is not None:
+    
+    # First, identify all direct children of this branch to exclude them
+    children_branches = set()
+    all_direct_children = session.query(FunctionCall).filter(FunctionCall.parent_call_id == root_call_id).all()
+    for child in all_direct_children:
+        if child.id is not None:
+            children_branches.add(child.id)
+    
+    # Now just follow the next_call_id chain but stop at child branch starts or cycles
+    visited = set()  # Avoid cycles
+    
+    while current_call_id is not None and current_call_id not in visited:
+        visited.add(current_call_id)
         call = session.get(FunctionCall, current_call_id)
         if call:
             sequence.append(call.id)
-            # Ensure we handle None next_call_id gracefully
-            next_id = getattr(call, 'next_call_id', None) 
-            current_call_id = int(next_id) if next_id is not None else None 
+            # Get the next call in the sequence
+            next_id = getattr(call, 'next_call_id', None)
+            
+            # Stop if we reach a NULL next_id
+            if next_id is None:
+                break
+                
+            # Stop if the next call is the start of a child branch
+            if next_id in children_branches:
+                logger.info(f"Branch sequence for {root_call_id} stops at {next_id} (direct child)")
+                break
+            
+            # Check if next_id is any replay start (has a parent_call_id)
+            next_call = session.get(FunctionCall, next_id)
+            if next_call and next_call.parent_call_id is not None:
+                # If it's a replay start, stop the sequence
+                logger.info(f"Branch sequence for {root_call_id} stops at {next_id} (replay branch start)")
+                break
+            
+            current_call_id = int(next_id)
         else:
             break
+    
     logger.info(f"Sequence for root {root_call_id}: {sequence}")
     return sequence
 
@@ -121,10 +164,53 @@ def get_unchecked_globals() -> List[str]:
 
 def update_active_branch_slider(selected_call_id_str: str, branch_root_id: int):
     """Callback when any branch slider changes."""
-    global DB_PATH
-    # logger.info(f"Slider for branch {branch_root_id} changed to {selected_call_id_str}")
+    global DB_PATH, status_label
     set_active_branch(branch_root_id) # Mark this branch as active
     unchecked_globals = get_unchecked_globals()
+    
+    # Update status display
+    if read_session is not None and status_label is not None:
+        try:
+            # Convert to integer and get call info
+            selected_call_id = int(selected_call_id_str)
+            call = read_session.get(FunctionCall, selected_call_id)
+            
+            if call:
+                # Get branch sequence for position info
+                sequence = branch_widgets[branch_root_id]['sequence']
+                try:
+                    current_index = sequence.index(selected_call_id)
+                    position_info = f"Step {current_index + 1}/{len(sequence)}"
+                except ValueError:
+                    position_info = "Unknown position"
+                
+                # Format status text
+                status_text = f"Current: Branch {branch_root_id} ({position_info})\n"
+                status_text += f"Call ID: {selected_call_id} - Function: {call.function}"
+                
+                # Safely handle file path (might be a SQLAlchemy Column)
+                file_path = None
+                if hasattr(call, 'file') and call.file is not None:
+                    # Convert SQLAlchemy Column to string if necessary
+                    file_path = str(call.file)
+                if file_path:
+                    status_text += f" - File: {os.path.basename(file_path)}"
+                
+                # Safely handle line number
+                line_num = None
+                if hasattr(call, 'line') and call.line is not None:
+                    # Convert SQLAlchemy Column to integer if necessary
+                    # First convert to string to avoid type issues with Column objects
+                    line_num = int(str(call.line)) if call.line else None
+                if line_num:
+                    status_text += f" - Line: {line_num}"
+                
+                status_label.config(text=status_text)
+            else:
+                status_label.config(text=f"Call ID {selected_call_id_str} not found")
+        except (ValueError, TypeError) as e:
+            status_label.config(text=f"Error displaying call info: {e}")
+    
     # Ensure monitor recording is off for simple reanimation
     if DB_PATH:
         reanimate_function(
@@ -137,12 +223,17 @@ def update_active_branch_slider(selected_call_id_str: str, branch_root_id: int):
 def set_active_branch(branch_root_id: int):
     """Sets the currently active branch for controls."""
     global active_branch_root_id
-    # Only print if changed?
+    # Only take action if changed
     if active_branch_root_id != branch_root_id and branch_root_id in branch_widgets:
         logger.info(f"Setting active branch to: {branch_root_id}")
+        
+        # Reset previous active branch appearance if it exists
+        if active_branch_root_id in branch_widgets:
+            branch_widgets[active_branch_root_id]['frame'].configure(background='')
+        
+        # Set new active branch and highlight it
         active_branch_root_id = branch_root_id
-    # elif branch_root_id not in branch_widgets:
-    #     logger.warning(f"Attempted to set non-existent branch {branch_root_id} as active.")
+        branch_widgets[branch_root_id]['frame'].configure(background='#e0e8f0')  # Light blue background
 
 def set_slider_value(slider: tk.Scale, value: int):
     """Safely sets the slider value within bounds and triggers update."""
@@ -252,8 +343,16 @@ def refresh_branch_ui():
     if read_session is None or sliders_frame is None: 
         logger.error("Session or sliders_frame not initialized for refresh_branch_ui")
         return 
+    
+    # Refresh the session to get latest data
+    try:
+        logger.info("Refreshing database session before UI update...")
+        read_session.expire_all()  # Expire all objects so they'll be reloaded from DB
+        read_session.commit()  # Commit any pending changes
+    except Exception as e:
+        logger.error(f"Error refreshing database session: {e}")
         
-    # logger.info("Refreshing Branch UI...") 
+    logger.info("Refreshing Branch UI...") 
     branch_roots = get_branch_roots(read_session)
     found_active_root = False
 
@@ -270,6 +369,22 @@ def refresh_branch_ui():
             del branch_widgets[r_id] # Remove entry after destroying frame
     # --- End Clear ---
 
+    # Create a mapping of branches to their function names for better labels
+    function_names = {}
+    for root_id in branch_roots:
+        call = read_session.get(FunctionCall, root_id)
+        if call:
+            function_names[root_id] = call.function
+
+    # Create a lookup of child branches by parent call ID
+    child_branches = {}
+    for root_id in branch_roots:
+        call = read_session.get(FunctionCall, root_id)
+        if call and call.parent_call_id:
+            if call.parent_call_id not in child_branches:
+                child_branches[call.parent_call_id] = []
+            child_branches[call.parent_call_id].append(root_id)
+
     for root_id in branch_roots:
         # Create UI for branch root: {root_id}
         branch_sequence = get_branch_sequence(read_session, root_id)
@@ -280,21 +395,33 @@ def refresh_branch_ui():
         # Calculate depth for indentation
         depth = get_branch_depth(read_session, root_id)
         indent_amount = depth * INDENT_STEP
-        # logger.info(f"Branch {root_id} depth: {depth}, indent: {indent_amount}")
-
+        
         # Create frame with potential left padding for indentation
         branch_frame = tk.Frame(sliders_frame, bd=1, relief=tk.GROOVE)
         # Pack the frame first, then pack items inside it
         branch_frame.pack(fill=tk.X, pady=2, padx=(indent_amount, 0))
 
         parent_call = read_session.get(FunctionCall, root_id)
-        label_text = f"Branch {root_id}"
+        
+        # Create a more informative label
         if parent_call and parent_call.parent_call_id:
-             label_text += f" (from Call {parent_call.parent_call_id})"
+            # This is a replay branch
+            parent_func_name = ""
+            if parent_call.parent_call_id in function_names:
+                parent_func_name = f" ({function_names[parent_call.parent_call_id]})"
+            
+            label_text = f"Replay Branch {root_id}: {parent_call.function} [{len(branch_sequence)} steps]"
+            label_text += f"\nFrom Branch {parent_call.parent_call_id}{parent_func_name} @ Call {parent_call.parent_call_id}"
         elif initial_entry_point_id is not None and root_id == initial_entry_point_id:
-             label_text = f"Main Branch (Start: {root_id})"
+            label_text = f"Main Branch: {parent_call.function if parent_call else 'Unknown'} [{len(branch_sequence)} steps]"
+        else:
+            label_text = f"Branch {root_id}: {parent_call.function if parent_call else 'Unknown'} [{len(branch_sequence)} steps]"
+            
+        # If this branch has child branches, indicate it
+        if root_id in child_branches and child_branches[root_id]:
+            label_text += f" (Has {len(child_branches[root_id])} replay branches)"
 
-        branch_label = tk.Label(branch_frame, text=label_text)
+        branch_label = tk.Label(branch_frame, text=label_text, justify=tk.LEFT)
         branch_label.pack(side=tk.LEFT, padx=5)
 
         slider_min = min(branch_sequence)
@@ -326,26 +453,16 @@ def refresh_branch_ui():
         
         if root_id == active_branch_root_id:
             found_active_root = True
-
-    # Check for obsolete branches (This part should run AFTER creating/updating branches)
-    # No need to clear again here, it was done at the beginning
-    # existing_roots = list(branch_widgets.keys()) 
-    # for root_id in existing_roots:
-    #     if root_id not in branch_roots:
-    #         logger.info(f"Removing UI for obsolete branch root: {root_id}")
-    #         if root_id in branch_widgets and 'frame' in branch_widgets[root_id]:
-    #             branch_widgets[root_id]['frame'].destroy()
-    #         if root_id in branch_widgets:
-    #             del branch_widgets[root_id]
-    #         if root_id == active_branch_root_id:
-    #             active_branch_root_id = initial_entry_point_id 
-    #             found_active_root = True # Ensure we still think it's found
-
+            # Highlight the active branch
+            branch_frame.configure(background='#e0e8f0')
+    
     # Set active branch if current one was removed or none was set
     if not found_active_root and branch_roots:
          new_active_root = branch_roots[0]
          active_branch_root_id = new_active_root
          logger.info(f"Reset active branch to first available: {new_active_root}")
+         if new_active_root in branch_widgets:
+             branch_widgets[new_active_root]['frame'].configure(background='#e0e8f0')
     elif not branch_roots:
          active_branch_root_id = None 
          logger.info("No branches left, active_branch_root_id set to None.")
@@ -356,11 +473,9 @@ def refresh_branch_ui():
          initial_val = active_slider.get()
          update_active_branch_slider(str(int(initial_val)), active_branch_root_id)
 
-    # logger.info(f"Branch UI Refresh Complete. Active root: {active_branch_root_id}") 
-
 def replay_from_start():
     """Replay execution from the start of the active branch."""
-    global DB_PATH
+    global DB_PATH, read_session
     if active_branch_root_id is None:
         logger.error("Error: No active branch root ID set.")
         return
@@ -370,18 +485,32 @@ def replay_from_start():
         
     logger.info(f"Replaying from start of branch: {active_branch_root_id}")
     unchecked_globals = get_unchecked_globals()
-    new_branch_start_id = replay_session_from(
-        int(active_branch_root_id), DB_PATH, ignore_globals=unchecked_globals
-    )
-    if new_branch_start_id:
-        logger.info(f"Replay started new branch with ID: {new_branch_start_id}")
-        refresh_branch_ui() # Refresh the UI to show the new slider/branch
-    else:
-        logger.error("Replay failed.")
+    
+    try:
+        new_branch_start_id = replay_session_from(
+            int(active_branch_root_id), DB_PATH, ignore_globals=unchecked_globals
+        )
+        
+        if new_branch_start_id:
+            logger.info(f"Replay started new branch with ID: {new_branch_start_id}")
+            
+            # Ensure database is refreshed before UI update
+            if read_session:
+                read_session.expire_all()  # Expire all objects to force reload
+                
+            # Refresh the UI to show the new slider/branch
+            refresh_branch_ui()
+        else:
+            logger.error("Replay failed.")
+    except Exception as e:
+        logger.error(f"Error during replay: {str(e)}")
+        # Show error in status label if available
+        if status_label:
+            status_label.config(text=f"Replay error: {str(e)}")
 
 def replay_from_here():
     """Replay execution starting from the currently selected call."""
-    global DB_PATH
+    global DB_PATH, read_session
     if active_branch_root_id is None or active_branch_root_id not in branch_widgets:
          logger.error("Error: No active branch or valid selection.")
          return
@@ -394,15 +523,29 @@ def replay_from_here():
     
     logger.info(f"Replaying from selected call: {current_value}")
     unchecked_globals = get_unchecked_globals()
-    # The selected value IS the starting function ID for the new branch
-    new_branch_start_id = replay_session_from(
-        int(current_value), DB_PATH, ignore_globals=unchecked_globals
-    )
-    if new_branch_start_id:
-        logger.info(f"Replay started new branch with ID: {new_branch_start_id}")
-        refresh_branch_ui() # Refresh the UI to show the new slider/branch
-    else:
-        logger.error("Replay failed.")
+    
+    try:
+        # The selected value IS the starting function ID for the new branch
+        new_branch_start_id = replay_session_from(
+            int(current_value), DB_PATH, ignore_globals=unchecked_globals
+        )
+        
+        if new_branch_start_id:
+            logger.info(f"Replay started new branch with ID: {new_branch_start_id}")
+            
+            # Ensure database is refreshed before UI update
+            if read_session:
+                read_session.expire_all()  # Expire all objects to force reload
+                
+            # Refresh the UI to show the new slider/branch
+            refresh_branch_ui()
+        else:
+            logger.error("Replay failed.")
+    except Exception as e:
+        logger.error(f"Error during replay: {str(e)}")
+        # Show error in status label if available
+        if status_label:
+            status_label.config(text=f"Replay error: {str(e)}")
 
 def create_checkbox_command(root_id_ref: Callable[[], Optional[int]], widgets_ref: Dict[int, Dict[str, Any]]) -> Callable[[], None]:
     def command():
@@ -421,7 +564,7 @@ def run_explorer(db_path: str, function_name: Optional[str] = None):
     """Sets up and runs the Tkinter explorer UI."""
     global DB_PATH, TARGET_FUNCTION_NAME, live_monitor, read_session, object_manager
     global call_tracker, current_session_info, initial_entry_point_id, active_branch_root_id
-    global root, sliders_frame, checkbox_frame, play_pause_button
+    global root, sliders_frame, checkbox_frame, play_pause_button, status_label
     global checkbox_vars, checkbox_labels, checkbox_widgets # Keep global declaration
 
     DB_PATH = db_path
@@ -449,27 +592,51 @@ def run_explorer(db_path: str, function_name: Optional[str] = None):
         print(f"Error: Could not find monitoring session in {DB_PATH}")
         return # Exit if no session found
     
-
-    
     # Determine initial entry point
     initial_entry_point_id = None
     if current_session_info.entry_point_call_id:
-        initial_entry_point_id = current_session_info.entry_point_call_id
+        # Fix type issue: Cast Column[Integer] to Optional[int]
+        initial_entry_point_id = typing.cast(Optional[int], current_session_info.entry_point_call_id)
         logger.info(f"Initial Session Entry Point Call ID: {initial_entry_point_id}")
     elif TARGET_FUNCTION_NAME and TARGET_FUNCTION_NAME in current_session_info.function_calls_map:
-        ids_list = list(map(int, current_session_info.function_calls_map[TARGET_FUNCTION_NAME]))
-        if ids_list:
-            initial_entry_point_id = min(ids_list)
-            logger.warning(f"Using fallback entry point ID (min call for {TARGET_FUNCTION_NAME}): {initial_entry_point_id}")
-        else:
-            logger.warning(f"No call IDs found for specified function '{TARGET_FUNCTION_NAME}' in the session map.")
+        # Fix type issue: Handle conversion from ColumnElement to list correctly
+        map_value = current_session_info.function_calls_map[TARGET_FUNCTION_NAME]
+        try:
+            # Handle different potential types safely
+            str_list = []
+            if hasattr(map_value, '__iter__') and not isinstance(map_value, str):
+                # This handles both lists and other iterables
+                str_list = [str(item) for item in map_value]
+            elif map_value is not None:
+                # If it's not iterable, convert single value to string
+                str_list = [str(map_value)]
+            
+            ids_list = list(map(int, str_list))
+            if ids_list:
+                initial_entry_point_id = min(ids_list)
+                logger.warning(f"Using fallback entry point ID (min call for {TARGET_FUNCTION_NAME}): {initial_entry_point_id}")
+            else:
+                logger.warning(f"No call IDs found for specified function '{TARGET_FUNCTION_NAME}' in the session map.")
+        except (TypeError, ValueError) as e:
+            logger.error(f"Error converting function calls map to integers: {e}")
     else:
         # Generic fallback: Find the earliest call ID across all functions in the first session
         all_call_ids = []
         if current_session_info.function_calls_map:
             for fname, ids in current_session_info.function_calls_map.items():
                 # Ensure ids are cast to int before extending
-                all_call_ids.extend(map(int, ids))
+                try:
+                    str_ids = []
+                    if hasattr(ids, '__iter__') and not isinstance(ids, str):
+                        # This handles both lists and other iterables
+                        str_ids = [str(item) for item in ids]
+                    elif ids is not None:
+                        # If it's not iterable, convert single value to string
+                        str_ids = [str(ids)]
+                    
+                    all_call_ids.extend(map(int, str_ids))
+                except (TypeError, ValueError) as e:
+                    logger.error(f"Error converting {fname} calls to integers: {e}")
         if all_call_ids:
              initial_entry_point_id = min(all_call_ids)
              logger.warning(f"Using generic fallback entry point ID (earliest call in session): {initial_entry_point_id}")
@@ -489,7 +656,7 @@ def run_explorer(db_path: str, function_name: Optional[str] = None):
     # --- Setup Tkinter UI ---
     root = tk.Tk()
     root.title(f"PyMonitor Explorer - {os.path.basename(DB_PATH)}")
-    root.geometry("600x600") # Increased width
+    root.geometry("700x650") # Increased size for status display
 
     # Main UI Frames
     main_frame = tk.Frame(root)
@@ -498,8 +665,14 @@ def run_explorer(db_path: str, function_name: Optional[str] = None):
     sliders_frame.pack(fill=tk.BOTH, expand=True, side=tk.TOP, padx=5, pady=5)
     button_frame = tk.Frame(main_frame)
     button_frame.pack(fill=tk.X, side=tk.TOP, padx=5)
+    status_frame = tk.Frame(main_frame, bd=1, relief=tk.SOLID, height=50)
+    status_frame.pack(fill=tk.X, side=tk.TOP, padx=5, pady=5)
     checkbox_frame = tk.Frame(main_frame, bd=1, relief=tk.SOLID)
     checkbox_frame.pack(fill=tk.X, side=tk.TOP, padx=5, pady=5)
+
+    # Status label for current call information
+    status_label = tk.Label(status_frame, text="No call selected", anchor=tk.W, justify=tk.LEFT, padx=5, pady=5)
+    status_label.pack(fill=tk.X, expand=True)
 
     # Widget Creation
     prev_button = tk.Button(button_frame, text="Prev")
