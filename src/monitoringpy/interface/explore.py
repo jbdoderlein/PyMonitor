@@ -14,6 +14,7 @@ import typing
 import logging
 import argparse
 import os
+import sys
 
 # Adjust imports for package structure
 from ..core import (
@@ -51,11 +52,16 @@ checkbox_vars: List[tk.BooleanVar] = []
 checkbox_labels: List[str] = []
 checkbox_widgets: List[tk.Checkbutton] = [] 
 root: Optional[tk.Tk] = None
-sliders_frame: Optional[tk.Frame] = None
+sliders_frame: Optional[ttk.Frame] = None
 checkbox_frame: Optional[tk.Frame] = None
 play_pause_button: Optional[tk.Button] = None
 status_label: Optional[tk.Label] = None
+status_bar: Optional[ttk.Label] = None
 
+# Add new global variables for the toggles
+pygame_reuse_events_var = None  # Will be set if pygame flag is True
+run_in_background_var = None  # Will be set to tk.BooleanVar
+pygame_imitation_var = None  # Will be set by args
 
 # --- Data Retrieval Functions (Adapted from example) ---
 def get_branch_roots(session: SQLASession) -> List[int]:
@@ -164,9 +170,27 @@ def get_unchecked_globals() -> List[str]:
 
 def update_active_branch_slider(selected_call_id_str: str, branch_root_id: int):
     """Callback when any branch slider changes."""
-    global DB_PATH, status_label
+    global DB_PATH, status_label, status_bar
     set_active_branch(branch_root_id) # Mark this branch as active
     unchecked_globals = get_unchecked_globals()
+    
+    # Update status bar
+    if status_bar:
+        status_bar.config(text=f"Viewing call {selected_call_id_str} in branch {branch_root_id}")
+    
+    # Update position indicator for this branch
+    if branch_root_id in branch_widgets and 'position_var' in branch_widgets[branch_root_id]:
+        try:
+            selected_call_id = int(selected_call_id_str)
+            sequence = branch_widgets[branch_root_id]['sequence']
+            current_index = sequence.index(selected_call_id)
+            branch_widgets[branch_root_id]['position_var'].set(
+                f"Position: {current_index + 1}/{len(sequence)}"
+            )
+        except (ValueError, IndexError):
+            branch_widgets[branch_root_id]['position_var'].set(
+                f"Position: ?/{len(branch_widgets[branch_root_id]['sequence'])}"
+            )
     
     # Update status display
     if read_session is not None and status_label is not None:
@@ -199,11 +223,18 @@ def update_active_branch_slider(selected_call_id_str: str, branch_root_id: int):
                 # Safely handle line number
                 line_num = None
                 if hasattr(call, 'line') and call.line is not None:
-                    # Convert SQLAlchemy Column to integer if necessary
                     # First convert to string to avoid type issues with Column objects
                     line_num = int(str(call.line)) if call.line else None
                 if line_num:
                     status_text += f" - Line: {line_num}"
+                
+                # Add call timing information if available
+                start_time = getattr(call, 'start_time', None)
+                end_time = getattr(call, 'end_time', None)
+                if start_time and end_time:
+                    duration = end_time - start_time
+                    duration_ms = duration.total_seconds() * 1000
+                    status_text += f"\nDuration: {duration_ms:.2f} ms"
                 
                 status_label.config(text=status_text)
             else:
@@ -213,9 +244,15 @@ def update_active_branch_slider(selected_call_id_str: str, branch_root_id: int):
     
     # Ensure monitor recording is off for simple reanimation
     if DB_PATH:
+        if status_bar:
+            status_bar.config(text=f"Reanimating function call {selected_call_id_str}...")
+        
         reanimate_function(
             selected_call_id_str, DB_PATH, ignore_globals=unchecked_globals
         )
+        
+        if status_bar:
+            status_bar.config(text=f"Reanimation complete for call {selected_call_id_str}")
     else:
         logger.error("DB_PATH not set, cannot reanimate.")
 
@@ -223,17 +260,51 @@ def update_active_branch_slider(selected_call_id_str: str, branch_root_id: int):
 def set_active_branch(branch_root_id: int):
     """Sets the currently active branch for controls."""
     global active_branch_root_id
+    
+    # Define colors
+    ACTIVE_COLOR = "#e0e8f0"  # Highlight color for active branch
+    DEPTH_COLORS = [
+        "#f0f8ff",  # aliceblue - depth 0 (main branch)
+        "#e6f2ff",  # lighter blue - depth 1
+        "#d9ecff",  # light blue - depth 2
+        "#ccf2ff",  # very light cyan - depth 3
+        "#e6fff2",  # very light mint - depth 4
+        "#f2ffe6",  # very light yellowgreen - depth 5
+    ]
+    
     # Only take action if changed
     if active_branch_root_id != branch_root_id and branch_root_id in branch_widgets:
         logger.info(f"Setting active branch to: {branch_root_id}")
         
         # Reset previous active branch appearance if it exists
         if active_branch_root_id in branch_widgets:
-            branch_widgets[active_branch_root_id]['frame'].configure(background='')
+            prev_branch = branch_widgets[active_branch_root_id]
+            # Restore original color based on depth
+            if read_session:
+                depth = get_branch_depth(read_session, active_branch_root_id)
+                bg_color = DEPTH_COLORS[min(depth, len(DEPTH_COLORS)-1)]
+                
+                # Reset all widgets for this branch
+                for key, widget in prev_branch.items():
+                    if key not in ['sequence', 'position_var'] and hasattr(widget, 'configure'):
+                        widget.configure(background=bg_color)
         
         # Set new active branch and highlight it
         active_branch_root_id = branch_root_id
-        branch_widgets[branch_root_id]['frame'].configure(background='#e0e8f0')  # Light blue background
+        curr_branch = branch_widgets[branch_root_id]
+        
+        # Highlight all widgets for this branch
+        for key, widget in curr_branch.items():
+            if key not in ['sequence', 'position_var'] and hasattr(widget, 'configure'):
+                widget.configure(background=ACTIVE_COLOR)
+        
+        # Refresh the call info immediately
+        try:
+            slider = curr_branch['slider']
+            current_value = slider.get()
+            update_active_branch_slider(str(int(current_value)), branch_root_id)
+        except (ValueError, KeyError) as e:
+            logger.error(f"Error updating active branch: {e}")
 
 def set_slider_value(slider: tk.Scale, value: int):
     """Safely sets the slider value within bounds and triggers update."""
@@ -297,11 +368,13 @@ def play_step():
 
 def toggle_play_pause():
     """Toggle between playing and pausing the slider animation."""
-    global is_playing, play_timer_id, root, play_pause_button
+    global is_playing, play_timer_id, root, play_pause_button, status_bar
     if root is None or play_pause_button is None: return
 
     if active_branch_root_id is None or active_branch_root_id not in branch_widgets:
         logger.warning("Cannot play/pause: No active branch.")
+        if status_bar:
+            status_bar.config(text="Cannot play/pause: No active branch selected")
         return # Don't toggle if no active branch
         
     slider = branch_widgets[active_branch_root_id]['slider']
@@ -312,13 +385,17 @@ def toggle_play_pause():
             root.after_cancel(play_timer_id)
             play_timer_id = None
         is_playing = False
-        play_pause_button.config(text="Play")
+        play_pause_button.config(text="▶ Play")
+        if status_bar:
+            status_bar.config(text="Playback paused")
     else:
         is_playing = True
-        play_pause_button.config(text="Pause")
+        play_pause_button.config(text="⏸ Pause")
         # Reset to start if at the end
         if sequence and slider.get() >= max(sequence): # Check if sequence is not empty
             set_slider_value(slider, min(sequence))
+        if status_bar:
+            status_bar.config(text="Playing sequence...")
         play_step() 
 
 def reload_current():
@@ -339,10 +416,14 @@ def reload_current():
 
 def refresh_branch_ui():
     """Dynamically create/update sliders for each execution branch."""
-    global active_branch_root_id, initial_entry_point_id, read_session, sliders_frame
+    global active_branch_root_id, initial_entry_point_id, read_session, sliders_frame, status_bar
     if read_session is None or sliders_frame is None: 
         logger.error("Session or sliders_frame not initialized for refresh_branch_ui")
         return 
+    
+    # Update status bar
+    if status_bar:
+        status_bar.config(text="Refreshing branches...")
     
     # Refresh the session to get latest data
     try:
@@ -351,6 +432,9 @@ def refresh_branch_ui():
         read_session.commit()  # Commit any pending changes
     except Exception as e:
         logger.error(f"Error refreshing database session: {e}")
+        if status_bar:
+            status_bar.config(text=f"Error refreshing data: {str(e)}")
+        return
         
     logger.info("Refreshing Branch UI...") 
     branch_roots = get_branch_roots(read_session)
@@ -358,6 +442,17 @@ def refresh_branch_ui():
 
     # Define indentation amount per depth level
     INDENT_STEP = 20 # pixels
+    
+    # Define branch colors based on depth
+    DEPTH_COLORS = [
+        "#f0f8ff",  # aliceblue - depth 0 (main branch)
+        "#e6f2ff",  # lighter blue - depth 1
+        "#d9ecff",  # light blue - depth 2
+        "#ccf2ff",  # very light cyan - depth 3
+        "#e6fff2",  # very light mint - depth 4
+        "#f2ffe6",  # very light yellowgreen - depth 5
+    ]
+    ACTIVE_COLOR = "#e0e8f0"  # Highlight color for active branch
 
     # --- Clear existing slider widgets before redrawing ---
     # Create a copy of keys to iterate over, as we might modify the dict
@@ -384,77 +479,168 @@ def refresh_branch_ui():
             if call.parent_call_id not in child_branches:
                 child_branches[call.parent_call_id] = []
             child_branches[call.parent_call_id].append(root_id)
+    
+    # Draw connection lines between parent and child branches
+    def draw_branch_connector(parent_id, child_id, parent_frame, indent):
+        """Draw a visual connector line between parent and child branches"""
+        if not (parent_frame and sliders_frame):
+            return
+            
+        # Create a connector frame
+        connector_height = 10  # pixels
+        connector_frame = tk.Frame(sliders_frame, height=connector_height, bd=0)
+        connector_frame.pack(fill=tk.X, pady=0, padx=(indent-10, 0))
+        
+        # Create canvas for drawing the connector
+        connector_canvas = tk.Canvas(connector_frame, height=connector_height, 
+                                   bd=0, highlightthickness=0, bg="#f5f5f5")
+        connector_canvas.pack(fill=tk.X, expand=True)
+        
+        # Draw a line connecting parent to child
+        connector_canvas.create_line(
+            5, 0,                     # Start at left edge, top
+            5, connector_height,      # Draw down
+            indent+5, connector_height,   # Draw right to child indent
+            width=1, fill="#666666"
+        )
 
-    for root_id in branch_roots:
+    # Sort branch_roots by depth to draw parent branches before children
+    sorted_branch_roots = sorted(branch_roots, key=lambda r_id: get_branch_depth(read_session, r_id))
+    
+    for root_id in sorted_branch_roots:
         # Create UI for branch root: {root_id}
         branch_sequence = get_branch_sequence(read_session, root_id)
         if not branch_sequence:
             logger.warning(f"Skipping branch {root_id}: No sequence found.")
             continue
         
-        # Calculate depth for indentation
+        # Calculate depth for indentation and coloring
         depth = get_branch_depth(read_session, root_id)
         indent_amount = depth * INDENT_STEP
+        bg_color = DEPTH_COLORS[min(depth, len(DEPTH_COLORS)-1)]  # Get color based on depth
+        
+        # If this is a child branch, draw connector from parent
+        parent_call = read_session.get(FunctionCall, root_id)
+        if parent_call and parent_call.parent_call_id and parent_call.parent_call_id in branch_widgets:
+            parent_frame = branch_widgets[parent_call.parent_call_id]['frame']
+            draw_branch_connector(parent_call.parent_call_id, root_id, parent_frame, indent_amount)
         
         # Create frame with potential left padding for indentation
-        branch_frame = tk.Frame(sliders_frame, bd=1, relief=tk.GROOVE)
-        # Pack the frame first, then pack items inside it
+        branch_frame = tk.Frame(sliders_frame, bd=1, relief=tk.GROOVE, bg=bg_color)
         branch_frame.pack(fill=tk.X, pady=2, padx=(indent_amount, 0))
-
-        parent_call = read_session.get(FunctionCall, root_id)
         
-        # Create a more informative label
+        # Create a more informative label with branch type indicator
+        prefix = ""
+        parent_info = ""
         if parent_call and parent_call.parent_call_id:
-            # This is a replay branch
+            # This is a replay branch - add visual indicator
+            prefix = "🔄 "  # Replay symbol
             parent_func_name = ""
             if parent_call.parent_call_id in function_names:
                 parent_func_name = f" ({function_names[parent_call.parent_call_id]})"
             
-            label_text = f"Replay Branch {root_id}: {parent_call.function} [{len(branch_sequence)} steps]"
-            label_text += f"\nFrom Branch {parent_call.parent_call_id}{parent_func_name} @ Call {parent_call.parent_call_id}"
+            label_text = f"{prefix}Replay Branch {root_id}: {parent_call.function} [{len(branch_sequence)} steps]"
+            parent_info = f"From Branch {parent_call.parent_call_id}{parent_func_name} @ Call {parent_call.parent_call_id}"
         elif initial_entry_point_id is not None and root_id == initial_entry_point_id:
-            label_text = f"Main Branch: {parent_call.function if parent_call else 'Unknown'} [{len(branch_sequence)} steps]"
+            prefix = "▶ "  # Main branch symbol
+            label_text = f"{prefix}Main Branch: {parent_call.function if parent_call else 'Unknown'} [{len(branch_sequence)} steps]"
         else:
-            label_text = f"Branch {root_id}: {parent_call.function if parent_call else 'Unknown'} [{len(branch_sequence)} steps]"
+            prefix = "◆ "  # Regular branch symbol
+            label_text = f"{prefix}Branch {root_id}: {parent_call.function if parent_call else 'Unknown'} [{len(branch_sequence)} steps]"
             
         # If this branch has child branches, indicate it
+        has_children = False
         if root_id in child_branches and child_branches[root_id]:
-            label_text += f" (Has {len(child_branches[root_id])} replay branches)"
+            has_children = True
+            child_count = len(child_branches[root_id])
+            label_text += f" (Has {child_count} replay{'s' if child_count > 1 else ''})"
 
-        branch_label = tk.Label(branch_frame, text=label_text, justify=tk.LEFT)
-        branch_label.pack(side=tk.LEFT, padx=5)
+        # Use a Frame for the label area for more control
+        label_frame = tk.Frame(branch_frame, bg=bg_color)
+        label_frame.pack(side=tk.LEFT, padx=5, fill=tk.Y)
+        
+        # Main branch label
+        branch_label = tk.Label(label_frame, text=label_text, justify=tk.LEFT, bg=bg_color, 
+                               font=("Arial", 10, "bold" if has_children else "normal"))
+        branch_label.pack(side=tk.TOP, anchor=tk.W)
+        
+        # Add parent info if applicable
+        if parent_info:
+            parent_label = tk.Label(label_frame, text=parent_info, justify=tk.LEFT, 
+                                  bg=bg_color, font=("Arial", 9, "italic"))
+            parent_label.pack(side=tk.TOP, anchor=tk.W)
 
         slider_min = min(branch_sequence)
         slider_max = max(branch_sequence)
         
         slider_command = lambda val, rid=root_id: update_active_branch_slider(val, rid)
+        
+        # Add a frame for slider area
+        slider_frame = tk.Frame(branch_frame, bg=bg_color)
+        slider_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        
+        # Add current position indicator above slider
+        position_var = tk.StringVar(value="Position: 0/0")
+        position_label = tk.Label(slider_frame, textvariable=position_var, 
+                                 bg=bg_color, font=("Arial", 8))
+        position_label.pack(side=tk.TOP, anchor=tk.W)
+        
         branch_slider = tk.Scale(
-            branch_frame,
+            slider_frame,
             from_=slider_min,
             to=slider_max,
             orient=tk.HORIZONTAL,
             command=slider_command,
-            length=250 
+            length=250,
+            bg=bg_color,
+            troughcolor="#e0e0e0"  # Light gray trough
         )
-        branch_slider.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        branch_slider.pack(side=tk.TOP, fill=tk.X, expand=True)
         
         # Set initial slider value to the first item in the sequence
         branch_slider.set(slider_min) 
 
+        # Configure click events
         branch_slider.bind("<Button-1>", lambda event, rid=root_id: set_active_branch(rid))
         branch_label.bind("<Button-1>", lambda event, rid=root_id: set_active_branch(rid))
+        label_frame.bind("<Button-1>", lambda event, rid=root_id: set_active_branch(rid))
 
-        branch_widgets[root_id] = {
+        # Create dictionary to track widget references for this branch
+        branch_data = {
             'frame': branch_frame,
             'slider': branch_slider,
             'label': branch_label,
-            'sequence': branch_sequence
+            'sequence': branch_sequence,
+            'position_var': position_var,
+            'label_frame': label_frame,
+            'slider_frame': slider_frame
         }
         
+        # Add parent label if it exists
+        if parent_info:
+            branch_data['parent_label'] = parent_label
+            
+        branch_widgets[root_id] = branch_data
+        
+        # Update position indicator
+        try:
+            current_value = branch_slider.get()
+            current_index = branch_sequence.index(int(current_value))
+            position_var.set(f"Position: {current_index + 1}/{len(branch_sequence)}")
+        except (ValueError, IndexError):
+            position_var.set(f"Position: ?/{len(branch_sequence)}")
+        
+        # Mark active branch
         if root_id == active_branch_root_id:
             found_active_root = True
             # Highlight the active branch
-            branch_frame.configure(background='#e0e8f0')
+            branch_frame.configure(background=ACTIVE_COLOR)
+            branch_label.configure(background=ACTIVE_COLOR)
+            position_label.configure(background=ACTIVE_COLOR)
+            label_frame.configure(background=ACTIVE_COLOR)
+            slider_frame.configure(background=ACTIVE_COLOR)
+            if parent_info:
+                branch_data['parent_label'].configure(background=ACTIVE_COLOR)
     
     # Set active branch if current one was removed or none was set
     if not found_active_root and branch_roots:
@@ -462,7 +648,15 @@ def refresh_branch_ui():
          active_branch_root_id = new_active_root
          logger.info(f"Reset active branch to first available: {new_active_root}")
          if new_active_root in branch_widgets:
-             branch_widgets[new_active_root]['frame'].configure(background='#e0e8f0')
+             # Use highlight color for the new active branch
+             branch_widgets[new_active_root]['frame'].configure(background=ACTIVE_COLOR)
+             branch_widgets[new_active_root]['label'].configure(background=ACTIVE_COLOR)
+             if 'position_var' in branch_widgets[new_active_root]:
+                 position_label = branch_widgets[new_active_root]['slider'].master.winfo_children()[0]
+                 position_label.configure(background=ACTIVE_COLOR)
+             # Configure all child frames
+             for child in branch_widgets[new_active_root]['frame'].winfo_children():
+                 child.configure(background=ACTIVE_COLOR)
     elif not branch_roots:
          active_branch_root_id = None 
          logger.info("No branches left, active_branch_root_id set to None.")
@@ -472,10 +666,15 @@ def refresh_branch_ui():
          active_slider = branch_widgets[active_branch_root_id]['slider']
          initial_val = active_slider.get()
          update_active_branch_slider(str(int(initial_val)), active_branch_root_id)
+    
+    # Update status bar
+    if status_bar:
+        branch_count = len(branch_roots)
+        status_bar.config(text=f"Ready - {branch_count} branches available")
 
 def replay_from_start():
     """Replay execution from the start of the active branch."""
-    global DB_PATH, read_session
+    global DB_PATH, read_session, run_in_background_var
     if active_branch_root_id is None:
         logger.error("Error: No active branch root ID set.")
         return
@@ -485,6 +684,11 @@ def replay_from_start():
         
     logger.info(f"Replaying from start of branch: {active_branch_root_id}")
     unchecked_globals = get_unchecked_globals()
+    
+    # Check if we should run in background
+    run_in_bg = run_in_background_var and run_in_background_var.get()
+    if run_in_bg and status_bar:
+        status_bar.config(text="Starting background replay...")
     
     try:
         new_branch_start_id = replay_session_from(
@@ -500,17 +704,24 @@ def replay_from_start():
                 
             # Refresh the UI to show the new slider/branch
             refresh_branch_ui()
+            
+            if status_bar:
+                status_bar.config(text=f"Replay complete, new branch created: {new_branch_start_id}")
         else:
             logger.error("Replay failed.")
+            if status_bar:
+                status_bar.config(text="Replay failed - see logs for details")
     except Exception as e:
         logger.error(f"Error during replay: {str(e)}")
         # Show error in status label if available
         if status_label:
             status_label.config(text=f"Replay error: {str(e)}")
+        if status_bar:
+            status_bar.config(text=f"Replay error: {str(e)}")
 
 def replay_from_here():
     """Replay execution starting from the currently selected call."""
-    global DB_PATH, read_session
+    global DB_PATH, read_session, run_in_background_var
     if active_branch_root_id is None or active_branch_root_id not in branch_widgets:
          logger.error("Error: No active branch or valid selection.")
          return
@@ -523,6 +734,13 @@ def replay_from_here():
     
     logger.info(f"Replaying from selected call: {current_value}")
     unchecked_globals = get_unchecked_globals()
+    
+    # Check if we should run in background
+    run_in_bg = run_in_background_var and run_in_background_var.get()
+    if run_in_bg and status_bar:
+        status_bar.config(text="Starting background replay from current call...")
+        if pygame_imitation_var:
+            pygame.bypass_display_update(True)
     
     try:
         # The selected value IS the starting function ID for the new branch
@@ -539,13 +757,22 @@ def replay_from_here():
                 
             # Refresh the UI to show the new slider/branch
             refresh_branch_ui()
+            
+            if status_bar:
+                status_bar.config(text=f"Replay complete, new branch created: {new_branch_start_id}")
+            if pygame_imitation_var:
+                pygame.bypass_display_update(False)
         else:
             logger.error("Replay failed.")
+            if status_bar:
+                status_bar.config(text="Replay failed - see logs for details")
     except Exception as e:
         logger.error(f"Error during replay: {str(e)}")
         # Show error in status label if available
         if status_label:
             status_label.config(text=f"Replay error: {str(e)}")
+        if status_bar:
+            status_bar.config(text=f"Replay error: {str(e)}")
 
 def create_checkbox_command(root_id_ref: Callable[[], Optional[int]], widgets_ref: Dict[int, Dict[str, Any]]) -> Callable[[], None]:
     def command():
@@ -564,8 +791,13 @@ def run_explorer(db_path: str, function_name: Optional[str] = None):
     """Sets up and runs the Tkinter explorer UI."""
     global DB_PATH, TARGET_FUNCTION_NAME, live_monitor, read_session, object_manager
     global call_tracker, current_session_info, initial_entry_point_id, active_branch_root_id
-    global root, sliders_frame, checkbox_frame, play_pause_button, status_label
+    global root, sliders_frame, checkbox_frame, play_pause_button, status_label, status_bar
     global checkbox_vars, checkbox_labels, checkbox_widgets # Keep global declaration
+    
+    # Add new global variables for the toggles
+    global pygame_reuse_events_var, run_in_background_var
+    pygame_reuse_events_var = None  # Will be set if pygame flag is True
+    run_in_background_var = None  # Will be set to tk.BooleanVar
 
     DB_PATH = db_path
     TARGET_FUNCTION_NAME = function_name
@@ -656,32 +888,166 @@ def run_explorer(db_path: str, function_name: Optional[str] = None):
     # --- Setup Tkinter UI ---
     root = tk.Tk()
     root.title(f"PyMonitor Explorer - {os.path.basename(DB_PATH)}")
-    root.geometry("700x650") # Increased size for status display
-
-    # Main UI Frames
-    main_frame = tk.Frame(root)
+    root.geometry("800x700") # Increased size for better visualization
+    
+    # Configure colors and styles
+    bg_color = "#f5f5f5"  # Light gray background
+    header_bg = "#e0e8f0"  # Light blue header
+    button_bg = "#4a86e8"  # Blue buttons
+    button_fg = "white"    # White text on buttons
+    
+    # Configure ttk styles
+    style = ttk.Style()
+    style.configure("TButton", font=("Arial", 10), padding=5)
+    style.configure("TFrame", background=bg_color)
+    style.configure("Header.TLabel", font=("Arial", 12, "bold"), background=header_bg, padding=5)
+    style.configure("Status.TLabel", font=("Arial", 10), padding=3)
+    
+    # Define tooltip function for UI elements
+    def create_tooltip(widget, text):
+        """Create a tooltip for a widget."""
+        if widget is None:
+            return
+            
+        def show_tooltip(event=None):
+            x, y, _, _ = widget.bbox("insert")
+            x += widget.winfo_rootx() + 25
+            y += widget.winfo_rooty() + 25
+            
+            # Create a toplevel window
+            tooltip = tk.Toplevel(widget)
+            tooltip.wm_overrideredirect(True)
+            tooltip.wm_geometry(f"+{x}+{y}")
+            
+            label = tk.Label(tooltip, text=text, justify=tk.LEFT,
+                         background="#ffffd0", relief=tk.SOLID, borderwidth=1,
+                         font=("Arial", 9, "normal"), padx=5, pady=2)
+            label.pack(ipadx=1)
+            
+            def hide_tooltip(event=None):
+                tooltip.destroy()
+                
+            tooltip.bind("<Leave>", hide_tooltip)
+            widget.bind("<Leave>", hide_tooltip)
+            
+        widget.bind("<Enter>", show_tooltip)
+        
+    # Main UI Frames with improved styling
+    main_frame = ttk.Frame(root, style="TFrame")
     main_frame.pack(fill=tk.BOTH, expand=True)
-    sliders_frame = tk.Frame(main_frame)
-    sliders_frame.pack(fill=tk.BOTH, expand=True, side=tk.TOP, padx=5, pady=5)
-    button_frame = tk.Frame(main_frame)
-    button_frame.pack(fill=tk.X, side=tk.TOP, padx=5)
-    status_frame = tk.Frame(main_frame, bd=1, relief=tk.SOLID, height=50)
+    
+    # Header frame with title and refresh button
+    header_frame = ttk.Frame(main_frame)
+    header_frame.pack(fill=tk.X, side=tk.TOP, padx=5, pady=5)
+    
+    # Title label in header
+    title_label = ttk.Label(header_frame, text="Execution Branches", style="Header.TLabel")
+    title_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+    
+    # Refresh button in header
+    refresh_button = ttk.Button(header_frame, text="🔄 Refresh", command=refresh_branch_ui)
+    refresh_button.pack(side=tk.RIGHT, padx=5)
+    
+    # Create scrollable frame for sliders
+    canvas = tk.Canvas(main_frame, bg=bg_color)
+    scrollbar = ttk.Scrollbar(main_frame, orient="vertical", command=canvas.yview)
+    
+    # Create the sliders frame (ttk.Frame) and store in the global variable with proper type
+    sliders_frame_local = ttk.Frame(canvas, style="TFrame")
+    sliders_frame = sliders_frame_local  # Assign to global with proper type
+    
+    # Now we can safely use the local variable for binding
+    sliders_frame_local.bind(
+        "<Configure>",
+        lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+    )
+    
+    canvas.create_window((0, 0), window=sliders_frame_local, anchor="nw")
+    canvas.configure(yscrollcommand=scrollbar.set)
+    
+    canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=5, pady=5)
+    scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+    
+    # Button frames with improved styling - now split into two rows
+    button_frame_row1 = ttk.Frame(main_frame)
+    button_frame_row1.pack(fill=tk.X, side=tk.TOP, padx=5, pady=2)
+    
+    button_frame_row2 = ttk.Frame(main_frame)
+    button_frame_row2.pack(fill=tk.X, side=tk.TOP, padx=5, pady=2)
+    
+    # Status frame for current call info
+    status_frame = ttk.Frame(main_frame, relief=tk.SOLID, borderwidth=1)
     status_frame.pack(fill=tk.X, side=tk.TOP, padx=5, pady=5)
-    checkbox_frame = tk.Frame(main_frame, bd=1, relief=tk.SOLID)
-    checkbox_frame.pack(fill=tk.X, side=tk.TOP, padx=5, pady=5)
-
+    
     # Status label for current call information
-    status_label = tk.Label(status_frame, text="No call selected", anchor=tk.W, justify=tk.LEFT, padx=5, pady=5)
-    status_label.pack(fill=tk.X, expand=True)
-
-    # Widget Creation
-    prev_button = tk.Button(button_frame, text="Prev")
-    play_pause_button = tk.Button(button_frame, text="Play") 
-    next_button = tk.Button(button_frame, text="Next")
-    reload_button = tk.Button(button_frame, text="Reload")
-    replay_start_button = tk.Button(button_frame, text="Replay Branch") # Renamed
-    replay_here_button = tk.Button(button_frame, text="Replay Here")
-
+    status_label_local = ttk.Label(status_frame, style="Status.TLabel", anchor=tk.W, justify=tk.LEFT)
+    status_label = status_label_local
+    status_label_local.pack(fill=tk.X, expand=True, padx=5, pady=5)
+    
+    # Status bar at the bottom of the window
+    status_bar_local = ttk.Label(root, text="Ready", relief=tk.SUNKEN, anchor=tk.W)
+    status_bar = status_bar_local  # Assign to global with proper type
+    status_bar_local.pack(side=tk.BOTTOM, fill=tk.X)
+    
+    # Checkboxes frame for globals
+    checkbox_frame_local = ttk.Frame(main_frame, relief=tk.SOLID, borderwidth=1)
+    checkbox_frame = checkbox_frame_local
+    checkbox_frame_local.pack(fill=tk.X, side=tk.TOP, padx=5, pady=5)
+    
+    # Row 1: Navigation buttons
+    prev_button = ttk.Button(button_frame_row1, text="◀ Prev", command=prev_step)
+    play_pause_button_local = ttk.Button(button_frame_row1, text="▶ Play", command=toggle_play_pause)
+    play_pause_button = play_pause_button_local
+    next_button = ttk.Button(button_frame_row1, text="Next ▶", command=next_step)
+    
+    # Row 2: Replay buttons and toggles
+    reload_button = ttk.Button(button_frame_row2, text="🔄 Reload", command=reload_current)
+    replay_start_button = ttk.Button(button_frame_row2, text="🔁 Replay Branch", command=replay_from_start)
+    replay_here_button = ttk.Button(button_frame_row2, text="↪ Replay From Here", command=replay_from_here)
+    
+    # Add toggles to row 2
+    toggle_frame = ttk.Frame(button_frame_row2)
+    toggle_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=5)
+    
+    # Run in background toggle
+    run_in_background_var = tk.BooleanVar(value=False)
+    run_bg_check = ttk.Checkbutton(
+        toggle_frame,
+        text="Run in background",
+        variable=run_in_background_var
+    )
+    run_bg_check.pack(side=tk.RIGHT, padx=5)
+    
+    # Pygame reuse events toggle - only show if pygame flag is set
+    # Check if pygame is available
+    pygame_available = False
+    try:
+        import pygame
+        pygame_available = True
+    except ImportError:
+        pygame_available = False
+    
+    # Check if pygame flag is set in args (can be passed from command line)
+    pygame_flag = 'pygame' in sys.argv or '--pygame' in sys.argv
+    
+    if pygame_available and pygame_flag:
+        # Import the monitoringpy.pygame module
+        from .. import pygame as monitoringpy_pygame
+        
+        # Create pygame reuse events toggle
+        pygame_reuse_events_var = tk.BooleanVar(value=True)  # Default to True
+        pygame_check = ttk.Checkbutton(
+            toggle_frame,
+            text="Reuse Pygame events",
+            variable=pygame_reuse_events_var,
+            command=lambda: monitoringpy_pygame.set_screen_reuse(pygame_reuse_events_var.get() if pygame_reuse_events_var else True)
+        )
+        pygame_check.pack(side=tk.RIGHT, padx=5)
+        
+        # Initialize pygame screen reuse with the default value
+        if pygame_reuse_events_var:
+            monitoringpy_pygame.set_screen_reuse(pygame_reuse_events_var.get())
+    
     # Retrieve Checkbox Labels (Use TARGET_FUNCTION_NAME if provided, else handle None)
     checkbox_labels = []
     if current_session_info and hasattr(current_session_info, 'common_globals') and isinstance(current_session_info.common_globals, dict):
@@ -689,62 +1055,68 @@ def run_explorer(db_path: str, function_name: Optional[str] = None):
             checkbox_labels = current_session_info.common_globals.get(TARGET_FUNCTION_NAME, [])
             if not isinstance(checkbox_labels, list): checkbox_labels = []
             if not checkbox_labels:
-                 logger.warning(f"No common globals found for specified function: {TARGET_FUNCTION_NAME}")
+                logger.warning(f"No common globals found for specified function: {TARGET_FUNCTION_NAME}")
         else:
-             # Maybe show common globals for the entry point function? Or aggregate?
-             # For now, just indicate none were specified.
-             logger.info("No specific function name provided, not loading common globals checkboxes.")
-             
+            # Maybe show common globals for the entry point function? Or aggregate?
+            # For now, just indicate none were specified.
+            logger.info("No specific function name provided, not loading common globals checkboxes.")
+            
     # Create Checkbox Widgets
+    checkbox_vars = []  # Initialize or reset the list
+    checkbox_widgets = []  # Initialize or reset the list
+    
     if checkbox_labels: 
         for i, label in enumerate(checkbox_labels):
             var = tk.BooleanVar(value=True)  
             checkbox_vars.append(var)
-            cb = tk.Checkbutton(checkbox_frame, text=label, variable=var)
+            cb = ttk.Checkbutton(checkbox_frame_local, text=label, variable=var)
             checkbox_widgets.append(cb)
     else:
-        no_globals_label = tk.Label(checkbox_frame, text="No common globals found or function not specified.")
+        no_globals_label = ttk.Label(checkbox_frame_local, text="No common globals found or function not specified.")
+        no_globals_label.pack()
 
-    # Assign Commands
-    prev_button.config(command=prev_step)
-    play_pause_button.config(command=toggle_play_pause) 
-    next_button.config(command=next_step)
-    reload_button.config(command=reload_current)
-    replay_start_button.config(command=replay_from_start)
-    replay_here_button.config(command=replay_from_here)
-
+    # Set commands for checkboxes
     if checkbox_labels:
         checkbox_command = create_checkbox_command(lambda: active_branch_root_id, branch_widgets)
         for cb in checkbox_widgets:
-            cb.config(command=checkbox_command)
-
-    # Pack Widgets
-    prev_button.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-    play_pause_button.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-    next_button.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-    reload_button.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-    replay_start_button.pack(side=tk.LEFT, fill=tk.BOTH, expand=True) 
-    replay_here_button.pack(side=tk.LEFT, fill=tk.BOTH, expand=True) 
-
+            cb.configure(command=checkbox_command)
+    
+    # Pack navigation buttons in row 1
+    for btn in [prev_button, play_pause_button_local, next_button]:
+        btn.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2, pady=2)
+    
+    # Pack replay buttons in row 2
+    for btn in [reload_button, replay_start_button, replay_here_button]:
+        btn.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2, pady=2)
+    
+    # Set up checkbox grid
     if checkbox_labels:
-        CHECKBOXES_PER_ROW = 4 # Adjusted for wider window
+        CHECKBOXES_PER_ROW = 4  # Adjusted for wider window
         for i, cb in enumerate(checkbox_widgets):
             row_num = i // CHECKBOXES_PER_ROW
             col_num = i % CHECKBOXES_PER_ROW
             cb.grid(row=row_num, column=col_num, padx=5, pady=2, sticky=tk.W)
-    else:
-        no_globals_label.pack() 
-
+    
+    # Apply tooltips to buttons
+    create_tooltip(prev_button, "Move to the previous step in the current branch")
+    create_tooltip(next_button, "Move to the next step in the current branch")
+    create_tooltip(play_pause_button_local, "Play/pause automatic stepping through the current branch")
+    create_tooltip(reload_button, "Reload the current function state")
+    create_tooltip(replay_start_button, "Start a new branch from the beginning of the current branch")
+    create_tooltip(replay_here_button, "Start a new branch from the current call")
+    create_tooltip(refresh_button, "Refresh the UI with the latest data")
+    create_tooltip(run_bg_check, "Run replays in background mode")
+    
     # Initial UI Population
-    refresh_branch_ui() 
-
+    refresh_branch_ui()
+    
     # Disable Buttons (If needed)
     if active_branch_root_id is None:
         logger.warning("Disabling controls as no active branch found initially.")
         replay_start_button.config(state=tk.DISABLED)
         replay_here_button.config(state=tk.DISABLED)
         prev_button.config(state=tk.DISABLED)
-        play_pause_button.config(state=tk.DISABLED)
+        play_pause_button_local.config(state=tk.DISABLED)
         next_button.config(state=tk.DISABLED)
         reload_button.config(state=tk.DISABLED)
 
@@ -765,6 +1137,7 @@ if __name__ == "__main__":
                         default=None)
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging (INFO level)")
     parser.add_argument("-pg", "--pygame", action="store_true", help="Activate pygame screen reuse")
+    parser.add_argument("--background", action="store_true", help="Enable background mode for replays")
     args = parser.parse_args()
 
     if not os.path.exists(args.db_path):
@@ -778,6 +1151,11 @@ if __name__ == "__main__":
 
     if args.pygame:
         from monitoringpy import pygame
+        pygame_imitation_var = True
         pygame.set_screen_reuse(True)
+    else:
+        pygame_imitation_var = False
 
+    # Here we just pass any processed flags to the explorer
+    # The actual handling happens inside run_explorer
     run_explorer(args.db_path, args.function_name)

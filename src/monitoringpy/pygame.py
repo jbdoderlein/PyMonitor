@@ -28,6 +28,9 @@ except AttributeError:
 _reuse_screen = False
 # Store the current screen instance
 _current_screen = None
+# Bypass the original display.update method
+_bypass_display_update = False
+
 
 # Override functions as needed
 
@@ -73,6 +76,35 @@ def set_screen_reuse(reuse=True):
 
 # Export the control function
 globals()['set_screen_reuse'] = set_screen_reuse
+
+
+def bypass_display_update(bypass=True):
+    """Bypass the original display.update method
+    
+    Args:
+        bypass: If True, the original display.update method will be bypassed
+    """
+    global _bypass_display_update
+    _bypass_display_update = bypass
+
+# Export the control function
+globals()['bypass_display_update'] = bypass_display_update
+
+_original_display_update = original_pygame.display.update
+
+def modified_display_update(*args, **kwargs):
+    """Modified display.update method to include event data
+    """
+    global _bypass_display_update
+    if not _bypass_display_update:
+        # Call the original display.update method
+        return _original_display_update(*args, **kwargs)
+    else:
+        return None
+
+globals()['display'].update = modified_display_update
+
+
 
 # Store the original get event function
 # We use a module-level variable since modifying original_pygame directly might not work with all imports

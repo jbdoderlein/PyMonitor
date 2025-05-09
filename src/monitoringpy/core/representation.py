@@ -1,5 +1,6 @@
 import pickle
-from typing import Any, Dict, Optional, Union, TypeVar, Generic, List, Sequence
+import copyreg
+from typing import Any, Dict, Optional, Union, TypeVar, Generic, List, Sequence, Callable
 import hashlib
 from enum import Enum
 from sqlalchemy.orm import Session
@@ -10,6 +11,7 @@ import datetime
 import inspect
 import uuid
 import re
+import io
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -22,12 +24,42 @@ class ObjectType(Enum):
 
 T = TypeVar('T')
 
+class PickleConfig:
+    """Configuration for custom pickling behavior"""
+    def __init__(self, dispatch_table=None):
+        self.dispatch_table = dispatch_table or {}
+        
+    def create_pickler(self, file):
+        """Create a pickler with the custom dispatch table"""
+        p = pickle.Pickler(file)
+        if self.dispatch_table:
+            p.dispatch_table = self.dispatch_table
+        return p
+        
+    def create_unpickler(self, file):
+        """Create an unpickler"""
+        return pickle.Unpickler(file)
+        
+    def dumps(self, obj):
+        """Pickle an object with custom reducers"""
+        f = io.BytesIO()
+        pickler = self.create_pickler(f)
+        pickler.dump(obj)
+        return f.getvalue()
+        
+    def loads(self, data):
+        """Unpickle an object"""
+        f = io.BytesIO(data)
+        unpickler = self.create_unpickler(f)
+        return unpickler.load()
+
 class Object:
     """Represent an object at a certain state in the program"""
-    def __init__(self, value: Any):
+    def __init__(self, value: Any, pickle_config: Optional[PickleConfig] = None):
         self.value = value
         self.type = self._get_type()
         self._hash = None
+        self.pickle_config = pickle_config or PickleConfig()
 
     def _get_type(self) -> ObjectType:
         """Determine the type of the object"""
@@ -50,23 +82,24 @@ class Object:
         elif self.type in (ObjectType.LIST, ObjectType.DICT):
             return {
                 "type": self.type.value,
-                "value": pickle.dumps(self.value).hex()
+                "value": self.pickle_config.dumps(self.value).hex()
             }
         else:  # Custom type
             return {
                 "type": self.type.value,
-                "value": pickle.dumps(self.value).hex()
+                "value": self.pickle_config.dumps(self.value).hex()
             }
 
     @classmethod
-    def load(cls, data: Dict[str, Any]) -> 'Object':
+    def load(cls, data: Dict[str, Any], pickle_config: Optional[PickleConfig] = None) -> 'Object':
         """Load the object from a dictionary format"""
+        config = pickle_config or PickleConfig()
         obj_type = ObjectType(data["type"])
         if obj_type == ObjectType.PRIMITIVE:
-            return cls(data["value"])
+            return cls(data["value"], pickle_config=config)
         else:
-            value = pickle.loads(bytes.fromhex(data["value"]))
-            return cls(value)
+            value = config.loads(bytes.fromhex(data["value"]))
+            return cls(value, pickle_config=config)
 
     def __str__(self) -> str:
         """Return a string representation of the object"""
@@ -78,41 +111,42 @@ class Object:
             if self.type == ObjectType.PRIMITIVE:
                 self._hash = str(self.value)
             else:
-                self._hash = hashlib.md5(pickle.dumps(self.value)).hexdigest()
+                self._hash = hashlib.md5(self.pickle_config.dumps(self.value)).hexdigest()
         return self._hash
 
 class Primitive(Object):
     """Represent a primitive value at a certain state in the program"""
-    def __init__(self, value: Union[int, float, bool, str, None]):
-        super().__init__(value)
+    def __init__(self, value: Union[int, float, bool, str, None], pickle_config: Optional[PickleConfig] = None):
+        super().__init__(value, pickle_config)
         if not isinstance(value, (int, float, bool, str, type(None))):
             raise TypeError("Primitive objects can only store primitive types")
 
 class List(Object):
     """Represent a list at a certain state in the program"""
-    def __init__(self, value: list):
-        super().__init__(value)
+    def __init__(self, value: list, pickle_config: Optional[PickleConfig] = None):
+        super().__init__(value, pickle_config)
         if not isinstance(value, list):
             raise TypeError("List objects can only store lists")
 
 class DictObject(Object):
     """Represent a dictionary at a certain state in the program"""
-    def __init__(self, value: dict):
-        super().__init__(value)
+    def __init__(self, value: dict, pickle_config: Optional[PickleConfig] = None):
+        super().__init__(value, pickle_config)
         if not isinstance(value, dict):
             raise TypeError("DictObject objects can only store dictionaries")
 
 class CustomClass(Object):
     """Represent a custom class at a certain state in the program"""
-    def __init__(self, value: Any):
-        super().__init__(value)
+    def __init__(self, value: Any, pickle_config: Optional[PickleConfig] = None):
+        super().__init__(value, pickle_config)
         if isinstance(value, (int, float, bool, str, type(None), list, dict)):
             raise TypeError("CustomClass objects cannot store primitive or structured types")
 
 class ObjectManager:
     """Manage objects in the program"""
-    def __init__(self, session: Session):
+    def __init__(self, session: Session, pickle_config: Optional[PickleConfig] = None):
         self.session = session
+        self.pickle_config = pickle_config or PickleConfig()
         try:
             from .code_manager import CodeManager, ClassLoader # type: ignore
             self.code_manager = CodeManager(session)
@@ -154,7 +188,7 @@ class ObjectManager:
                 id=ref,
                 type_name=actual_type_name,  # Use the actual class name instead of our representation type
                 is_primitive=False,
-                pickle_data=pickle.dumps(obj.value)
+                pickle_data=obj.pickle_config.dumps(obj.value)
             )
 
         self.session.add(stored_obj)
@@ -207,13 +241,13 @@ class ObjectManager:
         """Store an object and return its reference"""
         # Create appropriate Object instance
         if isinstance(value, (int, float, bool, str, type(None))):
-            obj = Primitive(value)
+            obj = Primitive(value, pickle_config=self.pickle_config)
         elif isinstance(value, list):
-            obj = List(value)
+            obj = List(value, pickle_config=self.pickle_config)
         elif isinstance(value, dict):
-            obj = DictObject(value)
+            obj = DictObject(value, pickle_config=self.pickle_config)
         else:
-            obj = CustomClass(value)
+            obj = CustomClass(value, pickle_config=self.pickle_config)
 
         ref = obj.ref()
         identity = self._get_identity(obj)
@@ -305,7 +339,7 @@ class ObjectManager:
                 return None
         else:
             try:
-                return pickle.loads(stored_obj.pickle_data)
+                return self.pickle_config.loads(stored_obj.pickle_data)
             except (ImportError, AttributeError, ModuleNotFoundError) as e:
                 # First try to load the class using the stored code if available
                 if self.class_loader is not None and self.code_manager is not None:
@@ -321,7 +355,7 @@ class ObjectManager:
                                 exec(code_info['code'], namespace)
                                 if stored_obj.type_name in namespace:
                                     # Try unpickling again now that we have recreated the class
-                                    return pickle.loads(stored_obj.pickle_data)
+                                    return self.pickle_config.loads(stored_obj.pickle_data)
                                 # Store the code info for the UnpickleableObject
                                 self._last_code_info = code_info
                     except Exception as loader_e:

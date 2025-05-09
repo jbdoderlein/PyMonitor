@@ -2,7 +2,7 @@ from typing import Dict, Any, Optional, TypedDict, List, Union
 from sqlalchemy.orm import Session
 import datetime
 import inspect
-from .representation import ObjectManager
+from .representation import ObjectManager, PickleConfig
 from .models import StoredObject, FunctionCall, StackSnapshot, CodeDefinition
 from sqlalchemy import text
 import logging
@@ -28,10 +28,10 @@ class FunctionCallInfo(TypedDict):
 class FunctionCallTracker:
     """Track function calls and their context using object manager for efficient storage"""
     
-    def __init__(self, session: Session, monitor=None) -> None:
+    def __init__(self, session: Session, monitor=None, pickle_config: Optional[PickleConfig] = None) -> None:
         self.session = session
         self.monitor = monitor
-        self.object_manager = ObjectManager(session)
+        self.object_manager = ObjectManager(session, pickle_config=pickle_config)
         self.call_history = []
         self.current_call = None
 

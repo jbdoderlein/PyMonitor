@@ -15,6 +15,7 @@ from .function_call import FunctionCallTracker
 from typing import Optional
 import time
 import typing
+from .representation import PickleConfig
 
 # Configure logging - only show warnings and errors
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -40,7 +41,7 @@ class PyMonitoring:
         """
         return cls._instance
 
-    def __init__(self, db_path="monitoring.db", pyrapl_enabled=False, queue_size=1000, flush_interval=1.0):
+    def __init__(self, db_path="monitoring.db", pyrapl_enabled=False, queue_size=1000, flush_interval=1.0, pickle_config=None):
         if hasattr(self, 'initialized') and self._instance is not None:
             return
         self.initialized = True
@@ -51,6 +52,9 @@ class PyMonitoring:
         self.active_return_hooks = {} # Stores return_hooks per active call_id
         self.monitored_functions = {}
         self.MONITOR_TOOL_ID = sys.monitoring.PROFILER_ID
+        
+        # Custom pickle configuration
+        self.pickle_config = pickle_config
         
         # Recording flag
         self.is_recording_enabled = True
@@ -81,7 +85,7 @@ class PyMonitoring:
             
             # Initialize the function call tracker
             self.session = Session()
-            self.call_tracker = FunctionCallTracker(self.session, monitor=self)
+            self.call_tracker = FunctionCallTracker(self.session, monitor=self, pickle_config=self.pickle_config)
             
             logger.info(f"Database initialized successfully at {self.db_path}")
         except Exception as e:
@@ -92,7 +96,7 @@ class PyMonitoring:
                 logger.warning("Attempting to create in-memory database as fallback")
                 Session = init_db(":memory:")
                 self.session = Session()
-                self.call_tracker = FunctionCallTracker(self.session)
+                self.call_tracker = FunctionCallTracker(self.session, pickle_config=self.pickle_config)
                 logger.info("In-memory database initialized as fallback")
             except Exception as e2:
                 logger.critical(f"Failed to initialize in-memory database: {e2}")
@@ -797,6 +801,20 @@ def pymonitor_line(func):
 
 
 def init_monitoring(*args, **kwargs):
+    """
+    Initialize the monitoring system.
+    
+    Args:
+        db_path (str, optional): Path to the database file. Defaults to "monitoring.db".
+        pyrapl_enabled (bool, optional): Enable PyRAPL energy monitoring. Defaults to False.
+        queue_size (int, optional): Size of the monitoring queue. Defaults to 1000.
+        flush_interval (float, optional): Interval for flushing the queue. Defaults to 1.0.
+        pickle_config (PickleConfig, optional): Custom pickle configuration for serializing objects.
+            This can include custom reducers for specific types. Defaults to None.
+            
+    Returns:
+        PyMonitoring: The monitoring instance
+    """
     monitor = PyMonitoring(*args, **kwargs)
     return monitor
 
