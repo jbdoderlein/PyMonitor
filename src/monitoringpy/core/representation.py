@@ -1,6 +1,6 @@
 import pickle
 import copyreg
-from typing import Any, Dict, Optional, Union, TypeVar, Generic, List, Sequence, Callable
+from typing import Any, Dict, Optional, Union, TypeVar, Generic, List as ListType, Sequence, Callable
 import hashlib
 from enum import Enum
 from sqlalchemy.orm import Session
@@ -12,6 +12,10 @@ import inspect
 import uuid
 import re
 import io
+import importlib.util
+import os
+import sys
+from pathlib import Path
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -26,8 +30,72 @@ T = TypeVar('T')
 
 class PickleConfig:
     """Configuration for custom pickling behavior"""
-    def __init__(self, dispatch_table=None):
-        self.dispatch_table = dispatch_table or {}
+    def __init__(self, dispatch_table=None, custom_picklers=None):
+        self.dispatch_table = dispatch_table or copyreg.dispatch_table.copy()
+        
+        # Load custom picklers if specified
+        if custom_picklers:
+            self.load_custom_picklers(custom_picklers)
+        
+    def load_custom_picklers(self, module_names):
+        """
+        Load custom pickler modules and update the dispatch table.
+        
+        Args:
+            module_names: List of module names to load custom picklers from
+        """
+        if not self.dispatch_table:
+            self.dispatch_table = copyreg.dispatch_table.copy()
+            
+        # Get the base path for custom picklers
+        base_path = Path(__file__).parent.parent / "picklers"
+        
+        # First make sure the picklers package is imported
+        try:
+            import monitoringpy.picklers
+        except ImportError:
+            logger.warning("Could not import picklers package")
+        
+        for module_name in module_names:
+            # Construct the file path
+            file_path = base_path / f"{module_name}.py"
+            
+            if not file_path.exists():
+                logger.warning(f"Custom pickler module not found: {file_path}")
+                continue
+                
+            try:
+                # First try importing normally (in case it was already loaded by __init__)
+                module_path = f"monitoringpy.picklers.{module_name}"
+                try:
+                    if module_path in sys.modules:
+                        module = sys.modules[module_path]
+                    else:
+                        module = importlib.import_module(module_path)
+                except ImportError:
+                    # If normal import fails, load directly from file
+                    spec = importlib.util.spec_from_file_location(module_path, file_path)
+                    if not spec or not spec.loader:
+                        logger.error(f"Failed to load spec for {module_name}")
+                        continue
+                        
+                    module = importlib.util.module_from_spec(spec)
+                    # Register in sys.modules first to allow for proper function references
+                    sys.modules[module_path] = module
+                    spec.loader.exec_module(module)
+                
+                # Check if the module has a get_dispatch_table function
+                if hasattr(module, 'get_dispatch_table'):
+                    # Get the dispatch table from the module
+                    custom_dispatch = module.get_dispatch_table()
+                    # Update the current dispatch table
+                    self.dispatch_table.update(custom_dispatch)
+                    logger.info(f"Loaded custom pickler for {module_name}")
+                else:
+                    logger.warning(f"Module {module_name} does not have a get_dispatch_table function")
+            except Exception as e:
+                logger.error(f"Error loading custom pickler for {module_name}: {e}")
+                logger.exception(e)
         
     def create_pickler(self, file):
         """Create a pickler with the custom dispatch table"""

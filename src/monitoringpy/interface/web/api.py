@@ -300,11 +300,13 @@ async def get_stack_recording(function_id: str):
                 ).first()
                 
                 if code_definition:
+                    first_line_no = code_definition.first_line_no if code_definition.first_line_no is not None else function_call.line
                     code = {
                         'content': code_definition.code_content,
                         'module_path': code_definition.module_path,
                         'type': code_definition.type,
-                        'name': code_definition.name
+                        'name': code_definition.name,
+                        'first_line_no': first_line_no
                     }
             except Exception as e:
                 logger.error(f"Error retrieving code definition: {e}")
@@ -315,9 +317,7 @@ async def get_stack_recording(function_id: str):
             # Process each snapshot
             for stack_snapshot in snapshots:
                 frame_info = {
-                    "frame_id": stack_snapshot.frame_id,
-                    "function_name": stack_snapshot.function_name,
-                    "file_name": stack_snapshot.file_name,
+                    "frame_id": stack_snapshot.id,
                     "line_number": stack_snapshot.line_number,
                     "locals": stack_snapshot.locals_refs,
                     "globals_subset": stack_snapshot.globals_refs,
@@ -363,17 +363,20 @@ async def get_stack_recording(function_id: str):
             frames = []
         
         # Return the stack trace data
+        function_dict = {
+            "id": function_id,
+            "name": function_call.function,
+            "file": function_call.file,
+            "line": function_call.line,
+            "time": function_call.start_time.isoformat() if function_call.start_time else None,
+            "end_time": function_call.end_time.isoformat() if function_call.end_time else None,
+            "code_definition_id": function_call.code_definition_id,
+            "call_metadata": function_call.call_metadata
+        }
+        if code:
+            function_dict["code"] = code
         return {
-            "function": {
-                "id": function_id,
-                "name": function_call.function,
-                "file": function_call.file,
-                "line": function_call.line,
-                "time": function_call.start_time.isoformat() if function_call.start_time else None,
-                "end_time": function_call.end_time.isoformat() if function_call.end_time else None,
-                "code_definition_id": function_call.code_definition_id,
-                "call_metadata": function_call.call_metadata
-            },
+            "function": function_dict,
             "frames": frames
         }
     except ValueError as e:

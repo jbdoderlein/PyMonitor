@@ -811,10 +811,22 @@ def init_monitoring(*args, **kwargs):
         flush_interval (float, optional): Interval for flushing the queue. Defaults to 1.0.
         pickle_config (PickleConfig, optional): Custom pickle configuration for serializing objects.
             This can include custom reducers for specific types. Defaults to None.
+        custom_picklers (list, optional): List of module names to load custom picklers from.
+            These will be loaded from the monitoringpy/picklers directory. Defaults to None.
             
     Returns:
         PyMonitoring: The monitoring instance
     """
+    # If custom_picklers is specified but pickle_config is not,
+    # create a new pickle_config with the custom picklers
+    if 'custom_picklers' in kwargs and 'pickle_config' not in kwargs:
+        from .representation import PickleConfig
+        kwargs['pickle_config'] = PickleConfig(custom_picklers=kwargs.pop('custom_picklers'))
+    # If both are specified, update the existing pickle_config
+    elif 'custom_picklers' in kwargs and 'pickle_config' in kwargs:
+        custom_picklers = kwargs.pop('custom_picklers')
+        kwargs['pickle_config'].load_custom_picklers(custom_picklers)
+        
     monitor = PyMonitoring(*args, **kwargs)
     return monitor
 
