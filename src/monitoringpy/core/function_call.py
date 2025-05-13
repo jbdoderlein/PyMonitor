@@ -20,7 +20,6 @@ class FunctionCallInfo(TypedDict):
     locals: Dict[str, Any]
     globals: Dict[str, Any]
     return_value: Optional[Any]
-    energy_data: Optional[Dict[str, Any]]
     code_definition_id: Optional[str]
     code: Optional[Dict[str, Any]]  # Contains code content, module_path, and type
     call_metadata: Optional[Dict[str, Any]] # Add field for general metadata
@@ -150,9 +149,7 @@ class FunctionCallTracker:
         globals_dict = call.globals_refs if call.globals_refs else {}
         return_value = call.return_ref
 
-        # Get energy data from call_metadata if available
-        energy_data = call.call_metadata.get('energy_data') if call.call_metadata else None
-
+        
         # Get code information if available
         code = None
         if call.code_definition_id:
@@ -178,7 +175,6 @@ class FunctionCallTracker:
             locals=locals_dict,
             globals=globals_dict,
             return_value=return_value,
-            energy_data=energy_data,
             code_definition_id=call.code_definition_id,
             code=code,
             call_metadata=call.call_metadata

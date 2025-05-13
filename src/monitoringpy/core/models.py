@@ -263,12 +263,8 @@ class MonitoringSession(Base):
     # Metadata about the session - renamed to avoid SQLAlchemy reserved name conflict
     session_metadata = Column(JSON, nullable=True)  # For any additional data
     
-    # Entry point for the main call sequence in this session
-    entry_point_call_id = Column(Integer, ForeignKey('function_calls.id'), nullable=True)
-    
     # Relationships
     function_calls = relationship("FunctionCall", foreign_keys=[FunctionCall.session_id], back_populates="session")
-    entry_point_call = relationship("FunctionCall", foreign_keys=[entry_point_call_id])
     
     @property
     def duration(self):

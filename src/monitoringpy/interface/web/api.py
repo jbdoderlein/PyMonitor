@@ -8,21 +8,18 @@ API endpoints for PyMonitor database access.
 import os
 import sys
 import logging
-import json
 import datetime
-from typing import Dict, Any, List, Optional, TypedDict, Union, cast
+from typing import Dict, Any, List, Optional, TypedDict, cast
 
-from fastapi import FastAPI, HTTPException, Query, Depends, Request
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 
-from sqlalchemy.orm import Session
 from monitoringpy.core import (
     init_db, StoredObject, FunctionCall, StackSnapshot, 
     CodeDefinition, FunctionCallTracker, ObjectManager,
     MonitoringSession
 )
-from monitoringpy.core.representation import Object, Primitive, List as ListObj, DictObject, CustomClass
+from monitoringpy.core.function_call import FunctionCallInfo
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -50,17 +47,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Define FunctionCallInfo type
-class FunctionCallInfo(TypedDict, total=False):
-    function: str
-    file: Optional[str]
-    line: Optional[int]
-    start_time: Optional[datetime.datetime]
-    end_time: Optional[datetime.datetime]
-    locals: Dict[str, Any]
-    globals: Dict[str, Any]
-    return_value: Any
-
 # Helper functions
 def serialize_value(value: Any) -> str:
     """Serialize a value to a string representation"""
@@ -72,111 +58,48 @@ def serialize_value(value: Any) -> str:
         # Limit array size and handle non-serializable items
         items = []
         for item in value[:3]:  # Only show first 3 items
-            try:
-                items.append(serialize_value(item))
-            except:
-                items.append(f"<{type(item).__name__}>")
+            items.append(serialize_value(item))
         return f"[{', '.join(items)}{'...' if len(value) > 3 else ''}]"
     elif isinstance(value, dict):
         # Limit dict size and handle non-serializable items
         items = []
         for k, v in list(value.items())[:3]:  # Only show first 3 items
-            try:
-                key_str = serialize_value(k)
-                val_str = serialize_value(v)
-                items.append(f"{key_str}: {val_str}")
-            except:
-                items.append(f"<{type(k).__name__}>: <{type(v).__name__}>")
+            key_str = serialize_value(k)
+            val_str = serialize_value(v)
+            items.append(f"{key_str}: {val_str}")
         return f"{{{', '.join(items)}{'...' if len(value) > 3 else ''}}}"
     else:
-        try:
-            return str(value)
-        except:
-            return f"<{type(value).__name__} object>"
+        return str(value)
+        
 
 def serialize_stored_value(ref: Optional[str]) -> Dict[str, Any]:
     """Serialize a stored value, handling cases where the original class is not available"""
     global object_manager
-    
+    assert object_manager is not None
     if ref is None:
         return {"value": "None", "type": "NoneType"}
         
-    if object_manager is None:
-        return {"value": "<no object manager>", "type": "Error"}
-        
     try:
-        # If ref is not a string, or if it's a string but looks like a direct value
-        # (not a 32-char hex hash), we need to store it first
-        if not isinstance(ref, str) or (
-            isinstance(ref, str) and 
-            not (len(ref) == 32 and all(c in '0123456789abcdef' for c in ref.lower()))
-        ):
-            try:
-                logger.debug(f"Got direct value instead of reference, storing it first: {type(ref)}")
-                ref = object_manager.store(ref)
-                logger.debug(f"Stored value, got reference: {ref}")
-            except Exception as e:
-                logger.error(f"Failed to store direct value: {e}")
-                return {"value": f"<storage error: {str(e)}>", "type": "Error"}
-        
-        # Now we should have a proper reference string
-        ref_str = str(ref)
-        
         # Try to get the value using ObjectManager
-        value = object_manager.get(ref_str)
+        value,type_name = object_manager.get_without_pickle(ref)
         if value is None:
             # If we couldn't get it, it's truly not found
-            return {"value": f"<not found: {ref_str}>", "type": "Error"}
+            return {"value": f"<not found: {ref}>", "type": "Error"}
             
-        # Successfully got the value
-        if type(value).__name__ == 'MyCustomClass':
-            logger.info(f"Found MyCustomClass: {value}")
-            
-        # Get code definition if available
-        code_info = None
-        if object_manager.code_manager:
-            code_info = object_manager.code_manager.get_object_code(ref_str)
-            if code_info:
-                code_info = {
-                    'name': code_info.get('name', type(value).__name__),
-                    'module_path': code_info.get('module_path', 'unknown'),
-                    'code_content': code_info.get('code', ''),
-                    'creation_time': code_info.get('creation_time', datetime.datetime.now()).isoformat()
-                }
             
         return {
             "value": str(value),
-            "type": type(value).__name__,
-            "code": code_info
+            "type": type_name,
         }
             
     except Exception as e:
         logger.error(f"Error serializing value for ref {ref}: {e}")
         return {"value": f"<error: {str(e)}>", "type": "Error"}
 
-def serialize_call_info(call_info: Dict[str, Any]) -> Dict[str, Any]:
+def serialize_call_info(call_info: FunctionCallInfo) -> Dict[str, Any]:
     """Serialize a function call info object to a JSON-compatible dict"""
-    # Don't use the TypedDict for parameter typing - use a generic Dict instead
-    # to avoid typing conflicts with the core module's FunctionCallInfo
+    result = {k: v for k, v in call_info.items()}
     
-    result = {}
-    
-    # Add fields with safety checks
-    if "function" in call_info:
-        result["function"] = call_info["function"]
-    if "file" in call_info:
-        result["file"] = call_info["file"]
-    if "line" in call_info:
-        result["line"] = call_info["line"]
-    
-    # Handle timestamps with safety checks - use .get() to avoid KeyError
-    start_time = call_info.get("start_time")
-    if start_time and hasattr(start_time, "isoformat"):
-        result["start_time"] = start_time.isoformat()
-    
-    end_time = call_info.get("end_time")
-    if end_time and hasattr(end_time, "isoformat"):
-        result["end_time"] = end_time.isoformat()
         
     # Process locals
     if "locals" in call_info and call_info["locals"]:
@@ -191,7 +114,6 @@ def serialize_call_info(call_info: Dict[str, Any]) -> Dict[str, Any]:
     if "globals" in call_info and call_info["globals"]:
         globals_dict = {}
         for name, value in call_info["globals"].items():
-            # Filter out module-level imports and other large objects
             if not name.startswith("__") and not name.endswith("__"):
                 globals_dict[name] = serialize_stored_value(value)
         result["globals"] = globals_dict
@@ -202,65 +124,9 @@ def serialize_call_info(call_info: Dict[str, Any]) -> Dict[str, Any]:
     if "return_value" in call_info:
         result["return_value"] = serialize_stored_value(call_info["return_value"])
         
-    # Add call_metadata if present
-    if "call_metadata" in call_info and call_info["call_metadata"] is not None:
-        # Assuming call_metadata is already JSON-serializable
-        result["call_metadata"] = call_info["call_metadata"]
-    else:
-        result["call_metadata"] = None
-    
     return result
 
 # Define routes with actual implementation
-@app.get("/api/functions-with-stack-recordings")
-async def get_functions_with_stack_recordings():
-    """Get a list of functions that have stack recordings (previously called 'traces')"""
-    global call_tracker
-    
-    try:
-        if call_tracker is None:
-            raise ValueError("Call tracker is not initialized")
-                
-        functions = call_tracker.get_functions_with_traces()
-        
-        # Convert function data to a serializable format
-        result = []
-        for function in functions:
-            func_data = {
-                "id": function["id"],
-                "function": function["function"],
-                "trace_count": function["trace_count"],
-                "file": function.get("file", "unknown"),
-                "line": function.get("line", 0),
-            }
-            
-            # Add the first occurrence time if available
-            if function.get("first_occurrence"):
-                # Check if it's already a string or a datetime
-                if hasattr(function["first_occurrence"], 'isoformat'):
-                    func_data["first_occurrence"] = function["first_occurrence"].isoformat()
-                else:
-                    func_data["first_occurrence"] = function["first_occurrence"]
-            
-            # Add the last occurrence time if available
-            if function.get("last_occurrence"):
-                # Check if it's already a string or a datetime
-                if hasattr(function["last_occurrence"], 'isoformat'):
-                    func_data["last_occurrence"] = function["last_occurrence"].isoformat()
-                else:
-                    func_data["last_occurrence"] = function["last_occurrence"]
-            
-            result.append(func_data)
-        
-        # Sort by function name
-        result.sort(key=lambda x: x["function"])
-        
-        return result
-    except ValueError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    except Exception as e:
-        logger.error(f"Error getting functions with stack recordings: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/stack-recording/{function_id}")
 async def get_stack_recording(function_id: str):
@@ -278,8 +144,7 @@ async def get_stack_recording(function_id: str):
         # Get all snapshots for this function call
         snapshots = session.query(StackSnapshot).filter(
             StackSnapshot.function_call_id == function_id
-        ).order_by(StackSnapshot.timestamp.asc()).all()
-        
+        ).order_by(StackSnapshot.order_in_call.asc()).all()
         if not snapshots:
             return {
                 "function": {
@@ -317,17 +182,18 @@ async def get_stack_recording(function_id: str):
             # Process each snapshot
             for stack_snapshot in snapshots:
                 frame_info = {
-                    "frame_id": stack_snapshot.id,
-                    "line_number": stack_snapshot.line_number,
-                    "locals": stack_snapshot.locals_refs,
-                    "globals_subset": stack_snapshot.globals_refs,
+                    "id": stack_snapshot.id,
+                    "line": stack_snapshot.line_number,
                     "snapshot_id": str(stack_snapshot.id),
                     "timestamp": stack_snapshot.timestamp.isoformat() if stack_snapshot.timestamp else None,
-                    "previous_snapshot_id": str(stack_snapshot.previous_snapshot_id) if stack_snapshot.previous_snapshot_id else None,
-                    "next_snapshot_id": str(stack_snapshot.next_snapshot_id) if stack_snapshot.next_snapshot_id else None,
                     "locals_refs": stack_snapshot.locals_refs,
                     "globals_refs": stack_snapshot.globals_refs
                 }
+                if (previous_snapshot := stack_snapshot.get_previous_snapshot(session)):
+                    frame_info["previous_snapshot_id"] = str(previous_snapshot.id)
+
+                if stack_snapshot.next_snapshot_id:
+                    frame_info["next_snapshot_id"] = str(stack_snapshot.next_snapshot_id)
                 
                 # Add code information if available
                 if code:
@@ -339,23 +205,19 @@ async def get_stack_recording(function_id: str):
                 
                 # Process locals from the snapshot's locals_refs
                 if stack_snapshot.locals_refs:
+                    frame_info["locals"] = {}
                     for name, value in stack_snapshot.locals_refs.items():
-                        try:
-                            frame_info["locals"][name] = serialize_stored_value(value)
-                        except Exception as e:
-                            logger.error(f"Error serializing local {name}: {e}")
-                            frame_info["locals"][name] = {"value": f"<error: {str(e)}>", "type": "Error"}
+                        frame_info["locals"][name] = serialize_stored_value(value)
+
                 
                 # Process globals from the snapshot's globals_refs
                 if stack_snapshot.globals_refs:
+                    frame_info["globals"] = {}
                     for name, value in stack_snapshot.globals_refs.items():
                         # Filter out module-level imports and other large objects
                         if not name.startswith("__") and not name.endswith("__"):
-                            try:
-                                frame_info["globals_subset"][name] = serialize_stored_value(value)
-                            except Exception as e:
-                                logger.error(f"Error serializing global {name}: {e}")
-                                frame_info["globals_subset"][name] = {"value": f"<error: {str(e)}>", "type": "Error"}
+                            frame_info["globals"][name] = serialize_stored_value(value)
+
                 
                 frames.append(frame_info)
         except Exception as e:
@@ -536,7 +398,20 @@ async def get_function_calls(
         if session is None:
             raise ValueError("Session is not initialized")
                 
-        function_calls = session.query(FunctionCall).all()
+        query = session.query(FunctionCall)
+        if search:
+            search_lower = f"%{search.lower()}%"
+            query = query.filter(
+                (FunctionCall.function.ilike(search_lower)) |
+                (FunctionCall.file.ilike(search_lower))
+            )
+        if file:
+            file_lower = f"%{file.lower()}%"
+            query = query.filter(FunctionCall.file.ilike(file_lower))
+        if function:
+            function_lower = f"%{function.lower()}%"
+            query = query.filter(FunctionCall.function.ilike(function_lower))
+        function_calls = query.all()
         
         # Convert to a serializable format
         result = []
@@ -545,6 +420,10 @@ async def get_function_calls(
             locals_data = {}
             for name, value in fc.locals_refs.items():
                 locals_data[name] = serialize_stored_value(value)
+            # get globals
+            globals_data = {}
+            for name, value in fc.globals_refs.items():
+                globals_data[name] = serialize_stored_value(value)
             # get return value
             return_value = serialize_stored_value(fc.return_ref)
             call_data = {
@@ -557,19 +436,10 @@ async def get_function_calls(
                 "duration": (fc.end_time - fc.start_time).total_seconds() if fc.end_time and fc.start_time else None,
                 "has_stack_recording": session.query(StackSnapshot).filter(StackSnapshot.function_call_id == fc.id).count() > 0,
                 "locals": locals_data,
+                "globals": globals_data,
                 "return_value": return_value
             }
             
-            # Apply filters
-            if search and search.lower() not in fc.function.lower() and (not fc.file or search.lower() not in fc.file.lower()):
-                continue
-                
-            if file and (not fc.file or file.lower() not in fc.file.lower()):
-                continue
-                
-            if function and function.lower() not in fc.function.lower():
-                continue
-                
             result.append(call_data)
         
         # Sort by time
@@ -598,7 +468,7 @@ async def get_function_call(call_id: str):
         
         # Serialize the call info - cast to Dict[str, Any] to avoid typing issues
         # between different FunctionCallInfo definitions
-        return serialize_call_info(cast(Dict[str, Any], call_info))
+        return serialize_call_info(call_info)
     except ValueError as e:
         raise HTTPException(status_code=404 if "not found" in str(e) else 500, detail=str(e))
     except Exception as e:
@@ -620,14 +490,15 @@ async def get_monitoring_sessions():
         # Convert sessions to a serializable format
         result = []
         for ms in monitoring_sessions:
+            call_sequence = ms.get_call_sequence(session)
             session_data = {
                 "id": ms.id,
                 "name": ms.name,
                 "description": ms.description,
-                "start_time": ms.start_time.isoformat() if ms.start_time else None,
+                "start_time": ms.start_time.isoformat(),
                 "end_time": ms.end_time.isoformat() if ms.end_time else None,
-                "function_count": len(ms.function_calls_map) if ms.function_calls_map else 0,
-                "total_calls": sum(len(calls) for calls in ms.function_calls_map.values()) if ms.function_calls_map else 0,
+                "function_calls": [f.id for f in call_sequence],
+                "function_count": {f.function: sum(1 for x in call_sequence if x.function == f.function) for f in call_sequence},
                 "metadata": ms.session_metadata
             }
             result.append(session_data)
@@ -642,75 +513,6 @@ async def get_monitoring_sessions():
         logger.error(f"Error getting monitoring sessions: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/session/{session_id}")
-async def get_monitoring_session(session_id: int):
-    """Get details of a specific monitoring session"""
-    global session
-    
-    try:
-        if session is None:
-            raise ValueError("Session is not initialized")
-                
-        # Query the monitoring session
-        monitoring_session = session.query(MonitoringSession).filter(MonitoringSession.id == session_id).first()
-        if not monitoring_session:
-            raise ValueError(f"Monitoring session {session_id} not found")
-        
-        # Get all function calls for this session
-        function_calls = []
-        if monitoring_session.function_calls_map:
-            for func_name, call_ids in monitoring_session.function_calls_map.items():
-                for call_id in call_ids:
-                    # Get the function call from the database
-                    func_call = session.query(FunctionCall).filter(FunctionCall.id == call_id).first()
-                    if func_call:
-                        call_data = {
-                            "id": func_call.id,
-                            "function": func_call.function,
-                            "file": func_call.file,
-                            "line": func_call.line,
-                            "start_time": func_call.start_time.isoformat() if func_call.start_time else None,
-                            "end_time": func_call.end_time.isoformat() if func_call.end_time else None,
-                            "duration": (func_call.end_time - func_call.start_time).total_seconds() if func_call.end_time and func_call.start_time else None,
-                            "has_stack_recording": session.query(StackSnapshot).filter(StackSnapshot.function_call_id == func_call.id).count() > 0
-                        }
-                        function_calls.append(call_data)
-        
-        # Calculate common variables information for display
-        common_vars_info = {}
-        if monitoring_session.common_globals:
-            for func_name, var_names in monitoring_session.common_globals.items():
-                if func_name not in common_vars_info:
-                    common_vars_info[func_name] = {"globals": [], "locals": []}
-                common_vars_info[func_name]["globals"] = var_names
-        
-        if monitoring_session.common_locals:
-            for func_name, var_names in monitoring_session.common_locals.items():
-                if func_name not in common_vars_info:
-                    common_vars_info[func_name] = {"globals": [], "locals": []}
-                common_vars_info[func_name]["locals"] = var_names
-        
-        # Serialize the monitoring session
-        result = {
-            "id": monitoring_session.id,
-            "name": monitoring_session.name,
-            "description": monitoring_session.description,
-            "start_time": monitoring_session.start_time.isoformat() if monitoring_session.start_time else None,
-            "end_time": monitoring_session.end_time.isoformat() if monitoring_session.end_time else None,
-            "function_calls_map": monitoring_session.function_calls_map,
-            "common_variables": common_vars_info,
-            "common_globals": monitoring_session.common_globals,
-            "common_locals": monitoring_session.common_locals,
-            "metadata": monitoring_session.session_metadata,
-            "function_calls": function_calls
-        }
-        
-        return result
-    except ValueError as e:
-        raise HTTPException(status_code=404 if "not found" in str(e) else 500, detail=str(e))
-    except Exception as e:
-        logger.error(f"Error getting monitoring session: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 def initialize_db(db_file: str):
     """Initialize the database with the given file path"""

@@ -484,6 +484,31 @@ class ObjectManager:
                 logger.error(f"Unexpected error unpickling object of type {stored_obj.type_name}: {e}")
                 raise
 
+    def get_without_pickle(self, ref: str) -> Optional[Any]:
+        """Get an object by its reference without unpickling"""
+        stored_obj = self.session.query(StoredObject).filter(StoredObject.id == ref).first()
+        if not stored_obj:
+            return None
+        
+        if stored_obj.is_primitive: # type: ignore
+            # Convert primitive value back to appropriate type
+            if stored_obj.type_name == 'int':
+                return int(stored_obj.primitive_value), 'int'
+            elif stored_obj.type_name == 'float':
+                return float(stored_obj.primitive_value), 'float'
+            elif stored_obj.type_name == 'bool':
+                return stored_obj.primitive_value.lower() == 'true', 'bool'
+            elif stored_obj.type_name == 'str':
+                return stored_obj.primitive_value, 'str'
+            elif stored_obj.type_name == 'NoneType':
+                return None, 'NoneType'
+        elif stored_obj.type_name == 'list':
+            return "WIP", 'list'
+        elif stored_obj.type_name == 'dict':
+            return "WIP", 'dict'
+        else:
+            return stored_obj.id, stored_obj.type_name
+
     def next_ref(self, ref: str) -> Optional[str]:
         """Get the next version of an object"""
         try:
