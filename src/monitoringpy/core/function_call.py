@@ -57,7 +57,9 @@ class FunctionCallTracker:
                     file_name: Optional[str] = None, line_number: Optional[int] = None,
                     initial_metadata: Optional[Dict[str, Any]] = None,
                     previous_call_id: Optional[int] = None,
-                    parent_call_id: Optional[int] = None) -> Optional[int]:
+                    parent_call_id: Optional[int] = None,
+                    order_in_session: Optional[int] = None,
+                    order_in_parent: Optional[int] = None) -> Optional[int]:
         """
         Capture a function call with its local and global context.
         Returns the function call ID (int) or None if capture fails.
@@ -86,10 +88,10 @@ class FunctionCallTracker:
                 globals_refs=globals_refs,
                 code_definition_id=code_definition_id,
                 call_metadata=initial_metadata,
-                previous_call_id=previous_call_id,
                 parent_call_id=parent_call_id,
-                next_call_id=None,
-                session_id=current_session_id
+                session_id=current_session_id,
+                order_in_session=order_in_session,
+                order_in_parent=order_in_parent
             )
             
             self.session.add(call)
@@ -100,7 +102,8 @@ class FunctionCallTracker:
                 self.session.rollback()
                 return None
             
-            return call.id
+            call_id = call.id
+            return call_id
             
         except Exception as e:
             logger.error(f"Error capturing function call {func_name}: {e}")
@@ -123,8 +126,8 @@ class FunctionCallTracker:
         # Store return value
         try:
             return_ref = self.object_manager.store(return_value)
-            call.return_ref = return_ref
-            call.end_time = datetime.datetime.now()
+            setattr(call, 'return_ref', return_ref)
+            setattr(call, 'end_time', datetime.datetime.now())
             self.session.commit()
         except Exception as e:
             print(f"Warning: Could not store return value: {e}")
@@ -347,57 +350,62 @@ class FunctionCallTracker:
             print(f"Error updating metadata for call {call_id}: {e}")
             self.session.rollback()
 
-    def create_stack_snapshot(self, call_id: str, line_number: int, locals_dict: Dict[str, str], globals_dict: Dict[str, str]) -> StackSnapshot:
+    def create_stack_snapshot(self, call_id: str, line_number: int, locals_dict: Dict[str, str], globals_dict: Dict[str, str], order_in_call: Optional[int] = None) -> StackSnapshot:
         """
-        Create a new stack snapshot for a function call at a specific line.
+        Create a stack snapshot for a function call.
         
         Args:
             call_id: The ID of the function call
             line_number: The line number where the snapshot was taken
             locals_dict: Dictionary of local variable references
             globals_dict: Dictionary of global variable references
+            order_in_call: Position in the execution sequence (optional)
             
         Returns:
             The created StackSnapshot object
         """
         try:
+            call_id_int = int(call_id)
+            
             # Get the function call
-            call = self.session.query(FunctionCall).filter(FunctionCall.id == int(call_id)).first()
+            call = self.session.get(FunctionCall, call_id_int)
             if not call:
-                raise ValueError(f"Function call {call_id} not found")
-
-            # Get the latest snapshot for this call
-            latest_snapshot = self.session.query(StackSnapshot).filter(
-                StackSnapshot.function_call_id == int(call_id)
-            ).order_by(StackSnapshot.timestamp.desc()).first()
+                raise ValueError(f"Function call {call_id} not found during stack snapshot creation")
+            
+            # Find the previous snapshot if any
+            prev_snapshot = None
+            if order_in_call is not None and order_in_call > 0:
+                prev_snapshot = self.session.query(StackSnapshot).filter(
+                    StackSnapshot.function_call_id == call_id_int,
+                    StackSnapshot.order_in_call == order_in_call - 1
+                ).first()
             
             # Create the new snapshot
             snapshot = StackSnapshot(
-                function_call_id=int(call_id),
+                function_call_id=call_id_int,
                 line_number=line_number,
                 locals_refs=locals_dict,
                 globals_refs=globals_dict,
-                previous_snapshot_id=latest_snapshot.id if latest_snapshot else None
+                order_in_call=order_in_call
             )
             
-            # Add to session and commit
+            # Set bidirectional link if previous snapshot exists
+            if prev_snapshot:
+                prev_snapshot.next_snapshot_id = snapshot.id
+                snapshot.prev_snapshot_id = prev_snapshot.id
+            
             self.session.add(snapshot)
-            self.session.flush()
             
-            # Update the next reference on the previous snapshot
-            if latest_snapshot:
-                latest_snapshot.next_snapshot_id = snapshot.id
-            
-            # If this is the first snapshot, update the function call's reference to it
-            if not call.first_snapshot_id:
+            # If this is the first snapshot for this call, update the call record
+            if order_in_call == 0 or not call.first_snapshot_id:
                 call.first_snapshot_id = snapshot.id
             
-            self.session.commit()
-            return snapshot
+            self.session.flush()  # Flush to get the ID
             
+            return snapshot
         except Exception as e:
-            self.session.rollback()
-            print(f"Error creating stack snapshot: {e}")
+            logger.error(f"Error creating stack snapshot for call {call_id}: {e}")
+            logger.error(traceback.format_exc())
             raise
 
     def delete_call(self, call_id: str) -> bool:

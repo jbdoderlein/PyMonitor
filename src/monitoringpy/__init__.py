@@ -10,13 +10,11 @@ from .core import (
     init_db,
     init_monitoring,
     pymonitor,
-    pymonitor_line,
     PyMonitoring,
     FunctionCallTracker,
     CodeManager,
     ObjectManager,
     StoredObject,
-    ObjectVersion,
     ObjectIdentity,
     StackSnapshot,
     FunctionCall,
@@ -33,6 +31,9 @@ from .core import (
     session_context,
     run_with_state,
     replay_session_from,
+    disable_recording,
+    enable_recording,
+    recording_context,
 )
 
 from .core.monitoring import pymonitor
@@ -56,12 +57,10 @@ __all__ = [
     'CodeManager',
     'ObjectManager',
     #decorators
-    'pymonitor_line',
     'pymonitor',
     'init_monitoring',
     # Models
     'StoredObject',
-    'ObjectVersion',
     'ObjectIdentity',
     'StackSnapshot',
     'FunctionCall',
@@ -73,12 +72,15 @@ __all__ = [
     'MCPServer',
     # Monitoring
     'init_monitoring',
-    'pymonitor_line',
     'pymonitor',
     # Session Management
     'start_session',
     'end_session',
     'session_context',
+    # Recording control
+    'disable_recording',
+    'enable_recording',
+    'recording_context',
     # Reanimation 
     'load_execution_data',
     'reanimate_function',
@@ -90,4 +92,21 @@ __all__ = [
     # Wrapped modules
     'pygame',
 ]
+
+# Helper functions to access PyMonitoring instance methods
+def disable_recording():
+    """Temporarily disable recording of function calls and line execution."""
+    monitor = PyMonitoring.get_instance()
+    if monitor is not None:
+        monitor.disable_recording()
+    else:
+        print("ERROR: Monitoring is not initialized. Call init_monitoring() first.")
+
+def enable_recording():
+    """Re-enable recording of function calls and line execution."""
+    monitor = PyMonitoring.get_instance()
+    if monitor is not None:
+        monitor.enable_recording()
+    else:
+        print("ERROR: Monitoring is not initialized. Call init_monitoring() first.")
 

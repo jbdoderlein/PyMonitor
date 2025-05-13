@@ -6,7 +6,7 @@ from enum import Enum
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 import logging
-from .models import StoredObject, ObjectVersion, ObjectIdentity, CodeObjectLink, CodeDefinition
+from .models import StoredObject, ObjectIdentity, CodeObjectLink, CodeDefinition
 import datetime
 import inspect
 import uuid
@@ -241,35 +241,51 @@ class ObjectManager:
         if stored_obj:
             return stored_obj
 
+        # Get or create an identity for the object
+        identity_hash = self._get_identity(obj)
+        identity = self.session.query(ObjectIdentity).filter(ObjectIdentity.identity_hash == identity_hash).first()
+        
+        if not identity:
+            identity = ObjectIdentity(
+                identity_hash=identity_hash,
+                name=type(obj.value).__name__
+            )
+            self.session.add(identity)
+            self.session.flush()  # Ensure identity gets an ID
+        
         # Create new stored object
         if obj.type == ObjectType.PRIMITIVE:
             stored_obj = StoredObject(
                 id=ref,
+                identity_id=identity.id,
+                version_number=1,  # First version
                 type_name=type(obj.value).__name__,  # Store actual type name (int, float, etc.)
                 is_primitive=True,
                 primitive_value=str(obj.value)
             )
         else:
-            # For non-primitive types, use the actual class name of the value
-            actual_type_name = type(obj.value).__name__
+            # Get appropriate type name
+            if obj.type == ObjectType.LIST:
+                actual_type_name = 'list'
+            elif obj.type == ObjectType.DICT:
+                actual_type_name = 'dict'
+            else:
+                # For custom types, get the actual class name
+                actual_type_name = obj.value.__class__.__name__
+                
             stored_obj = StoredObject(
                 id=ref,
+                identity_id=identity.id,
+                version_number=1,  # First version
                 type_name=actual_type_name,  # Use the actual class name instead of our representation type
                 is_primitive=False,
-                pickle_data=obj.pickle_config.dumps(obj.value)
+                pickle_data=self.pickle_config.dumps(obj.value)
             )
-
+        
+        # Add to session
         self.session.add(stored_obj)
-        try:
-            self.session.flush()
-        except SQLAlchemyError as e:
-            logger.warning(f"Error storing object: {e}")
-            self.session.rollback()
-            # Try to get the object again (might have been created by another process)
-            stored_obj = self.session.query(StoredObject).filter(StoredObject.id == ref).first()
-            if not stored_obj:
-                raise
-
+        self.session.flush()
+        
         # If it's a custom class and we have a code manager, store the class definition
         if (obj.type == ObjectType.CUSTOM and self.code_manager is not None and 
             not isinstance(obj.value, (int, float, bool, str, list, dict, type(None)))):
@@ -279,7 +295,7 @@ class ObjectManager:
                     self.code_manager.link_object(ref, code_ref)
             except Exception as e:
                 logger.warning(f"Error storing class definition: {e}")
-
+            
         return stored_obj
 
     def store_code_definition(self, name: str, type: str, module_path: str, code_content: str, first_line_no: Optional[int] = None) -> str:
@@ -348,9 +364,9 @@ class ObjectManager:
                         raise
 
             # Check if this exact state already exists in the version history
-            existing_version = self.session.query(ObjectVersion).filter(
-                ObjectVersion.identity_id == identity_record.id,
-                ObjectVersion.object_id == stored_obj.id
+            existing_version = self.session.query(StoredObject).filter(
+                StoredObject.identity_id == identity_record.id,
+                StoredObject.id == stored_obj.id
             ).first()
 
             if existing_version:
@@ -358,26 +374,17 @@ class ObjectManager:
                 return ref
 
             # Get latest version number
-            latest_version = self.session.query(ObjectVersion).filter(
-                ObjectVersion.identity_id == identity_record.id
-            ).order_by(ObjectVersion.version_number.desc()).first()
+            latest_version = self.session.query(StoredObject).filter(
+                StoredObject.identity_id == identity_record.id
+            ).order_by(StoredObject.version_number.desc()).first()
 
-            version_number = 1
+            # No need to create a version record, as StoredObject now includes versioning
+            # Just set the version number on the stored_obj
+            new_version_num = 1
             if latest_version:
-                version_number = latest_version.version_number + 1
-
-            # Create new version
-            version = ObjectVersion(
-                object_id=stored_obj.id,
-                identity_id=identity_record.id,
-                version_number=version_number,
-                timestamp=datetime.datetime.now()
-            )
-            self.session.add(version)
-
-            # Update identity's latest version
-            identity_record.latest_version_id = stored_obj.id
-
+                new_version_num = latest_version.version_number + 1
+            setattr(stored_obj, 'version_number', new_version_num)
+            
             try:
                 self.session.flush()
             except SQLAlchemyError as e:
@@ -478,43 +485,47 @@ class ObjectManager:
                 raise
 
     def next_ref(self, ref: str) -> Optional[str]:
-        """Get the next version reference of an object"""
-        # Get the current version
-        current_version = self.session.query(ObjectVersion).filter(
-            ObjectVersion.object_id == ref
-        ).first()
-
-        if not current_version:
+        """Get the next version of an object"""
+        try:
+            # Get the current version
+            current_version = self.session.query(StoredObject).filter(
+                StoredObject.id == ref
+            ).first()
+            
+            if not current_version:
+                return None
+                
+            # Get the next version
+            next_version = self.session.query(StoredObject).filter(
+                StoredObject.identity_id == current_version.identity_id,
+                StoredObject.version_number > current_version.version_number
+            ).order_by(StoredObject.version_number.asc()).first()
+            
+            return next_version.id if next_version else None
+        except Exception as e:
+            logger.warning(f"Error getting next version: {e}")
             return None
 
-        # Get the next version with the same identity but higher version number
-        next_version = self.session.query(ObjectVersion).filter(
-            ObjectVersion.identity_id == current_version.identity_id,
-            ObjectVersion.version_number > current_version.version_number
-        ).order_by(ObjectVersion.version_number.asc()).first()
-
-        return next_version.object_id if next_version else None
-
     def get_history(self, ref: str) -> list:
-        """Get the complete history of an object"""
-        # First get the object to find its identity
-        obj = self.session.query(StoredObject).filter(StoredObject.id == ref).first()
-        if not obj:
+        """Get the history of an object (all versions)"""
+        try:
+            # Get the current version
+            version = self.session.query(StoredObject).filter(
+                StoredObject.id == ref
+            ).first()
+            
+            if not version:
+                return []
+                
+            # Get all versions
+            versions = self.session.query(StoredObject).filter(
+                StoredObject.identity_id == version.identity_id
+            ).order_by(StoredObject.version_number.asc()).all()
+            
+            return [v.id for v in versions]
+        except Exception as e:
+            logger.warning(f"Error getting object history: {e}")
             return []
-
-        # Find the identity through any version that references this object
-        version = self.session.query(ObjectVersion).filter(
-            ObjectVersion.object_id == ref
-        ).first()
-        if not version:
-            return [ref]  # No versioning for this object (e.g. primitives)
-
-        # Get all versions for this identity
-        versions = self.session.query(ObjectVersion).filter(
-            ObjectVersion.identity_id == version.identity_id
-        ).order_by(ObjectVersion.version_number.asc()).all()
-
-        return [version.object_id for version in versions]
 
     def rehydrate(self, ref: Optional[str]) -> Any:
         """
