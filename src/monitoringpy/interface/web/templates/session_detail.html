@@ -1,0 +1,342 @@
+{% extends 'base.html' %}
+
+{% block title %}PyMonitor - Session Details{% endblock %}
+
+{% block content %}
+<header class="mb-4">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="/sessions">Sessions</a></li>
+            <li class="breadcrumb-item active" aria-current="page">Session <span id="session-id">{{ session_id }}</span></li>
+        </ol>
+    </nav>
+    <h1 class="display-4" id="session-name">Loading session details...</h1>
+</header>
+
+<div class="row mb-4">
+    <div class="col-md-12">
+        <div class="card">
+            <div class="card-header">
+                <h2>Session Information</h2>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <div id="session-info">
+                            <div class="loading">
+                                <div class="spinner-border text-primary" role="status">
+                                    <span class="visually-hidden">Loading...</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div id="session-metadata">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col-md-12">
+        <div class="card">
+            <div class="card-header">
+                <h2>Common Variables</h2>
+            </div>
+            <div class="card-body">
+                <div id="common-variables">
+                    <div class="loading">
+                        <div class="spinner-border text-primary" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-12">
+        <div class="card">
+            <div class="card-header">
+                <h2>Function Calls</h2>
+            </div>
+            <div class="card-body">
+                <div id="function-calls">
+                    <div class="loading">
+                        <div class="spinner-border text-primary" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    const sessionId = "{{ session_id }}";
+    loadSessionDetails(sessionId);
+    
+    function loadSessionDetails(sessionId) {
+        fetch(getApiUrl(`/api/session/${sessionId}`))
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error ${response.status}: ${response.statusText}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                displaySessionInfo(data);
+                displaySessionMetadata(data);
+                displayCommonVariables(data);
+                displayFunctionCalls(data);
+            })
+            .catch(error => {
+                console.error('Error loading session details:', error);
+                document.getElementById('session-name').textContent = 'Error loading session';
+                document.getElementById('session-info').innerHTML = `
+                    <div class="alert alert-danger">
+                        Error loading session: ${error.message}
+                    </div>
+                `;
+            });
+    }
+    
+    function displaySessionInfo(data) {
+        // Update session name
+        document.getElementById('session-name').textContent = data.name || `Session ${data.id}`;
+        
+        // Display basic session info
+        const startTime = data.start_time ? new Date(data.start_time).toLocaleString() : 'N/A';
+        const endTime = data.end_time ? new Date(data.end_time).toLocaleString() : 'In Progress';
+        const duration = data.start_time && data.end_time 
+            ? calculateDuration(new Date(data.start_time), new Date(data.end_time))
+            : 'N/A';
+        
+        const sessionInfoHtml = `
+            <dl class="row">
+                <dt class="col-sm-4">Session ID:</dt>
+                <dd class="col-sm-8">${data.id}</dd>
+                
+                <dt class="col-sm-4">Name:</dt>
+                <dd class="col-sm-8">${data.name || 'Unnamed Session'}</dd>
+                
+                <dt class="col-sm-4">Description:</dt>
+                <dd class="col-sm-8">${data.description || 'No description'}</dd>
+                
+                <dt class="col-sm-4">Start Time:</dt>
+                <dd class="col-sm-8">${startTime}</dd>
+                
+                <dt class="col-sm-4">End Time:</dt>
+                <dd class="col-sm-8">${endTime}</dd>
+                
+                <dt class="col-sm-4">Duration:</dt>
+                <dd class="col-sm-8">${duration}</dd>
+                
+                <dt class="col-sm-4">Number of Functions:</dt>
+                <dd class="col-sm-8">${Object.keys(data.function_calls_map || {}).length}</dd>
+                
+                <dt class="col-sm-4">Total Function Calls:</dt>
+                <dd class="col-sm-8">${data.function_calls ? data.function_calls.length : 0}</dd>
+            </dl>
+        `;
+        
+        document.getElementById('session-info').innerHTML = sessionInfoHtml;
+    }
+    
+    function displaySessionMetadata(data) {
+        const metadataElement = document.getElementById('session-metadata');
+        
+        if (!data.metadata || Object.keys(data.metadata).length === 0) {
+            metadataElement.innerHTML = `
+                <h4>Session Metadata</h4>
+                <p class="text-muted">No metadata available</p>
+            `;
+            return;
+        }
+        
+        // Display metadata as JSON
+        metadataElement.innerHTML = `
+            <h4>Session Metadata</h4>
+            <pre class="bg-light p-3 rounded">${JSON.stringify(data.metadata, null, 2)}</pre>
+        `;
+    }
+    
+    function displayCommonVariables(data) {
+        const commonVarsElement = document.getElementById('common-variables');
+        
+        if (!data.common_variables || Object.keys(data.common_variables).length === 0) {
+            commonVarsElement.innerHTML = `
+                <p class="text-muted">No common variables found across function calls</p>
+            `;
+            return;
+        }
+        
+        let commonVarsHtml = '<div class="accordion" id="commonVarsAccordion">';
+        
+        // Loop through each function in common variables
+        Object.entries(data.common_variables).forEach(([functionName, variables], index) => {
+            // Generate a unique ID for the accordion item
+            const accordionId = `function-${index}`;
+            
+            commonVarsHtml += `
+                <div class="accordion-item">
+                    <h2 class="accordion-header" id="heading-${accordionId}">
+                        <button class="accordion-button ${index > 0 ? 'collapsed' : ''}" type="button" 
+                                data-bs-toggle="collapse" data-bs-target="#collapse-${accordionId}"
+                                aria-expanded="${index === 0}" aria-controls="collapse-${accordionId}">
+                            ${functionName}
+                        </button>
+                    </h2>
+                    <div id="collapse-${accordionId}" class="accordion-collapse collapse ${index === 0 ? 'show' : ''}"
+                         aria-labelledby="heading-${accordionId}" data-bs-parent="#commonVarsAccordion">
+                        <div class="accordion-body">
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <h5>Common Globals</h5>
+                                    <ul class="list-group">
+            `;
+            
+            // Add global variables
+            if (variables.globals && variables.globals.length > 0) {
+                variables.globals.forEach(varName => {
+                    commonVarsHtml += `<li class="list-group-item">${varName}</li>`;
+                });
+            } else {
+                commonVarsHtml += `<li class="list-group-item text-muted">No common globals</li>`;
+            }
+            
+            commonVarsHtml += `
+                                    </ul>
+                                </div>
+                                <div class="col-md-6">
+                                    <h5>Common Locals</h5>
+                                    <ul class="list-group">
+            `;
+            
+            // Add local variables
+            if (variables.locals && variables.locals.length > 0) {
+                variables.locals.forEach(varName => {
+                    commonVarsHtml += `<li class="list-group-item">${varName}</li>`;
+                });
+            } else {
+                commonVarsHtml += `<li class="list-group-item text-muted">No common locals</li>`;
+            }
+            
+            commonVarsHtml += `
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        });
+        
+        commonVarsHtml += '</div>';
+        commonVarsElement.innerHTML = commonVarsHtml;
+    }
+    
+    function displayFunctionCalls(data) {
+        const functionCallsElement = document.getElementById('function-calls');
+        
+        if (!data.function_calls || data.function_calls.length === 0) {
+            functionCallsElement.innerHTML = `
+                <p class="text-muted">No function calls in this session</p>
+            `;
+            return;
+        }
+        
+        // Group function calls by function name
+        const functionGroups = {};
+        data.function_calls.forEach(call => {
+            if (!functionGroups[call.function]) {
+                functionGroups[call.function] = [];
+            }
+            functionGroups[call.function].push(call);
+        });
+        
+        let tableHtml = `
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Function</th>
+                        <th>File</th>
+                        <th>Line</th>
+                        <th>Start Time</th>
+                        <th>Duration</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+        `;
+        
+        // Loop through each function group
+        Object.entries(functionGroups).forEach(([functionName, calls]) => {
+            // Add a header row for the function name
+            tableHtml += `
+                <tr class="table-secondary">
+                    <td colspan="7"><strong>${functionName}</strong> (${calls.length} calls)</td>
+                </tr>
+            `;
+            
+            // Add rows for each call
+            calls.forEach(call => {
+                const startTime = call.start_time ? new Date(call.start_time).toLocaleString() : 'N/A';
+                const duration = call.duration ? `${call.duration.toFixed(6)}s` : 'N/A';
+                
+                tableHtml += `
+                    <tr>
+                        <td>${call.id}</td>
+                        <td>${call.function}</td>
+                        <td>${call.file || 'N/A'}</td>
+                        <td>${call.line || 'N/A'}</td>
+                        <td>${startTime}</td>
+                        <td>${duration}</td>
+                        <td>
+                            <a href="/function-call/${call.id}" class="btn btn-sm btn-outline-primary">Details</a>
+                            ${call.has_stack_recording ? `<a href="/stack-recording/${call.id}" class="btn btn-sm btn-outline-success">Trace</a>` : ''}
+                        </td>
+                    </tr>
+                `;
+            });
+        });
+        
+        tableHtml += `
+                </tbody>
+            </table>
+        `;
+        
+        functionCallsElement.innerHTML = tableHtml;
+    }
+    
+    // Helper function to calculate duration between two dates
+    function calculateDuration(startDate, endDate) {
+        const diffMs = endDate - startDate;
+        const diffSecs = diffMs / 1000;
+        
+        if (diffSecs < 60) {
+            return `${diffSecs.toFixed(2)} seconds`;
+        } else if (diffSecs < 3600) {
+            const minutes = Math.floor(diffSecs / 60);
+            const seconds = diffSecs % 60;
+            return `${minutes} min ${seconds.toFixed(2)} sec`;
+        } else {
+            const hours = Math.floor(diffSecs / 3600);
+            const minutes = Math.floor((diffSecs % 3600) / 60);
+            const seconds = diffSecs % 60;
+            return `${hours} hr ${minutes} min ${seconds.toFixed(2)} sec`;
+        }
+    }
+});
+</script>
+{% endblock %} 

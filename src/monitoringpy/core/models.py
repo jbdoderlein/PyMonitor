@@ -102,13 +102,27 @@ class FunctionCall(Base):
     
     # Code version tracking
     code_definition_id = Column(String, ForeignKey('code_definitions.id'), nullable=True)
-    code_version_id = Column(Integer, ForeignKey('code_versions.id'), nullable=True)
     
+    # New session relationship
+    session_id = Column(Integer, ForeignKey('monitoring_sessions.id'), nullable=True)
+
+    # Linked list structure for calls within a session or branch
+    previous_call_id = Column(Integer, ForeignKey('function_calls.id'), nullable=True)
+    next_call_id = Column(Integer, ForeignKey('function_calls.id'), nullable=True)
+
+    # Branching structure for re-executions
+    parent_call_id = Column(Integer, ForeignKey('function_calls.id'), nullable=True)  # Points to the call this branch diverged from
+
     # Relationships
+    session = relationship("MonitoringSession", foreign_keys=[session_id], back_populates="function_calls")
     stack_recording = relationship("StackSnapshot", foreign_keys=[StackSnapshot.function_call_id], back_populates="function_call")
     first_snapshot = relationship("StackSnapshot", foreign_keys=[first_snapshot_id], overlaps="stack_recording")
     code_definition = relationship("CodeDefinition")
-    code_version = relationship("CodeVersion")
+
+    previous_call = relationship("FunctionCall", foreign_keys=[previous_call_id], remote_side=[id], backref="next_call_ref", overlaps="next_call")
+    next_call = relationship("FunctionCall", foreign_keys=[next_call_id], remote_side=[id], backref="previous_call_ref", overlaps="previous_call")
+    parent_call = relationship("FunctionCall", foreign_keys=[parent_call_id], remote_side=[id], backref="child_calls")
+    # child_calls relationship is created by the backref from parent_call
 
 class CodeDefinition(Base):
     """Represents a code definition (class, function, etc.)."""
@@ -122,23 +136,6 @@ class CodeDefinition(Base):
     first_line_no = Column(Integer, nullable=True)  # Line offset in the file
     creation_time = Column(DateTime, server_default=func.now())
     
-    # Relationships
-    versions = relationship("CodeVersion", back_populates="definition", cascade="all, delete-orphan")
-    objects = relationship("StoredObject", secondary="code_object_links")
-
-class CodeVersion(Base):
-    """Represents a version of a code definition."""
-    __tablename__ = 'code_versions'
-
-    id = Column(Integer, primary_key=True)
-    definition_id = Column(String, ForeignKey('code_definitions.id'), nullable=False)
-    version_number = Column(Integer, nullable=False)
-    timestamp = Column(DateTime, server_default=func.now())
-    git_commit = Column(String)  # Optional link to git commit
-    git_repo = Column(String)    # Optional link to git repository
-    
-    # Relationships
-    definition = relationship("CodeDefinition", back_populates="versions")
 
 class CodeObjectLink(Base):
     """Links objects to their code definitions."""
@@ -148,6 +145,33 @@ class CodeObjectLink(Base):
     object_id = Column(String, ForeignKey('stored_objects.id'), nullable=False)
     definition_id = Column(String, ForeignKey('code_definitions.id'), nullable=False)
     timestamp = Column(DateTime, server_default=func.now())
+
+class MonitoringSession(Base):
+    """Model for grouping function calls into a logical session"""
+    __tablename__ = 'monitoring_sessions'
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String, nullable=True)  # Optional name for the session
+    description = Column(String, nullable=True)  # Optional description
+    start_time = Column(DateTime, nullable=False, default=datetime.datetime.now)
+    end_time = Column(DateTime, nullable=True)  # Will be filled when session ends
+    
+    # Store the structure: function_name -> ordered list of function call ids
+    function_calls_map = Column(JSON, nullable=False, default=dict)  # Dict[str, List[int]]
+    
+    # Store precalculated data
+    common_globals = Column(JSON, nullable=False, default=dict)  # Dict[function_name, List[var_name]]
+    common_locals = Column(JSON, nullable=False, default=dict)   # Dict[function_name, List[var_name]]
+    
+    # Metadata about the session - renamed to avoid SQLAlchemy reserved name conflict
+    session_metadata = Column(JSON, nullable=True)  # For any additional data
+    
+    # Entry point for the main call sequence in this session
+    entry_point_call_id = Column(Integer, ForeignKey('function_calls.id'), nullable=True)
+    
+    # Relationships
+    function_calls = relationship("FunctionCall", foreign_keys=[FunctionCall.session_id], back_populates="session")
+    entry_point_call = relationship("FunctionCall", foreign_keys=[entry_point_call_id])
 
 def init_db(db_path):
     """Initialize the database and return session factory"""

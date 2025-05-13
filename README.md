@@ -99,6 +99,38 @@ print(f"Distance: {distance}")
 stop_monitoring()
 ```
 
+### Custom Pickle Handlers
+
+For objects that need special handling during pickling (like pygame events, numpy arrays, etc.), PyMonitor supports custom pickle handlers:
+
+```python
+import pygame
+import copyreg
+from monitoringpy import init_monitoring, pymonitor
+from monitoringpy.core.representation import PickleConfig
+
+# Define a custom reducer for pygame events
+def reduce_pygame_event(e):
+    return (pygame.event.Event, (e.type, e.dict.copy()))
+
+# Create a custom pickle config
+dispatch_table = copyreg.dispatch_table.copy()
+dispatch_table[pygame.event.EventType] = reduce_pygame_event
+pickle_config = PickleConfig(dispatch_table=dispatch_table)
+
+# Initialize monitoring with custom pickle config
+monitor = init_monitoring(db_path="game_events.db", pickle_config=pickle_config)
+
+@pymonitor
+def process_event(event):
+    # Now pygame events will be correctly pickled and stored
+    if event.type == pygame.KEYDOWN:
+        print(f"Key pressed: {pygame.key.name(event.key)}")
+    return event
+```
+
+This feature is particularly useful for libraries that use custom objects that don't pickle well by default. See `examples/custom_pickle_example.py` for a complete demonstration.
+
 ### Performance Monitoring with PyRAPL
 
 If you have PyRAPL installed, PyMonitor can track energy consumption:

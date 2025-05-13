@@ -146,11 +146,11 @@
             if (data.function.code) {
                 // Store first_line_no globally for use with line highlighting
                 if (typeof data.function.code === 'object' && 
-                    data.function.line && 
-                    !isNaN(data.function.line)) {
-                    firstLineOffset = parseInt(data.function.line);
+                    data.function.first_line_no && 
+                    !isNaN(data.function.first_line_no)) {
+                    firstLineOffset = parseInt(data.function.first_line_no);
                 }
-                displayCode(data.function.code, data.function.line);
+                displayCode(data.function.code, data.function.code.first_line_no);
             } else {
                 document.getElementById('code-container').textContent = 'Source code not available';
             }
@@ -236,27 +236,27 @@
         // Group snapshots by line number for display
         const lineGroups = {};
         snapshots.forEach((snapshot, index) => {
-            if (!lineGroups[snapshot.line]) {
-                lineGroups[snapshot.line] = [];
+            if (!lineGroups[snapshot.line_number]) {
+                lineGroups[snapshot.line_number] = [];
             }
-            lineGroups[snapshot.line].push(index);
+            lineGroups[snapshot.line_number].push(index);
         });
         
         let timelineHTML = '<div class="timeline">';
         
         // Create markers for each snapshot
         snapshots.forEach((snapshot, index) => {
-            const count = lineGroups[snapshot.line].length;
-            const isFirstForLine = lineGroups[snapshot.line][0] === index;
+            const count = lineGroups[snapshot.line_number].length;
+            const isFirstForLine = lineGroups[snapshot.line_number][0] === index;
             
             // Only create a marker for the first snapshot at each line
             if (isFirstForLine) {
                 timelineHTML += `
-                    <div class="timeline-point" data-line="${snapshot.line}" data-index="${index}" title="Line ${snapshot.line} (${count} snapshot${count > 1 ? 's' : ''})">
+                    <div class="timeline-point" data-line="${snapshot.line_number}" data-index="${index}" title="Line ${snapshot.line_number} (${count} snapshot${count > 1 ? 's' : ''})">
                         <div class="timeline-marker">
                             ${count > 1 ? `<span class="badge rounded-pill position-absolute top-0 start-100 translate-middle bg-secondary">${count}</span>` : ''}
                         </div>
-                        <div class="timeline-line-number">${snapshot.line}</div>
+                        <div class="timeline-line-number">${snapshot.line_number}</div>
                     </div>
                 `;
             }
@@ -340,16 +340,16 @@
         const snapshot = currentStackData.frames[index];
         
         // Update current line
-        document.getElementById('current-line').textContent = snapshot.line;
+        document.getElementById('current-line').textContent = snapshot.line_number;
         
         // Update global counter
         updateGlobalCounter(index);
         
         // Highlight the current line in the code - the snapshot.line is in the source file's line numbers
-        highlightLine(snapshot.line);
+        highlightLine(snapshot.line_number);
         
         // Add snapshot navigation if multiple snapshots exist for this line
-        addSnapshotNavigation(snapshot.line, index);
+        addSnapshotNavigation(snapshot.line_number, index);
         
         // Display local variables
         displayVariables(snapshot.locals, 'locals-content', 'locals-loading');
@@ -362,7 +362,7 @@
         // Find all snapshots for this line
         const snapshotsForLine = currentStackData.frames
             .map((snapshot, index) => ({ snapshot, index }))
-            .filter(item => item.snapshot.line === lineNumber);
+            .filter(item => item.snapshot.line_number === lineNumber);
             
         // Get the current position in the snapshots for this line
         const currentPosition = snapshotsForLine.findIndex(item => item.index === currentIndex);
@@ -522,10 +522,10 @@
         
         // Find exact matching lines and also the closest snapshot
         currentStackData.frames.forEach((snapshot, index) => {
-            const distance = Math.abs(snapshot.line - lineNumber);
+            const distance = Math.abs(snapshot.line_number - lineNumber);
             
             // If this line exactly matches, add it to matching indices
-            if (snapshot.line === lineNumber) {
+            if (snapshot.line_number === lineNumber) {
                 matchingIndices.push(index);
             }
             

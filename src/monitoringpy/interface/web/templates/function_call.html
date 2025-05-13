@@ -6,7 +6,7 @@
     <div class="debug-info" style="background-color: #fef9c3; border: 1px solid #facc15; padding: 10px 15px; margin-bottom: 15px; border-radius: 5px;">
         <h5>Debug Information</h5>
         <p>This message confirms the updated template is loaded.</p>
-        <p>Version: 1.0 - Updated with collapsible values for large variables</p>
+        <p>Version: 1.1 - Added Call Metadata Display</p>
     </div>
     
     <div class="row">
@@ -18,6 +18,18 @@
                 <div class="card-body">
                     <div id="functionCallInfo">
                         <!-- Function call info will be loaded here -->
+                    </div>
+                    
+                    <!-- Call Metadata Section -->
+                    <div id="callMetadataSection" class="mt-4">
+                        <button class="btn btn-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#callMetadataCollapse" aria-expanded="false" aria-controls="callMetadataCollapse">
+                            Show/Hide Call Metadata
+                        </button>
+                        <div class="collapse" id="callMetadataCollapse">
+                            <div class="card card-body mt-2">
+                                <pre id="callMetadataContent" class="bg-light p-2 rounded"></pre>
+                            </div>
+                        </div>
                     </div>
                     
                     <!-- Code Section -->
@@ -300,6 +312,15 @@ document.addEventListener('DOMContentLoaded', function() {
                 <p><strong>End Time:</strong> ${callInfo.end_time || 'N/A'}</p>
             `;
             document.getElementById('functionCallInfo').innerHTML = infoHtml;
+            
+            // Display Call Metadata if available
+            if (callInfo.call_metadata) {
+                document.getElementById('callMetadataContent').textContent = JSON.stringify(callInfo.call_metadata, null, 2);
+                document.querySelector('[data-bs-target="#callMetadataCollapse"]').classList.remove('btn-secondary');
+                document.querySelector('[data-bs-target="#callMetadataCollapse"]').classList.add('btn-info');
+            } else {
+                document.getElementById('callMetadataSection').style.display = 'none'; // Hide if no metadata
+            }
             
             // Display code if available
             console.log('Code info:', callInfo.code);

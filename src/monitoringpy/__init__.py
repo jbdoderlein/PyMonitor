@@ -21,13 +21,18 @@ from .core import (
     StackSnapshot,
     FunctionCall,
     CodeDefinition,
-    CodeVersion,
     CodeObjectLink,
+    MonitoringSession,
     delete_function_execution,
     load_execution_data,
     reanimate_function,
     load_snapshot,
     load_snapshot_in_frame,
+    start_session,
+    end_session,
+    session_context,
+    run_with_state,
+    replay_session_from,
 )
 
 from .core.monitoring import pymonitor
@@ -36,6 +41,9 @@ from .interface import (
     WebExplorer,
     MCPServer,
 )
+
+# Don't import pygame by default - let users import it explicitly when needed
+# from . import pygame
 
 __version__ = '0.1.0'
 
@@ -58,8 +66,8 @@ __all__ = [
     'StackSnapshot',
     'FunctionCall',
     'CodeDefinition',
-    'CodeVersion',
     'CodeObjectLink',
+    'MonitoringSession',
     # Interfaces
     'WebExplorer',
     'MCPServer',
@@ -67,11 +75,19 @@ __all__ = [
     'init_monitoring',
     'pymonitor_line',
     'pymonitor',
+    # Session Management
+    'start_session',
+    'end_session',
+    'session_context',
     # Reanimation 
     'load_execution_data',
     'reanimate_function',
+    'run_with_state',
     'delete_function_execution',
     'load_snapshot',
     'load_snapshot_in_frame',
+    'replay_session_from',
+    # Wrapped modules
+    'pygame',
 ]
 

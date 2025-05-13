@@ -322,6 +322,7 @@ class MCPServer:
             edges = []
             seen_objects = set()
             node_ids = set()
+            edge_ids = set()
             
             # Create nodes for stored objects
             for obj in objects:
@@ -347,30 +348,32 @@ class MCPServer:
                     if self.object_manager.code_manager:
                         code_info = self.object_manager.code_manager.get_object_code(obj.id)
                         if code_info and isinstance(code_info, dict):
-                            code_version_id = f"code_{code_info['id']}"
-                            if code_version_id not in node_ids:
-                                node_ids.add(code_version_id)
-                                code_node_data = {
-                                    'id': code_version_id,
-                                    'label': f"{code_info['name']} v{code_info.get('version_number', '1')}",
-                                    'type': 'CodeVersion',
-                                    'isPrimitive': False,
-                                    'nodeType': 'code',
-                                    'className': code_info['name'],
-                                    'version': code_info.get('version_number', '1'),
-                                    'modulePath': code_info['module_path'],
-                                    'code': code_info['code']
-                                }
-                                nodes.append({'data': code_node_data})
-                                
-                                edge_data = {
-                                    'id': f"edge_code_{obj.id}_{code_version_id}",
-                                    'source': obj.id,
-                                    'target': code_version_id,
-                                    'label': 'implements',
-                                    'edgeType': 'code_version'
-                                }
-                                edges.append({'data': edge_data})
+                            # 2. Code Definition Node (if exists)
+                            if code_info.get('id'):
+                                # Use code definition ID directly
+                                code_def_id = code_info['id']
+                                if code_def_id not in node_ids:
+                                    node_ids.add(code_def_id)
+                                    nodes.append({
+                                        'data': {
+                                            'id': code_def_id,
+                                            'label': code_info.get('name', 'Code'),
+                                            'type': 'code',
+                                            'details': code_info.get('code_content', '')
+                                        }
+                                    })
+                                    # Edge from object node to code node
+                                    edge_id_code = f"edge_code_{obj.id}_{code_def_id}"
+                                    if edge_id_code not in edge_ids:
+                                        edge_ids.add(edge_id_code)
+                                        edges.append({
+                                            'data': {
+                                                'id': edge_id_code,
+                                                'source': obj.id,
+                                                'target': code_def_id,
+                                                'label': 'defined_by'
+                                            }
+                                        })
                 except Exception as e:
                     logger.error(f"Error creating node data for object {obj.id}: {e}")
                     continue

@@ -2,9 +2,13 @@ from typing import Dict, Any, Optional, TypedDict, List, Union
 from sqlalchemy.orm import Session
 import datetime
 import inspect
-from .representation import ObjectManager
+from .representation import ObjectManager, PickleConfig
 from .models import StoredObject, FunctionCall, StackSnapshot, CodeDefinition
 from sqlalchemy import text
+import logging
+import traceback
+
+logger = logging.getLogger(__name__)
 
 class FunctionCallInfo(TypedDict):
     """Type definition for function call information"""
@@ -18,16 +22,16 @@ class FunctionCallInfo(TypedDict):
     return_value: Optional[Any]
     energy_data: Optional[Dict[str, Any]]
     code_definition_id: Optional[str]
-    code_version_id: Optional[int]
     code: Optional[Dict[str, Any]]  # Contains code content, module_path, and type
+    call_metadata: Optional[Dict[str, Any]] # Add field for general metadata
 
 class FunctionCallTracker:
     """Track function calls and their context using object manager for efficient storage"""
     
-    def __init__(self, session: Session, monitor=None) -> None:
+    def __init__(self, session: Session, monitor=None, pickle_config: Optional[PickleConfig] = None) -> None:
         self.session = session
         self.monitor = monitor
-        self.object_manager = ObjectManager(session)
+        self.object_manager = ObjectManager(session, pickle_config=pickle_config)
         self.call_history = []
         self.current_call = None
 
@@ -49,41 +53,72 @@ class FunctionCallTracker:
         return refs
 
     def capture_call(self, func_name: str, locals_dict: Dict[str, Any], globals_dict: Dict[str, Any], 
-                    code_definition_id: Optional[str] = None, code_version_id: Optional[int] = None,
-                    file_name: Optional[str] = None, line_number: Optional[int] = None) -> str:
+                    code_definition_id: Optional[str] = None,
+                    file_name: Optional[str] = None, line_number: Optional[int] = None,
+                    initial_metadata: Optional[Dict[str, Any]] = None,
+                    previous_call_id: Optional[int] = None,
+                    parent_call_id: Optional[int] = None) -> Optional[int]:
         """
         Capture a function call with its local and global context.
-        Returns the function call ID.
+        Returns the function call ID (int) or None if capture fails.
         """
-        # Store local and global variables
-        locals_refs = self._store_variables(locals_dict)
-        globals_refs = self._store_variables(globals_dict)
+        try:
+            # Store local and global variables
+            locals_refs = self._store_variables(locals_dict)
+            globals_refs = self._store_variables(globals_dict)
 
-        # Create function call record
-        call = FunctionCall(
-            function=func_name,
-            file=file_name,
-            line=line_number,
-            start_time=datetime.datetime.now(),
-            locals_refs=locals_refs,
-            globals_refs=globals_refs,
-            code_definition_id=code_definition_id,
-            code_version_id=code_version_id
-        )
-        
-        self.session.add(call)
-        self.session.flush()
-        return str(call.id)
+            # Get the current session ID from the monitor instance, if available
+            current_session_id = None
+            if self.monitor and self.monitor.current_session:
+                current_session_id = self.monitor.current_session.id
+            elif self.monitor:
+                logger.warning("Monitor instance exists but has no active session during capture_call.")
+            else:
+                logger.warning("Monitor instance not available in FunctionCallTracker.")
 
-    def capture_return(self, call_id: str, return_value: Any) -> None:
+            # Create function call record, including new fields
+            call = FunctionCall(
+                function=func_name,
+                file=file_name,
+                line=line_number,
+                start_time=datetime.datetime.now(),
+                locals_refs=locals_refs,
+                globals_refs=globals_refs,
+                code_definition_id=code_definition_id,
+                call_metadata=initial_metadata,
+                previous_call_id=previous_call_id,
+                parent_call_id=parent_call_id,
+                next_call_id=None,
+                session_id=current_session_id
+            )
+            
+            self.session.add(call)
+            self.session.flush()
+            
+            if call.id is None:
+                logger.error(f"Failed to obtain ID for new FunctionCall for {func_name}")
+                self.session.rollback()
+                return None
+            
+            return call.id
+            
+        except Exception as e:
+            logger.error(f"Error capturing function call {func_name}: {e}")
+            logger.error(traceback.format_exc())
+            self.session.rollback()
+            return None
+
+    def capture_return(self, call_id: int, return_value: Any) -> None:
         """
         Capture the return value of a function call.
         Raises ValueError if call_id doesn't exist.
         """
-        # Get the function call
-        call = self.session.query(FunctionCall).filter(FunctionCall.id == int(call_id)).first()
+        # Get the function call using integer ID
+        call = self.session.get(FunctionCall, call_id)
         if not call:
-            raise ValueError(f"Function call {call_id} not found")
+            # Log instead of raising ValueError to avoid interrupting monitoring
+            logger.error(f"Function call {call_id} not found during capture_return.")
+            return
 
         # Store return value
         try:
@@ -142,8 +177,8 @@ class FunctionCallTracker:
             return_value=return_value,
             energy_data=energy_data,
             code_definition_id=call.code_definition_id,
-            code_version_id=call.code_version_id,
-            code=code
+            code=code,
+            call_metadata=call.call_metadata
         )
 
     def get_call_history(self, function_name: Optional[str] = None) -> List[str]:
@@ -281,9 +316,9 @@ class FunctionCallTracker:
                 if code:
                     trace_data["code"] = code
                 
-                # Add code version ID if available
-                if function_call.code_version_id:
-                    trace_data["code_version_id"] = function_call.code_version_id
+                # Add code definition ID if available
+                if function_call.code_definition_id:
+                    trace_data["code_definition_id"] = function_call.code_definition_id
                 
                 traces.append(trace_data)
                 

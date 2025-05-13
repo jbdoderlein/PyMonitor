@@ -24,9 +24,10 @@ if __name__ == "__main__":
     # Initialize monitoring
     monitor = monitoringpy.init_monitoring(db_path="basic3.db", pyrapl_enabled=False)
     test_list = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-    binary_search_line(test_list, 5)
-    binary_search_line(test_list, 11)
-    time.sleep(1)
+    with monitoringpy.session_context("Basic 3"):
+        binary_search_line(test_list, 5)
+        binary_search_line(test_list, 11)
+        time.sleep(1)
     
 
     
