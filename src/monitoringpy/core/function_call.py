@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 class FunctionCallInfo(TypedDict):
     """Type definition for function call information"""
+    id: int
     function: str
     file: Optional[str]
     line: Optional[int]
@@ -167,6 +168,7 @@ class FunctionCallTracker:
                 print(f"Error retrieving code definition for {call.code_definition_id}: {e}")
 
         return FunctionCallInfo(
+            id=call.id,
             function=call.function,
             file=call.file,
             line=call.line,

@@ -70,9 +70,13 @@
             <button id="fit" class="btn btn-sm btn-outline-secondary mb-2">
                 <i class="bi bi-arrows-fullscreen"></i> Fit
             </button>
-            <button id="layout" class="btn btn-sm btn-outline-secondary">
+            <button id="layout" class="btn btn-sm btn-outline-secondary mb-2">
                 <i class="bi bi-diagram-3"></i> Relayout
             </button>
+            <div class="form-check form-switch mt-2">
+                <input class="form-check-input" type="checkbox" id="showIsolatedNodes">
+                <label class="form-check-label" for="showIsolatedNodes">Show isolated nodes</label>
+            </div>
         </div>
 
         <div class="node-info" id="nodeInfo">
@@ -167,6 +171,20 @@
                         'line-style': 'dashed',
                         'width': 2
                     }
+                },
+                {
+                    selector: 'edge[edgeType = "function_call"]',
+                    style: {
+                        'line-color': '#1E90FF',  // DodgerBlue for function call edges
+                        'target-arrow-color': '#1E90FF',
+                        'line-style': 'solid',
+                        'width': 3,
+                        'curve-style': 'bezier',
+                        'target-arrow-shape': 'triangle',
+                        'source-endpoint': '0% 0%',
+                        'target-endpoint': '0% 0%',
+                        'arrow-scale': 1.5
+                    }
                 }
             ],
             layout: {
@@ -182,13 +200,25 @@
         async function loadGraph() {
             document.getElementById('loading').style.display = 'block';
             try {
-                const response = await fetch('/api/object-graph');
+                // Use the API URL provided by the template context, or fall back to relative path
+                let baseApiUrl = '{{ api_url }}'.trim() ? '{{ api_url }}/api/object-graph' : '/api/object-graph';
+                
+                // Add parameter if showing isolated nodes is checked
+                const showIsolated = document.getElementById('showIsolatedNodes').checked;
+                const apiUrl = showIsolated ? `${baseApiUrl}?show_isolated=true` : baseApiUrl;
+                
+                console.log("Using API URL:", apiUrl);
+                const response = await fetch(apiUrl);
                 const data = await response.json();
                 
                 if (data.error) {
                     console.error('Error loading graph:', data.error);
                     return;
                 }
+
+                console.log("Graph data received:", data);
+                console.log("Nodes count:", data.nodes?.length || 0);
+                console.log("Edges count:", data.edges?.length || 0);
 
                 cy.elements().remove();
                 cy.add(data.nodes);
@@ -263,6 +293,8 @@
             }).run();
         });
 
+        document.getElementById('showIsolatedNodes').addEventListener('change', loadGraph);
+
         // Node click handler
         cy.on('tap', 'node', function(evt) {
             const node = evt.target;
@@ -281,6 +313,10 @@
                     <p><strong>Start Time:</strong> ${new Date(node.data('startTime')).toLocaleString()}</p>
                     <p><strong>End Time:</strong> ${new Date(node.data('endTime')).toLocaleString()}</p>
                 `;
+                
+                if (node.data('parentCallId')) {
+                    details += `<p><strong>Called By Function:</strong> func_${node.data('parentCallId')}</p>`;
+                }
             } else if (node.data('nodeType') === 'code') {
                 details += `
                     <p><strong>Class Name:</strong> ${node.data('className')}</p>
