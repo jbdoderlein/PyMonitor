@@ -21,6 +21,8 @@ dependencies = [
     "fastapi>=0.115.12",
     "flask>=2.0.0",
     "flask-cors>=4.0.0",
+    "pillow>=11.2.1",
+    "pygame>=2.6.1",
     "sqlalchemy>=2.0.0",
     "uvicorn>=0.34.2",
 ]

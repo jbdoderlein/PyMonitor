@@ -698,18 +698,61 @@ async def get_function_call(call_id: str):
     
     try:
         if call_tracker is None or session is None:
-            raise ValueError("Call tracker or session is not initialized")
+            raise ValueError("Session is not initialized")
                 
         call_info = call_tracker.get_call(call_id)
         if call_info is None:
             raise ValueError(f"Function call {call_id} not found")
         
-        # Serialize the call info - cast to Dict[str, Any] to avoid typing issues
-        # between different FunctionCallInfo definitions
+        # Serialize the call info
         raw_call_info = serialize_call_info(call_info)
-        # remove the call_metadata field
-        raw_call_info["has_stack_recording"] = session.query(StackSnapshot).filter(StackSnapshot.function_call_id == call_id).count() > 0
-        return raw_call_info
+        
+        # Check if there are any stack recordings for this function call
+        has_recordings = session.query(StackSnapshot).filter(
+            StackSnapshot.function_call_id == call_id
+        ).count() > 0
+        raw_call_info["has_stack_recording"] = has_recordings
+        
+        # Get stack traces for this function call
+        stack_trace = []
+        if has_recordings:
+            stack_snapshots = session.query(StackSnapshot).filter(
+                StackSnapshot.function_call_id == call_id
+            ).order_by(StackSnapshot.order_in_call.asc()).all()
+            
+            for snapshot in stack_snapshots:
+                # Process locals from the snapshot's locals_refs
+                locals_data = {}
+                if hasattr(snapshot, 'locals_refs') and snapshot.locals_refs is not None:
+                    for name, value in snapshot.locals_refs.items():
+                        locals_data[name] = serialize_stored_value(value)
+                
+                # Process globals from the snapshot's globals_refs
+                globals_data = {}
+                if hasattr(snapshot, 'globals_refs') and snapshot.globals_refs is not None:
+                    for name, value in snapshot.globals_refs.items():
+                        # Filter out module-level imports and other large objects
+                        if not name.startswith("__") and not name.endswith("__"):
+                            globals_data[name] = serialize_stored_value(value)
+                
+                # Format timestamp if it exists
+                timestamp_str = None
+                if hasattr(snapshot, 'timestamp') and snapshot.timestamp is not None:
+                    timestamp_str = snapshot.timestamp.isoformat()
+                
+                trace_data = {
+                    "id": str(snapshot.id),
+                    "line": snapshot.line_number,
+                    "timestamp": timestamp_str,
+                    "locals": locals_data,
+                    "globals": globals_data
+                }
+                stack_trace.append(trace_data)
+        
+        raw_call_info["stack_trace"] = stack_trace
+        
+        # Wrap the call info in a function_call object to match the template's expectation
+        return {"function_call": raw_call_info}
     except ValueError as e:
         raise HTTPException(status_code=404 if "not found" in str(e) else 500, detail=str(e))
     except Exception as e:

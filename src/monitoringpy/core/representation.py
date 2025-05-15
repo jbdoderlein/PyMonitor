@@ -36,6 +36,7 @@ class PickleConfig:
         # Load custom picklers if specified
         if custom_picklers:
             self.load_custom_picklers(custom_picklers)
+
         
     def load_custom_picklers(self, module_names):
         """

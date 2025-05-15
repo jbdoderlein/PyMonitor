@@ -2,13 +2,6 @@
 
 {% block content %}
 <div class="container mt-4">
-    <!-- Debug Information -->
-    <div class="debug-info" style="background-color: #fef9c3; border: 1px solid #facc15; padding: 10px 15px; margin-bottom: 15px; border-radius: 5px;">
-        <h5>Debug Information</h5>
-        <p>This message confirms the updated template is loaded.</p>
-        <p>Version: 1.1 - Added Call Metadata Display</p>
-    </div>
-    
     <div class="row">
         <div class="col-12">
             <div class="card">
@@ -27,6 +20,7 @@
                         </button>
                         <div class="collapse" id="callMetadataCollapse">
                             <div class="card card-body mt-2">
+                                <div id="callMetadataImages" class="mb-3"></div>
                                 <pre id="callMetadataContent" class="bg-light p-2 rounded"></pre>
                             </div>
                         </div>
@@ -297,7 +291,7 @@ document.addEventListener('DOMContentLoaded', function() {
     console.log('Call ID:', callId);
     
     // Fetch function call details
-    fetch(`/api/function-call/${callId}`)
+    fetch(getApiUrl(`/api/function-call/${callId}`))
         .then(response => response.json())
         .then(data => {
             console.log('Received data:', data);
@@ -315,6 +309,17 @@ document.addEventListener('DOMContentLoaded', function() {
             
             // Display Call Metadata if available
             if (callInfo.call_metadata) {
+                
+                // Display found images
+                if (callInfo.call_metadata.image) {
+                    console.log('Image:', callInfo.call_metadata.image);
+                    document.getElementById('callMetadataImages').innerHTML = `<img src="data:image/png;base64,${callInfo.call_metadata.image}" class="img-fluid" style="max-height: 300px;" />`;
+                } else {
+                    console.log('No image found');
+                    document.getElementById('callMetadataImages').style.display = 'none';
+                }
+                
+                // Display the raw metadata
                 document.getElementById('callMetadataContent').textContent = JSON.stringify(callInfo.call_metadata, null, 2);
                 document.querySelector('[data-bs-target="#callMetadataCollapse"]').classList.remove('btn-secondary');
                 document.querySelector('[data-bs-target="#callMetadataCollapse"]').classList.add('btn-info');

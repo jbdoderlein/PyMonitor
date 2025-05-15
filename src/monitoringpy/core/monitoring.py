@@ -18,12 +18,15 @@ import typing
 from .representation import PickleConfig
 
 # Configure logging - only show warnings and errors
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
 class PyMonitoring:
     _instance = None
+
+    _monitored_functions = {}
+    _tracked_functions = {}
     
     @classmethod
     def get_instance(cls) -> 'PyMonitoring | None':
@@ -346,8 +349,13 @@ class PyMonitoring:
         # verify that its tracking function is in our call stack
         is_tracked_function = False
         tracking_function_name = None
-        if func_obj and hasattr(func_obj, '_pymonitor_tracked_by'):
-            tracking_function_name = getattr(func_obj, '_pymonitor_tracked_by')
+        
+        # Check direct attribute on function object
+        if func_obj and func_name in PyMonitoring._tracked_functions:
+            tracking_function_name = PyMonitoring._tracked_functions[func_name]["parent_tracking_function"]
+        
+        # If we found tracking information, verify it's in our call stack
+        if tracking_function_name:
             # Only track this function if we're inside its tracking function
             if not self.call_id_stack:
                 # We're not inside any monitored function, so don't track
@@ -382,13 +390,13 @@ class PyMonitoring:
         
         # Get ignored variables from the function object itself
         ignored_variables = []
-        if func_obj and hasattr(func_obj, '_pymonitor_ignore'):
-            ignored_variables = func_obj._pymonitor_ignore or [] # Ensure it's a list
+        if func_obj and func_name in PyMonitoring._monitored_functions:
+            ignored_variables = PyMonitoring._monitored_functions[func_name]["ignore"] or [] # Ensure it's a list
             
         # Get hooks from the function object
         start_hooks = []
         if func_obj:
-            start_hooks = getattr(func_obj, '_pymonitor_start_hooks', []) or []
+            start_hooks = PyMonitoring._monitored_functions[func_name]["start_hooks"] or []
             
         # Filter locals and globals based on the ignore list
         function_locals = {k: v for k, v in function_locals.items() if k not in ignored_variables}
@@ -529,7 +537,7 @@ class PyMonitoring:
             func_obj = frame.f_back.f_globals.get(code.co_name)
             return_hooks = []
             if func_obj:
-                return_hooks = getattr(func_obj, '_pymonitor_return_hooks', []) or []
+                return_hooks = PyMonitoring._monitored_functions[code.co_name]["return_hooks"] or []
             
             # Execute return hooks if any
             for hook in return_hooks:
@@ -750,18 +758,31 @@ def pymonitor(mode="function", ignore=None, start_hooks=None, return_hooks=None,
         sys.monitoring.set_local_events(sys.monitoring.PROFILER_ID, func.__code__, events)
         
         # Store metadata on the function object
-        func._pymonitor_ignore = ignore
-        func._pymonitor_start_hooks = start_hooks
-        func._pymonitor_return_hooks = return_hooks
-        func._pymonitor_tracked_functions = track
+        PyMonitoring._monitored_functions[func.__name__] = {
+            "ignore": ignore,
+            "start_hooks": start_hooks,
+            "return_hooks": return_hooks,
+            "tracked_functions": track
+        }
         
         # Also enable monitoring for tracked functions
         for tracked_func in track:
             if callable(tracked_func):
+
                 # Mark the tracked function with the parent that's tracking it
-                tracked_func._pymonitor_tracked_by = func.__name__
                 
-                # Enable monitoring for the tracked function too
+                PyMonitoring._tracked_functions[tracked_func.__name__] = {
+                    "parent_tracking_function": func.__name__
+                }
+
+                if tracked_func.__name__ not in PyMonitoring._monitored_functions:
+                    PyMonitoring._monitored_functions[tracked_func.__name__] = {
+                        "ignore": [],
+                        "start_hooks": [],
+                        "return_hooks": [],
+                        "tracked_functions": []
+                    }
+                
                 logger.info(f"Enabling monitoring for tracked function: {tracked_func.__name__} (tracked by {func.__name__})")
                 
                 # Use function mode for tracked functions to avoid overhead
@@ -820,3 +841,15 @@ def _cleanup_monitoring():
         PyMonitoring._instance.shutdown()
 
 atexit.register(_cleanup_monitoring)
+
+# Module replacmeent registering
+# Pygame
+if "pygame" in sys.modules:
+    pygame = sys.modules["pygame"]
+    # Event get
+    pygame.event._old_get = pygame.event.get
+    def get(*args, **kwargs):
+        result = pygame.event._old_get(*args, **kwargs)
+        return result
+    pygame.event.get = get
+    
