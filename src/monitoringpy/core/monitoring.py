@@ -408,7 +408,7 @@ class PyMonitoring:
             if inspect.isfunction(func_obj):
                 source_code = inspect.getsource(func_obj)
                 first_line_no = inspect.getsourcelines(func_obj)[1]  # This gets the starting line number
-                module_path = func_obj.__module__ or 'unknown'
+                module_path = inspect.getmodule(func_obj).__file__
                 
                 # Get code definition ID by storing/retrieving
                 code_def_id = self.call_tracker.object_manager.store_code_definition(

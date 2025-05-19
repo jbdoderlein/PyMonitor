@@ -47,8 +47,8 @@ def complex_function(x):
 
 if __name__ == "__main__":
     # Initialize monitoring
-    monitoringpy.init_monitoring(db_path="main1.db")
-    with monitoringpy.session_context(name="main1"):
+    monitoringpy.init_monitoring(db_path="main.db")
+    with monitoringpy.session_context(name="main"):
         foo1(10, custom_class_1)
         complex_function(10)
         complex_function(15)

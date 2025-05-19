@@ -1,6 +1,6 @@
 import pickle
 import copyreg
-from typing import Any, Dict, Optional, Union, TypeVar, Generic, List as ListType, Sequence, Callable
+from typing import Any, Dict, Optional, Tuple, Union, TypeVar, Generic, List as ListType, Sequence, Callable
 import hashlib
 from enum import Enum
 from sqlalchemy.orm import Session
@@ -395,27 +395,29 @@ class ObjectManager:
 
         return ref
 
-    def get(self, ref: str) -> Optional[Any]:
+    def get(self, ref: str) -> Tuple[Any, str]:
         """Get an object by its reference"""
         stored_obj = self.session.query(StoredObject).filter(StoredObject.id == ref).first()
         if not stored_obj:
-            return None
+            return None, "None"
 
         if stored_obj.is_primitive:
             # Convert primitive value back to appropriate type
             if stored_obj.type_name == 'int':
-                return int(stored_obj.primitive_value)
+                return int(stored_obj.primitive_value), 'int'
             elif stored_obj.type_name == 'float':
-                return float(stored_obj.primitive_value)
+                return float(stored_obj.primitive_value), 'float'
             elif stored_obj.type_name == 'bool':
-                return stored_obj.primitive_value.lower() == 'true'
+                return stored_obj.primitive_value.lower() == 'true', 'bool'
             elif stored_obj.type_name == 'str':
-                return stored_obj.primitive_value
+                return stored_obj.primitive_value, 'str'
             elif stored_obj.type_name == 'NoneType':
-                return None
+                return None, 'NoneType'
+            else:
+                raise ValueError(f"Unknown primitive type: {stored_obj.type_name}")
         else:
             try:
-                return self.pickle_config.loads(stored_obj.pickle_data)
+                return self.pickle_config.loads(stored_obj.pickle_data), stored_obj.type_name # type: ignore
             except (ImportError, AttributeError, ModuleNotFoundError) as e:
                 # First try to load the class using the stored code if available
                 if self.class_loader is not None and self.code_manager is not None:
@@ -431,7 +433,7 @@ class ObjectManager:
                                 exec(code_info['code'], namespace)
                                 if stored_obj.type_name in namespace:
                                     # Try unpickling again now that we have recreated the class
-                                    return self.pickle_config.loads(stored_obj.pickle_data)
+                                    return self.pickle_config.loads(stored_obj.pickle_data), stored_obj.type_name # type: ignore
                                 # Store the code info for the UnpickleableObject
                                 self._last_code_info = code_info
                     except Exception as loader_e:
@@ -480,10 +482,10 @@ class ObjectManager:
                         return None
                 
                 return UnpickleableObject(stored_obj.type_name, stored_obj.pickle_data, 
-                                        getattr(self, '_last_code_info', None))
+                                        getattr(self, '_last_code_info', None)), stored_obj.type_name # type: ignore
             except Exception as e:
                 logger.error(f"Unexpected error unpickling object of type {stored_obj.type_name}: {e}")
-                raise
+                raise e
 
     def get_without_pickle(self, ref: str) -> Optional[Any]:
         """Get an object by its reference without unpickling"""
@@ -569,7 +571,7 @@ class ObjectManager:
         if ref is None:
             return None
         try:
-            return self.get(ref)
+            return self.get(ref)[0]
         except Exception as e:
             raise ValueError(f"Could not rehydrate object with reference {ref}: {e}")
 

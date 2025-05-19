@@ -259,73 +259,88 @@ class FunctionCallTracker:
                 try:
                     function_id = int(function_id)
                 except ValueError:
-                    print(f"Error: Invalid function ID: {function_id}")
+                    logger.error(f"Invalid function ID: {function_id}")
                     return []
             
-            # Get the function call
+            # Get the function call using scalar query
             function_call = self.session.query(FunctionCall).filter(FunctionCall.id == function_id).first()
             if not function_call:
-                print(f"Error: Function call {function_id} not found")
+                logger.error(f"Function call {function_id} not found")
                 return []
             
             # Get all stack snapshots for this function call
             snapshots = self.session.query(StackSnapshot).filter(
                 StackSnapshot.function_call_id == function_id
-            ).order_by(StackSnapshot.timestamp.asc()).all()
+            ).order_by(StackSnapshot.order_in_call.asc()).all()
             
             # Get code information if available
             code = None
-            if function_call.code_definition_id:
+            # Use the _query pattern instead of direct attribute access for safe boolean check
+            if function_call.code_definition_id is not None:
                 try:
                     code_definition = self.session.query(CodeDefinition).filter(
                         CodeDefinition.id == function_call.code_definition_id
                     ).first()
                     
                     if code_definition:
+                        first_line_no = code_definition.first_line_no if code_definition.first_line_no is not None else function_call.line
                         code = {
                             'content': code_definition.code_content,
                             'module_path': code_definition.module_path,
                             'type': code_definition.type,
-                            'name': code_definition.name
+                            'name': code_definition.name,
+                            'first_line_no': first_line_no
                         }
                 except Exception as e:
-                    print(f"Error retrieving code definition: {e}")
+                    logger.error(f"Error retrieving code definition: {e}")
             
             traces = []
             for snapshot in snapshots:
                 # Convert datetime to string to avoid serialization issues
-                start_time_str = function_call.start_time.isoformat() if function_call.start_time else None
-                end_time_str = function_call.end_time.isoformat() if function_call.end_time else None
+                # Use safe handling of Column objects by checking is not None
+                start_time_str = function_call.start_time.isoformat() if function_call.start_time is not None else None
+                end_time_str = function_call.end_time.isoformat() if function_call.end_time is not None else None
+                
+                # Get previous snapshot using model method
+                prev_snapshot = snapshot.get_previous_snapshot(self.session)
+                
+                # Create trace data with proper handling of all attributes
+                locals_refs_dict = {} if snapshot.locals_refs is None else snapshot.locals_refs
+                globals_refs_dict = {} if snapshot.globals_refs is None else snapshot.globals_refs
                 
                 trace_data = {
                     "id": str(snapshot.id),
-                    "function": function_call.function,
-                    "file": function_call.file,
+                    "function": str(function_call.function),
+                    "file": str(function_call.file) if function_call.file is not None else None,
                     "line": snapshot.line_number,
                     "time": start_time_str,
                     "end_time": end_time_str,
                     "snapshot_id": str(snapshot.id),
-                    "timestamp": snapshot.timestamp.isoformat() if snapshot.timestamp else None,
+                    "timestamp": snapshot.timestamp.isoformat() if snapshot.timestamp is not None else None,
                     "call_metadata": function_call.call_metadata,
-                    "locals_refs": snapshot.locals_refs,
-                    "globals_refs": snapshot.globals_refs,
-                    "previous_snapshot_id": str(snapshot.previous_snapshot_id) if snapshot.previous_snapshot_id else None,
-                    "next_snapshot_id": str(snapshot.next_snapshot_id) if snapshot.next_snapshot_id else None
+                    "locals_refs": locals_refs_dict,
+                    "globals_refs": globals_refs_dict,
+                    "previous_snapshot_id": str(prev_snapshot.id) if prev_snapshot else None,
+                    "next_snapshot_id": str(snapshot.next_snapshot_id) if snapshot.next_snapshot_id is not None else None,
+                    "order_in_call": snapshot.order_in_call,
+                    "is_first_in_call": snapshot.is_first_in_call,
+                    "is_last_in_call": snapshot.is_last_in_call
                 }
                 
                 # Add code information if available
                 if code:
                     trace_data["code"] = code
                 
-                # Add code definition ID if available
-                if function_call.code_definition_id:
-                    trace_data["code_definition_id"] = function_call.code_definition_id
+                # Add code definition ID if available (safe check)
+                if function_call.code_definition_id is not None:
+                    trace_data["code_definition_id"] = str(function_call.code_definition_id)
                 
                 traces.append(trace_data)
                 
             return traces
         except Exception as e:
-            print(f"Error getting function traces: {e}")
+            logger.error(f"Error getting function traces: {e}")
+            logger.error(traceback.format_exc())
             return []
 
     def update_metadata(self, call_id: str, metadata: dict) -> None:

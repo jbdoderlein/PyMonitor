@@ -81,7 +81,10 @@ def serialize_stored_value(ref: Optional[str]) -> Dict[str, Any]:
         
     try:
         # Try to get the value using ObjectManager
-        result = object_manager.get_without_pickle(ref)
+        try:
+            result = object_manager.get(ref)
+        except Exception as e:
+            result = object_manager.get_without_pickle(ref)
         
         # Handle case where result is None
         if result is None:
@@ -649,7 +652,7 @@ async def get_function_calls(
         if function:
             function_lower = f"%{function.lower()}%"
             query = query.filter(FunctionCall.function.ilike(function_lower))
-        function_calls = query.all()
+        function_calls = query.limit(100).all()
         
         # Convert to a serializable format
         result = []

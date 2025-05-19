@@ -228,7 +228,7 @@ document.addEventListener('DOMContentLoaded', () => {
         fetch(getApiUrl(`/api/function-call/${functionId}`))
             .then(response => response.json())
             .then(data => {
-                const functionCall = data;
+                const functionCall = data.function_call;
                 
                 let content = `
                     <div class="card detail-card">
