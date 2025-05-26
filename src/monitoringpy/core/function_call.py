@@ -1,188 +1,67 @@
-from typing import Dict, Any, Optional, TypedDict, List, Union
+from typing import Dict, Any, Optional, List, Union
 from sqlalchemy.orm import Session
-import datetime
-import inspect
 from .representation import ObjectManager, PickleConfig
-from .models import StoredObject, FunctionCall, StackSnapshot, CodeDefinition
+from .models import FunctionCall, StackSnapshot, CodeDefinition
 from sqlalchemy import text
 import logging
 import traceback
+from sqlalchemy import func
 
 logger = logging.getLogger(__name__)
 
-class FunctionCallInfo(TypedDict):
-    """Type definition for function call information"""
-    id: int
-    function: str
-    file: Optional[str]
-    line: Optional[int]
-    start_time: datetime.datetime
-    end_time: Optional[datetime.datetime]
-    locals: Dict[str, Any]
-    globals: Dict[str, Any]
-    return_value: Optional[Any]
-    code_definition_id: Optional[str]
-    code: Optional[Dict[str, Any]]  # Contains code content, module_path, and type
-    call_metadata: Optional[Dict[str, Any]] # Add field for general metadata
 
-class FunctionCallTracker:
-    """Track function calls and their context using object manager for efficient storage"""
+class FunctionCallRepository:
+    """Repository for querying and managing function call data"""
     
-    def __init__(self, session: Session, monitor=None, pickle_config: Optional[PickleConfig] = None) -> None:
+    def __init__(self, session: Session, pickle_config: Optional[PickleConfig] = None) -> None:
         self.session = session
-        self.monitor = monitor
         self.object_manager = ObjectManager(session, pickle_config=pickle_config)
-        self.call_history = []
-        self.current_call = None
 
-    def _store_variables(self, variables: Dict[str, Any]) -> Dict[str, str]:
-        """Store variables and return a dictionary of variable names to object references"""
-        refs = {}
-        for name, value in variables.items():
-            # Skip special variables and functions
-            if name.startswith('__') or callable(value):
-                continue
-            try:
-                # Store the value and get its reference
-                ref = self.object_manager.store(value)
-                # Always store the reference, not the value
-                refs[name] = ref
-            except Exception as e:
-                # Log warning but continue if we can't store a variable
-                print(f"Warning: Could not store variable {name}: {e}")
-        return refs
-
-    def capture_call(self, func_name: str, locals_dict: Dict[str, Any], globals_dict: Dict[str, Any], 
-                    code_definition_id: Optional[str] = None,
-                    file_name: Optional[str] = None, line_number: Optional[int] = None,
-                    initial_metadata: Optional[Dict[str, Any]] = None,
-                    previous_call_id: Optional[int] = None,
-                    parent_call_id: Optional[int] = None,
-                    order_in_session: Optional[int] = None,
-                    order_in_parent: Optional[int] = None) -> Optional[int]:
+    def get_call(self, call_id: Union[str, int]) -> Optional[FunctionCall]:
         """
-        Capture a function call with its local and global context.
-        Returns the function call ID (int) or None if capture fails.
+        Get a function call by ID.
+        Returns the FunctionCall model instance or None if not found.
         """
         try:
-            # Store local and global variables
-            locals_refs = self._store_variables(locals_dict)
-            globals_refs = self._store_variables(globals_dict)
-
-            # Get the current session ID from the monitor instance, if available
-            current_session_id = None
-            if self.monitor and self.monitor.current_session:
-                current_session_id = self.monitor.current_session.id
-            elif self.monitor:
-                logger.warning("Monitor instance exists but has no active session during capture_call.")
-            else:
-                logger.warning("Monitor instance not available in FunctionCallTracker.")
-
-            # Create function call record, including new fields
-            call = FunctionCall(
-                function=func_name,
-                file=file_name,
-                line=line_number,
-                start_time=datetime.datetime.now(),
-                locals_refs=locals_refs,
-                globals_refs=globals_refs,
-                code_definition_id=code_definition_id,
-                call_metadata=initial_metadata,
-                parent_call_id=parent_call_id,
-                session_id=current_session_id,
-                order_in_session=order_in_session,
-                order_in_parent=order_in_parent
-            )
-            
-            self.session.add(call)
-            self.session.flush()
-            
-            if call.id is None:
-                logger.error(f"Failed to obtain ID for new FunctionCall for {func_name}")
-                self.session.rollback()
-                return None
-            
-            call_id = call.id
-            return call_id
-            
-        except Exception as e:
-            logger.error(f"Error capturing function call {func_name}: {e}")
-            logger.error(traceback.format_exc())
-            self.session.rollback()
+            call_id_int = int(call_id) if isinstance(call_id, str) else call_id
+            return self.session.get(FunctionCall, call_id_int)
+        except (ValueError, TypeError):
+            logger.error(f"Invalid call ID: {call_id}")
             return None
 
-    def capture_return(self, call_id: int, return_value: Any) -> None:
+    def get_call_with_code(self, call_id: Union[str, int]) -> Optional[Dict[str, Any]]:
         """
-        Capture the return value of a function call.
-        Raises ValueError if call_id doesn't exist.
+        Get a function call with its code definition information.
+        Returns a dictionary with call data and code info, or None if not found.
         """
-        # Get the function call using integer ID
-        call = self.session.get(FunctionCall, call_id)
+        call = self.get_call(call_id)
         if not call:
-            # Log instead of raising ValueError to avoid interrupting monitoring
-            logger.error(f"Function call {call_id} not found during capture_return.")
-            return
+            return None
 
-        # Store return value
-        try:
-            return_ref = self.object_manager.store(return_value)
-            setattr(call, 'return_ref', return_ref)
-            setattr(call, 'end_time', datetime.datetime.now())
-            self.session.commit()
-        except Exception as e:
-            print(f"Warning: Could not store return value: {e}")
-            self.session.rollback()
-
-    def get_call(self, call_id: str) -> FunctionCallInfo:
-        """
-        Get all information about a function call.
-        Returns references to stored objects, not the actual values.
-        Use object_manager.rehydrate() to get actual values.
-        
-        Raises ValueError if call_id doesn't exist.
-        """
-        call = self.session.query(FunctionCall).filter(FunctionCall.id == int(call_id)).first()
-        if not call:
-            raise ValueError(f"Function call {call_id} not found")
-
-        # Get the stored references
-        locals_dict = call.locals_refs if call.locals_refs else {}
-        globals_dict = call.globals_refs if call.globals_refs else {}
-        return_value = call.return_ref
-
+        result = call.to_dict()
         
         # Get code information if available
         code = None
-        if call.code_definition_id:
+        if call.code_definition_id is not None:
             try:
                 sql = text("SELECT * FROM code_definitions WHERE id = :id")
-                result = self.session.execute(sql, {"id": call.code_definition_id})
-                row = result.fetchone()
+                result_row = self.session.execute(sql, {"id": call.code_definition_id})
+                row = result_row.fetchone()
                 if row:
                     code = {
                         'content': row.code_content,
                         'module_path': row.module_path,
-                        'type': row.type
+                        'type': row.type,
+                        'name': row.name,
+                        'first_line_no': row.first_line_no
                     }
             except Exception as e:
-                print(f"Error retrieving code definition for {call.code_definition_id}: {e}")
+                logger.error(f"Error retrieving code definition for {call.code_definition_id}: {e}")
 
-        return FunctionCallInfo(
-            id=call.id,
-            function=call.function,
-            file=call.file,
-            line=call.line,
-            start_time=call.start_time,
-            end_time=call.end_time,
-            locals=locals_dict,
-            globals=globals_dict,
-            return_value=return_value,
-            code_definition_id=call.code_definition_id,
-            code=code,
-            call_metadata=call.call_metadata
-        )
+        result["code"] = code
+        return result
 
-    def get_call_history(self, function_name: Optional[str] = None) -> List[str]:
+    def get_call_history(self, function_name: Optional[str] = None) -> List[int]:
         """
         Get the history of function calls, optionally filtered by function name.
         Returns a list of call IDs.
@@ -191,7 +70,7 @@ class FunctionCallTracker:
         if function_name:
             query = query.filter(FunctionCall.function == function_name)
         calls = query.order_by(FunctionCall.start_time.asc()).all()
-        return [str(call.id) for call in calls]
+        return [call.id for call in calls]
 
     def get_functions_with_traces(self) -> List[Dict[str, Any]]:
         """
@@ -206,35 +85,29 @@ class FunctionCallTracker:
         - last_occurrence: timestamp of last call
         """
         try:
-            # Use SQL to get a list of functions with their trace counts and other info
-            sql_str = """
-                SELECT 
-                    f.id,
-                    f.function,
-                    COUNT(s.id) as trace_count,
-                    f.file,
-                    f.line,
-                    MIN(f.start_time) as first_occurrence,
-                    MAX(f.start_time) as last_occurrence
-                FROM 
-                    function_calls f
-                LEFT JOIN 
-                    stack_snapshots s ON f.id = s.function_call_id
-                GROUP BY 
-                    f.function, f.file, f.line
-                HAVING 
-                    COUNT(s.id) > 0
-                ORDER BY 
-                    f.function
-            """
+            # Use SQLAlchemy ORM to build the query
+            query = self.session.query(
+                FunctionCall.id,
+                FunctionCall.function,
+                func.count(StackSnapshot.id).label('trace_count'),
+                FunctionCall.file,
+                FunctionCall.line,
+                func.min(FunctionCall.start_time).label('first_occurrence'),
+                func.max(FunctionCall.start_time).label('last_occurrence')
+            ).outerjoin(
+                StackSnapshot, FunctionCall.id == StackSnapshot.function_call_id
+            ).group_by(
+                FunctionCall.function, FunctionCall.file, FunctionCall.line
+            ).having(
+                func.count(StackSnapshot.id) > 0
+            ).order_by(
+                FunctionCall.function
+            )
             
-            sql = text(sql_str)
-            result = self.session.execute(sql)
             functions = []
-            
-            for row in result:
+            for row in query.all():
                 functions.append({
-                    "id": str(row.id),
+                    "id": row.id,
                     "function": row.function,
                     "trace_count": row.trace_count,
                     "file": row.file,
@@ -245,7 +118,7 @@ class FunctionCallTracker:
                 
             return functions
         except Exception as e:
-            print(f"Error getting functions with traces: {e}")
+            logger.error(f"Error getting functions with traces: {e}")
             return []
     
     def get_function_traces(self, function_id: Union[str, int]) -> List[Dict[str, Any]]:
@@ -262,8 +135,8 @@ class FunctionCallTracker:
                     logger.error(f"Invalid function ID: {function_id}")
                     return []
             
-            # Get the function call using scalar query
-            function_call = self.session.query(FunctionCall).filter(FunctionCall.id == function_id).first()
+            # Get the function call
+            function_call = self.session.get(FunctionCall, function_id)
             if not function_call:
                 logger.error(f"Function call {function_id} not found")
                 return []
@@ -275,7 +148,6 @@ class FunctionCallTracker:
             
             # Get code information if available
             code = None
-            # Use the _query pattern instead of direct attribute access for safe boolean check
             if function_call.code_definition_id is not None:
                 try:
                     code_definition = self.session.query(CodeDefinition).filter(
@@ -297,7 +169,6 @@ class FunctionCallTracker:
             traces = []
             for snapshot in snapshots:
                 # Convert datetime to string to avoid serialization issues
-                # Use safe handling of Column objects by checking is not None
                 start_time_str = function_call.start_time.isoformat() if function_call.start_time is not None else None
                 end_time_str = function_call.end_time.isoformat() if function_call.end_time is not None else None
                 
@@ -305,13 +176,13 @@ class FunctionCallTracker:
                 prev_snapshot = snapshot.get_previous_snapshot(self.session)
                 
                 # Create trace data with proper handling of all attributes
-                locals_refs_dict = {} if snapshot.locals_refs is None else snapshot.locals_refs
-                globals_refs_dict = {} if snapshot.globals_refs is None else snapshot.globals_refs
+                locals_refs_dict = snapshot.locals_refs or {}
+                globals_refs_dict = snapshot.globals_refs or {}
                 
                 trace_data = {
                     "id": str(snapshot.id),
-                    "function": str(function_call.function),
-                    "file": str(function_call.file) if function_call.file is not None else None,
+                    "function": function_call.function,
+                    "file": function_call.file,
                     "line": snapshot.line_number,
                     "time": start_time_str,
                     "end_time": end_time_str,
@@ -331,7 +202,7 @@ class FunctionCallTracker:
                 if code:
                     trace_data["code"] = code
                 
-                # Add code definition ID if available (safe check)
+                # Add code definition ID if available
                 if function_call.code_definition_id is not None:
                     trace_data["code_definition_id"] = str(function_call.code_definition_id)
                 
@@ -343,85 +214,36 @@ class FunctionCallTracker:
             logger.error(traceback.format_exc())
             return []
 
-    def update_metadata(self, call_id: str, metadata: dict) -> None:
+    def update_metadata(self, call_id: Union[str, int], metadata: dict) -> bool:
         """Update the metadata for a function call.
         
         Args:
             call_id: The ID of the function call to update
             metadata: Dictionary containing metadata to store
+            
+        Returns:
+            True if successful, False otherwise
         """
         try:
-            call = self.session.query(FunctionCall).filter_by(id=call_id).first()
+            call = self.get_call(call_id)
             if call:
                 # If there's existing metadata, merge it with the new data
                 if call.call_metadata:
-                    call.call_metadata.update(metadata)
+                    # Create a new dict to avoid modifying the original
+                    updated_metadata = dict(call.call_metadata)
+                    updated_metadata.update(metadata)
+                    call.call_metadata = updated_metadata
                 else:
                     call.call_metadata = metadata
                 self.session.commit()
+                return True
+            return False
         except Exception as e:
-            print(f"Error updating metadata for call {call_id}: {e}")
+            logger.error(f"Error updating metadata for call {call_id}: {e}")
             self.session.rollback()
+            return False
 
-    def create_stack_snapshot(self, call_id: str, line_number: int, locals_dict: Dict[str, str], globals_dict: Dict[str, str], order_in_call: Optional[int] = None) -> StackSnapshot:
-        """
-        Create a stack snapshot for a function call.
-        
-        Args:
-            call_id: The ID of the function call
-            line_number: The line number where the snapshot was taken
-            locals_dict: Dictionary of local variable references
-            globals_dict: Dictionary of global variable references
-            order_in_call: Position in the execution sequence (optional)
-            
-        Returns:
-            The created StackSnapshot object
-        """
-        try:
-            call_id_int = int(call_id)
-            
-            # Get the function call
-            call = self.session.get(FunctionCall, call_id_int)
-            if not call:
-                raise ValueError(f"Function call {call_id} not found during stack snapshot creation")
-            
-            # Find the previous snapshot if any
-            prev_snapshot = None
-            if order_in_call is not None and order_in_call > 0:
-                prev_snapshot = self.session.query(StackSnapshot).filter(
-                    StackSnapshot.function_call_id == call_id_int,
-                    StackSnapshot.order_in_call == order_in_call - 1
-                ).first()
-            
-            # Create the new snapshot
-            snapshot = StackSnapshot(
-                function_call_id=call_id_int,
-                line_number=line_number,
-                locals_refs=locals_dict,
-                globals_refs=globals_dict,
-                order_in_call=order_in_call
-            )
-            
-            # Set bidirectional link if previous snapshot exists
-            if prev_snapshot:
-                prev_snapshot.next_snapshot_id = snapshot.id
-                snapshot.prev_snapshot_id = prev_snapshot.id
-            
-            self.session.add(snapshot)
-            
-            # If this is the first snapshot for this call, update the call record
-            if order_in_call == 0 or not call.first_snapshot_id:
-                call.first_snapshot_id = snapshot.id
-            
-            self.session.flush()  # Flush to get the ID
-            
-            return snapshot
-        except Exception as e:
-            logger.error(f"Error creating stack snapshot for call {call_id}: {e}")
-            logger.error(traceback.format_exc())
-            raise
-
-    def delete_call(self, call_id: str) -> bool:
+    def delete_call(self, call_id: Union[str, int]) -> bool:
         """
         Delete a function call and all associated stack snapshots.
         
@@ -434,15 +256,15 @@ class FunctionCallTracker:
         try:
             # Convert string ID to integer if needed
             try:
-                id_int = int(call_id)
+                id_int = int(call_id) if isinstance(call_id, str) else call_id
             except ValueError:
-                print(f"Error: Invalid function call ID: {call_id}")
+                logger.error(f"Invalid function call ID: {call_id}")
                 return False
             
             # Get the function call
-            call = self.session.query(FunctionCall).filter(FunctionCall.id == id_int).first()
+            call = self.session.get(FunctionCall, id_int)
             if not call:
-                print(f"Error: Function call {call_id} not found")
+                logger.error(f"Function call {call_id} not found")
                 return False
             
             # Delete all stack snapshots associated with this function call
@@ -458,49 +280,6 @@ class FunctionCallTracker:
             return True
             
         except Exception as e:
-            print(f"Error deleting function call {call_id}: {e}")
+            logger.error(f"Error deleting function call {call_id}: {e}")
             self.session.rollback()
             return False
-
-
-def delete_function_execution(function_execution_id: str, db_path: str) -> bool:
-    """
-    Delete a function execution and its associated stack trace from the database.
-    
-    This function removes all data related to a specific function execution, including:
-    - The function call record
-    - All stack snapshots associated with the function call
-    - Any references to stored objects (the objects themselves remain if used elsewhere)
-    
-    Args:
-        function_execution_id: The ID of the function execution to delete
-        db_path: Path to the database file containing the function execution data
-        
-    Returns:
-        True if the function was successfully deleted, False otherwise
-        
-    Example:
-        ```python
-        from monitoringpy.core.function_call import delete_function_execution
-        
-        # Delete a function execution
-        success = delete_function_execution("123", "monitoring.db")
-        if success:
-            print("Function execution deleted successfully")
-        else:
-            print("Failed to delete function execution")
-        ```
-    """
-    from .models import init_db
-    
-    # Initialize database connection
-    Session = init_db(db_path)
-    session = Session()
-    
-    try:
-        tracker = FunctionCallTracker(session)
-        result = tracker.delete_call(function_execution_id)
-        return result
-    finally:
-        # Close the session
-        session.close() 

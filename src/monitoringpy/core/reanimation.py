@@ -5,550 +5,769 @@ This module provides functionality to load and replay function executions
 that were previously monitored and stored by PyMonitor.
 """
 
+from collections import defaultdict
 import importlib
 import os
 import re
 import sys
-import types # Add types import
-from typing import Any, Dict, List, Optional, Tuple, Union, cast, Callable
-import datetime
+from typing import Any, Dict, List, Optional, Tuple, Callable, Union
+from contextlib import contextmanager
 import traceback
-import logging # Add logging import
+import logging  # Add logging import
 
-from . import init_db, FunctionCallTracker, ObjectManager
-from .function_call import FunctionCallInfo
-from . import models
+from .models import init_db
+from .function_call import FunctionCallRepository
+from .representation import ObjectManager
 from .monitoring import PyMonitoring
+from . import models
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
-def load_execution_data(function_execution_id: str, db_path: str) -> Tuple[List[Any], Dict[str, Any]]:
+# Add the src directory to the path so we can import our modules
+current_dir = os.path.dirname(os.path.abspath(__file__))
+src_dir = os.path.join(current_dir, "..", "..")
+if src_dir not in sys.path:
+    sys.path.insert(0, src_dir)
+
+
+@contextmanager
+def get_db_session(db_path_or_session: Union[str, Any]):
+    """
+    Context manager that yields a database session.
+
+    Args:
+        db_path_or_session: Either a string path to the database file,
+                           or an existing SQLAlchemy session object
+
+    Yields:
+        A database session object
+
+    Example:
+        ```python
+        # Using with a database path
+        with get_db_session("monitoring.db") as session:
+            # Use session here
+            pass
+
+        # Using with an existing session
+        with get_db_session(existing_session) as session:
+            # session is the same as existing_session, no cleanup needed
+            pass
+        ```
+    """
+    if isinstance(db_path_or_session, str):
+        # It's a database path, create a new session
+        Session = init_db(db_path_or_session)
+        session = Session()
+        try:
+            yield session
+        finally:
+            session.close()
+    else:
+        # It's already a session object, just yield it
+        # Don't close it since we didn't create it
+        yield db_path_or_session
+
+
+def load_execution_data(
+    function_execution_id: str, db_path_or_session: Union[str, Any]
+) -> Tuple[List[Any], Dict[str, Any]]:
     """
     Load the function execution data for a given function execution ID.
-    
+
     This function connects to the database, retrieves the function call data,
     and returns the arguments required to replay the function execution.
-    
+
     Args:
         function_execution_id: The ID of the function execution to load
-        db_path: Path to the database file containing the function execution data
-        
+        db_path_or_session: Either a string path to the database file,
+                           or an existing SQLAlchemy session object
+
     Returns:
         A tuple containing (args, kwargs) where:
         - args is a list of positional arguments
         - kwargs is a dictionary of keyword arguments
-        
+
     Example:
         ```python
         import monitoringpy
         from my_module import my_function
-        
+
         # Load the arguments for a specific function execution
         args, kwargs = monitoringpy.load_execution_data("123", "monitoring.db")
-        
+
         # Replay the function with the same arguments
         result = my_function(*args, **kwargs)
         ```
     """
-    # Initialize database connection
-    Session = init_db(db_path)
-    session = Session()
-    
-    try:
+    with get_db_session(db_path_or_session) as session:
         # Create an ObjectManager to retrieve the stored objects
         obj_manager = ObjectManager(session)
-        
-        # Create a FunctionCallTracker
-        call_tracker = FunctionCallTracker(session)
-        
+
+        # Create a FunctionCallRepository
+        call_repository = FunctionCallRepository(session)
+
         # Get the function call details
-        call_info = call_tracker.get_call(function_execution_id)
-        
-        # Rehydrate the locals dictionary
-        locals_dict = obj_manager.rehydrate_dict(call_info['locals'])
-        
-        # We'll return all local variables as kwargs by default
-        args = []
-        kwargs = locals_dict
-        
-        # Try to get function code information to separate args from kwargs
-        if call_info['code_definition_id'] is not None:
-            code_content = call_info['code'].get('content', None) if call_info['code'] else None
-            
-            if code_content:
-                # Try to identify function parameters
-                # Look for def function_name(params): pattern
-                match = re.search(r'def\s+([^(]+)\s*\(([^)]*)\)', code_content)
-                if match:
-                    param_str = match.group(2)
-                    params = [p.strip() for p in param_str.split(',')]
-                    
-                    # Extract positional args based on parameter order
-                    args = []
-                    kwargs = {}
-                    for param in params:
-                        # Skip empty parameters
-                        if not param:
-                            continue
-                            
-                        # Handle default values
-                        if '=' in param:
-                            param_name = param.split('=')[0].strip()
-                            if param_name in locals_dict:
-                                kwargs[param_name] = locals_dict[param_name]
-                        else:
-                            # Remove any type annotations
-                            if ':' in param:
-                                param_name = param.split(':')[0].strip()
-                            else:
-                                param_name = param.strip()
-                                
-                            # Skip self/cls parameter for methods
-                            if param_name in ('self', 'cls'):
-                                continue
-                                
-                            if param_name in locals_dict:
-                                args.append(locals_dict[param_name])
-        
-        return args, kwargs
-        
-    finally:
-        # Close the session
-        session.close()
+        call_info = call_repository.get_call_with_code(function_execution_id)
+
+        if not call_info:
+            raise ValueError(f"Function execution ID {function_execution_id} not found")
+
+        return _load_execution_data_from_call_info(
+            call_info, obj_manager, use_signature_parsing=True
+        )
 
 
-def reanimate_function(function_execution_id: str, db_path: str, 
-                       import_path: Optional[str] = None, ignore_globals: Optional[List[str]] = None) -> Any:
+def execute_function_call(
+    function_execution_id: str,
+    db_path_or_session: Union[str, Any],
+    import_path: Optional[str] = None,
+    ignore_globals: Optional[List[str]] = None,
+    mock_function: List[str] = [],
+    enable_monitoring: bool = False,
+    reload_module: bool = True,
+) -> Any:
     """
-    Reanimate a function execution from its stored data.
-    
+    Execute a single function call from its stored data.
+
     This function loads the function execution data, imports the target function,
     and executes it with the same arguments as the original execution.
-    
+
     Args:
-        function_execution_id: The ID of the function execution to reanimate
+        function_execution_id: The ID of the function execution to execute
         db_path: Path to the database file containing the function execution data
-        import_path: Optional path to add to sys.path before importing (useful for importing from specific directories)
-        ignore_globals: Optional list of global variables to ignore (useful for ignoring built-in variables)
+        import_path: Optional path to add to sys.path before importing
+        ignore_globals: Optional list of global variables to ignore
+        mock_function: Optional list of functions to mock
+        enable_monitoring: Whether to enable monitoring during execution (default: False)
+
     Returns:
         The result of the function execution
-        
+
     Example:
         ```python
         import monitoringpy
-        
-        # Reanimate a function execution
-        result = monitoringpy.reanimate_function("123", "monitoring.db", "/path/to/module/directory")
-        print(f"Result: {result}")
+
+        # Execute a function call without monitoring
+        result = monitoringpy.execute_function_call("123", "monitoring.db")
+
+        # Execute with monitoring enabled
+        result = monitoringpy.execute_function_call("123", "monitoring.db", enable_monitoring=True)
         ```
     """
-    # Initialize database connection for reading
-    Session = init_db(db_path)
-    session = Session()
-    
-    # Get the monitor instance to temporarily disable recording
-    monitor_instance = PyMonitoring.get_instance()
-    original_recording_state = None
-    
-    try:
-        # Disable recording if monitor exists
-        if monitor_instance:
-            original_recording_state = monitor_instance.is_recording_enabled
-            monitor_instance.is_recording_enabled = False
-            
-        # Create a FunctionCallTracker for reading data
-        call_tracker = FunctionCallTracker(session) # Use the read-only session
-        obj_manager = ObjectManager(session) # Use the read-only session
-        
-        # Get the function call details
-        call_info = call_tracker.get_call(function_execution_id)
-        
-        # Get function name
-        function_name = call_info['function']
-        
-        # Get file path where the function is defined
-        file_path = call_info['file']
-        
-        if not file_path:
-            raise ValueError(f"Could not determine file path for function {function_name}")
-        
-        # Add the import path to sys.path if provided
-        if import_path:
-            if import_path not in sys.path:
-                sys.path.insert(0, import_path)
-        
-        # Get the module path from the file path
-        
-        if file_path.endswith('.py'):
-            # Convert file path to module path
-            file_dir = os.path.dirname(file_path)
-            module_name = os.path.basename(file_path)[:-3]  # Remove .py extension
-            
-            # Ensure the directory is in sys.path
-            if file_dir and file_dir not in sys.path and os.path.exists(file_dir):
-                sys.path.insert(0, file_dir)
-                
-            # Check if the module is already imported
-            if module_name in sys.modules:
-                #reload the module
-                importlib.reload(sys.modules[module_name])
-                module = sys.modules[module_name]
-            else:
-                module = importlib.import_module(module_name)
-            
-        else:
-            # If we can't determine the module path, look for the module path in code info
-            module_path = call_info['code'].get('module_path') if call_info['code'] else None
-            
-            if not module_path:
-                raise ValueError(f"Could not determine module path for function {function_name}")
-                
-            # Import the module
-            module = importlib.import_module(module_path)
-        
-        # --- Get Function Object --- 
-        # 1. Get the function object from the currently loaded module
+    with get_db_session(db_path_or_session) as session:
+        # Get the monitor instance to control recording
+        monitor_instance = PyMonitoring.get_instance()
+        original_recording_state = None
+
         try:
-            function_from_disk = getattr(module, function_name)
-            if not callable(function_from_disk):
-                 raise AttributeError(f"Attribute '{function_name}' in module '{module.__name__}' is not callable.")
-        except AttributeError:
-             raise ValueError(f"Could not find function '{function_name}' in module '{module.__name__}'. Cannot proceed with reanimation.")
+            # Control recording based on enable_monitoring parameter
+            if monitor_instance and not enable_monitoring:
+                original_recording_state = monitor_instance.is_recording_enabled
+                monitor_instance.is_recording_enabled = False
 
-        # 2. Try to create a function using historical code from DB
-        code_def_id = call_info.get('code_definition_id')
-        reanimated_function = None # Initialize
-        historical_code_obj = None
+            # Create a FunctionCallRepository for reading data
+            call_repository = FunctionCallRepository(session)
+            obj_manager = ObjectManager(session)
 
-        if code_def_id:
-            code_def = session.get(models.CodeDefinition, code_def_id)
-            if code_def and code_def.code_content:
-                try:
-                    # Compile the stored code string
-                    filename = cast(str, code_def.name) if (code_def and code_def.name) else '<string_from_db>'
-                    # Compile in 'exec' mode initially as it contains the function def
-                    historical_code_obj = compile(cast(str, code_def.code_content), filename, 'exec')
-                    
-                    # Find the actual function code object within the compiled code
-                    # (Assuming the stored code is just the function definition)
-                    func_code = None
-                    for const in historical_code_obj.co_consts:
-                        if isinstance(const, types.CodeType) and const.co_name == function_name:
-                            func_code = const
-                            break
-                            
-                    if func_code:
-                        # --- Direct Modification Approach --- 
-                        # Directly replace the code object of the function loaded from disk
-                        function_from_disk.__code__ = func_code
-                        logger.info(f"Successfully replaced code for function '{function_name}' with historical code from definition {code_def_id}")
-                        # No need to create a new function object
-                        # reanimated_function = None # Keep this None or remove
-                    else:
-                         logger.warning(f"Could not find function code object named '{function_name}' within compiled historical code {code_def_id}. Using disk version.")
-                         # Fallback handled below
+            # Get the function call details
+            call_info = call_repository.get_call_with_code(function_execution_id)
 
-                except SyntaxError as compile_err:
-                    logger.error(f"Syntax error compiling stored code for call {function_execution_id} (ID: {code_def_id}): {compile_err}")
-                    # Fallback handled below
-                except Exception as e:
-                    logger.error(f"Error processing historical code {code_def_id} for call {function_execution_id}: {e}")
-                    # Fallback handled below
-            else:
-                logger.warning(f"Could not find CodeDefinition or code_content for ID {code_def_id} associated with call {function_execution_id}.")
+            if not call_info:
+                raise ValueError(
+                    f"Function execution ID {function_execution_id} not found"
+                )
 
-        # 3. Use the function from disk (potentially modified)
-        function_to_execute = function_from_disk
-        # --- End Get Function Object ---
-
-        # Load the execution data (args, kwargs)
-        args, kwargs = _load_execution_data_from_info(call_info, obj_manager)
-        
-        # Load globals (needed for injection)
-        globals_dict = _load_globals_from_info(call_info, obj_manager, ignore_globals)
-        
-        # Inject globals into module (if loaded) and the EXECUTION function context
-        # NOTE: We inject into function_to_execute.__globals__ which might 
-        #       already be the same dict as function_from_disk.__globals__
-        _inject_globals(module, function_to_execute, globals_dict)
-
-        # Execute the chosen function (monitor is disabled)
-        result = function_to_execute(*args, **kwargs)
-        return result
-        
-    finally:
-        # Restore original recording state if it was changed
-        if monitor_instance and original_recording_state is not None:
-            monitor_instance.is_recording_enabled = original_recording_state
+            # Get function name and file path
+            function_name = call_info["function"]
+            file_path = call_info["file"]
             
-        # Close the read-only session
-        session.close() 
+            logger.info(f"Replaying function {function_name} from {file_path}")
+            
+            if not file_path:
+                raise ValueError(
+                    f"Could not determine file path for function {function_name}"
+                )
 
-def load_snapshot(snapshot_id: str, db_path: str) -> Dict[str, Any]:
+            # Add the import path to sys.path if provided
+            if import_path:
+                if import_path not in sys.path:
+                    sys.path.insert(0, import_path)
+
+            # Load the function and module using the helper
+            loaded_modules_cache: Dict[str, Any] = {}
+            function_obj, module = _load_or_reload_function_and_module(
+                call_info, loaded_modules_cache, reload_module=reload_module
+            )
+
+            # FIX: Ensure classes are available for unpickling before loading execution data
+            _ensure_class_availability_for_unpickling(obj_manager, module)
+
+            # Load the execution data (args, kwargs)
+            args, kwargs = _load_execution_data_from_call_info(call_info, obj_manager)
+
+            # Load globals (needed for injection)
+            globals_dict = _load_globals_from_call_info(
+                call_info, obj_manager, ignore_globals
+            )
+
+            # Inject globals into module and function context
+            _inject_globals(module, function_obj, globals_dict)
+
+            # Mock functions if provided
+            if mock_function:
+                fct = (
+                    session.query(models.FunctionCall)
+                    .filter_by(id=function_execution_id)
+                    .first()
+                )
+                if fct:
+                    subcalls = fct.get_child_calls(session)
+                else:
+                    subcalls = []
+                if subcalls:
+                    possible_names = set(map(lambda x: x.function, subcalls))
+                    return_values_dict = defaultdict(list)
+                    for subcall in subcalls:
+                        return_values_dict[subcall.function].append(
+                            subcall.return_ref
+                        )
+                    # convert to generators
+                    return_values_dict = {
+                        k: (obj_manager.get(x)[0] for x in v)
+                        for k, v in return_values_dict.items()
+                    }
+
+                    for func_name in mock_function:
+                        if func_name in possible_names:
+                            if func_name in module.__dict__:
+                                module.__dict__[f"_old_{func_name}"] = module.__dict__[func_name]
+                                module.__dict__[func_name] = lambda *args, **kwargs: next(return_values_dict[func_name])
+                            else:
+                                pass #TODO
+            
+            # Execute the function
+            result = function_obj(*args, **kwargs)
+
+            # Restore the original functions
+            for func_name in mock_function:
+                if func_name in module.__dict__:
+                    module.__dict__[func_name] = module.__dict__[f"_old_{func_name}"]
+                    del module.__dict__[f"_old_{func_name}"]
+            return result
+
+        finally:
+            # Restore original recording state if it was changed
+            if monitor_instance and original_recording_state is not None:
+                monitor_instance.is_recording_enabled = original_recording_state
+
+
+def load_snapshot(
+    snapshot_id: str, db_path_or_session: Union[str, Any]
+) -> Dict[str, Any]:
     """
     Load the snapshot data for a given snapshot ID.
-    
+
     This function connects to the database, retrieves the stack snapshot data,
     and returns the locals and globals dictionaries from that snapshot.
-    
+
     Args:
         snapshot_id: The ID of the stack snapshot to load
-        db_path: Path to the database file containing the snapshot data
-        
+        db_path_or_session: Either a string path to the database file,
+                           or an existing SQLAlchemy session object
+
     Returns:
         A dictionary containing the following keys:
         - 'locals': Dictionary of local variables
         - 'globals': Dictionary of global variables
-        
+
     Example:
         ```python
         import monitoringpy
-        
+
         # Load a specific snapshot
         snapshot_data = monitoringpy.load_snapshot("123", "monitoring.db")
-        
+
         # Access the local and global variables
         local_vars = snapshot_data['locals']
         global_vars = snapshot_data['globals']
         ```
     """
-    # Initialize database connection
-    Session = init_db(db_path)
-    session = Session()
-    
-    try:
+    with get_db_session(db_path_or_session) as session:
         # Create an ObjectManager to retrieve the stored objects
         obj_manager = ObjectManager(session)
-        
+
         # Query the StackSnapshot table for the given ID
         snapshot = session.query(models.StackSnapshot).filter_by(id=snapshot_id).first()
-        
+
         if not snapshot:
             raise ValueError(f"Snapshot with ID {snapshot_id} not found")
-        
+
         # Rehydrate the locals and globals dictionaries
-        locals_dict = obj_manager.rehydrate_dict(snapshot.locals_refs)
-        globals_dict = obj_manager.rehydrate_dict(snapshot.globals_refs)
-        
-        return {
-            'locals': locals_dict,
-            'globals': globals_dict
-        }
-        
-    finally:
-        # Close the session
-        session.close()
+        locals_refs = getattr(snapshot, "locals_refs", {}) if snapshot else {}
+        globals_refs = getattr(snapshot, "globals_refs", {}) if snapshot else {}
+        locals_dict = obj_manager.rehydrate_dict(locals_refs)
+        globals_dict = obj_manager.rehydrate_dict(globals_refs)
+
+        return {"locals": locals_dict, "globals": globals_dict}
 
 
-def load_snapshot_in_frame(snapshot_id: str, db_path: str, frame=None) -> None:
+def load_snapshot_in_frame(
+    snapshot_id: str, db_path_or_session: Union[str, Any], frame=None
+) -> None:
     """
     Load a snapshot directly into the provided frame's locals and globals dictionaries.
-    
+
     This function connects to the database, retrieves the stack snapshot data,
     and updates the provided frame's local and global variables with the values from the snapshot.
-    
+
     Args:
         snapshot_id: The ID of the stack snapshot to load
-        db_path: Path to the database file containing the snapshot data
+        db_path_or_session: Either a string path to the database file,
+                           or an existing SQLAlchemy session object
         frame: The frame to update (defaults to the current frame if None)
-        
+
     Returns:
         None
-        
+
     Example:
         ```python
         import monitoringpy
         import inspect
-        
+
         # Load a snapshot directly into the current execution frame
         monitoringpy.load_snapshot_in_frame("123", "monitoring.db", inspect.currentframe())
-        
+
         # Now all local variables from the snapshot are available in the current scope
         ```
     """
     import inspect
-    
+
     # Use current frame if none provided
     if frame is None:
         current_frame = inspect.currentframe()
         if current_frame is not None:
             frame = current_frame.f_back
-    
+
     # Validate that we have a valid frame
     if frame is None:
         raise ValueError("No valid frame was provided or could be determined")
-    
+
     # Get the frame's locals and globals dictionaries
     frame_locals = frame.f_locals
     frame_globals = frame.f_globals
-    
+
     # Load the snapshot data
-    snapshot_data = load_snapshot(snapshot_id, db_path)
-    
+    snapshot_data = load_snapshot(snapshot_id, db_path_or_session)
+
     # Update the frame's locals with the snapshot's locals
-    frame_locals.update(snapshot_data['locals'])
-    
+    frame_locals.update(snapshot_data["locals"])
+
     # Update the frame's globals with the snapshot's globals
     # Only update globals that don't conflict with builtins or module-level constants
-    for key, value in snapshot_data['globals'].items():
+    for key, value in snapshot_data["globals"].items():
         # Skip updating certain globals that might cause issues
-        if not (key.startswith('__') and key.endswith('__')):
+        if not (key.startswith("__") and key.endswith("__")):
             frame_globals[key] = value
-    
+
     # Force update of the frame locals (needed in some Python implementations)
     # This uses ctypes to access CPython internals safely
     try:
         import ctypes
-        ctypes.pythonapi.PyFrame_LocalsToFast(
-            ctypes.py_object(frame),
-            ctypes.c_int(0)
-        )
+
+        ctypes.pythonapi.PyFrame_LocalsToFast(ctypes.py_object(frame), ctypes.c_int(0))
     except (ImportError, AttributeError):
         # If ctypes is not available or PyFrame_LocalsToFast doesn't exist,
         # we've done our best with the frame.f_locals.update() above
-        pass 
+        pass
 
-def run_with_state(function_execution_id: str, db_path: str, 
-                  module_name: Optional[str] = None,
-                  ignore_globals: Optional[List[str]] = None) -> Any:
+
+def run_with_state(
+    function_execution_id: str,
+    db_path_or_session: Union[str, Any],
+    module_name: Optional[str] = None,
+    ignore_globals: Optional[List[str]] = None,
+) -> Any:
     """
-    Load global state from a specific function execution and run the script 
+    Load global state from a specific function execution and run the script
     where that function was defined with the loaded state.
-    
+
     This function loads the global variables from a tracked function execution,
     locates the script where the function was originally defined,
     imports that script as a module, applies the loaded globals,
     and executes the module.
-    
+
     Args:
         function_execution_id: The ID of the function execution to load state from
-        db_path: Path to the database file containing execution data
+        db_path_or_session: Either a string path to the database file,
+                           or an existing SQLAlchemy session object
         module_name: Optional name to use for the imported module
         ignore_globals: Optional list of global variables to ignore
-        
+
     Returns:
         The loaded module after execution
-        
+
     Example:
         ```python
         import monitoringpy
-        
+
         # After modifying the script where the original function lives
         modified_module = monitoringpy.run_with_state(
-            "specific_execution_id", 
+            "specific_execution_id",
             "monitoring.db"
         )
         ```
     """
-    # Initialize database connection
-    Session = init_db(db_path)
-    session = Session()
-    
-    try:
+    with get_db_session(db_path_or_session) as session:
         # Create required trackers and managers
-        call_tracker = FunctionCallTracker(session)
+        call_repository = FunctionCallRepository(session)
         obj_manager = ObjectManager(session)
-        
-        # Get function call details
-        call_info = call_tracker.get_call(function_execution_id)
-        
-        # Get file path where the function is defined
-        script_path = call_info['file']
-        if not script_path or not os.path.exists(script_path):
-             # Try to get from code info if file path not directly available or invalid
-            code_definition_id = call_info.get('code_definition_id')
-            if code_definition_id:
-                 code_def = session.query(models.CodeDefinition).get(code_definition_id)
-                 if code_def and code_def.file and os.path.exists(code_def.file):
-                     script_path = code_def.file
-                 else:
-                     raise ValueError(f"Could not determine a valid script path from code definition for function execution {function_execution_id}")
-            else:
-                raise ValueError(f"Could not determine a valid script path for function execution {function_execution_id}")
 
+        # Get function call details
+        call_info = call_repository.get_call(function_execution_id)
+
+        if not call_info:
+            raise ValueError(f"Function execution ID {function_execution_id} not found")
+
+        # Get file path where the function is defined
+        script_path = call_info["file"]
+        if not script_path or not os.path.exists(script_path):
+            # Try to get from code info if file path not directly available or invalid
+            code_definition_id = call_info.get("code_definition_id")
+            if code_definition_id:
+                code_def = session.query(models.CodeDefinition).get(code_definition_id)
+                if code_def and code_def.file and os.path.exists(code_def.file):
+                    script_path = code_def.file
+                else:
+                    raise ValueError(
+                        f"Could not determine a valid script path from code definition for function execution {function_execution_id}"
+                    )
+            else:
+                raise ValueError(
+                    f"Could not determine a valid script path for function execution {function_execution_id}"
+                )
 
         # Load global state
-        if ignore_globals:
-            globals_dict = obj_manager.rehydrate_dict(
-                {k: v for k, v in call_info['globals'].items() if k not in ignore_globals}
-            )
-        else:
-            globals_dict = obj_manager.rehydrate_dict(call_info['globals'])
-        
+        globals_dict = _load_globals_from_call_info(
+            call_info, obj_manager, ignore_globals
+        )
+
         # Import the script as a module with the loaded globals
         import importlib.util
-        
-        print(f"Importing script from {script_path}")
-        
+
+        logger.info(f"Importing script from {script_path}")
+
         # Determine module name if not provided
         if not module_name:
             # Try to get module path from call info first
-            code_info = call_info.get('code')
-            module_path_from_info = code_info.get('module_path') if code_info else None
+            code_info = call_info.get("code")
+            module_path_from_info = code_info.get("module_path") if code_info else None
             if module_path_from_info:
-                 module_name = module_path_from_info
+                module_name = module_path_from_info
             else:
-                 # Fallback to deriving from script path
-                 basename = os.path.basename(script_path)
-                 if basename.endswith('.py'):
-                      module_name = basename[:-3] # Remove .py extension
-                 else:
-                      module_name = basename # Use basename as is if no .py extension
-        
+                # Fallback to deriving from script path
+                basename = os.path.basename(script_path)
+                if basename.endswith(".py"):
+                    module_name = basename[:-3]  # Remove .py extension
+                else:
+                    module_name = basename  # Use basename as is if no .py extension
+
         # Ensure module_name is a valid string
         if not module_name:
-             raise ValueError(f"Could not determine a valid module name for script {script_path}")
+            raise ValueError(
+                f"Could not determine a valid module name for script {script_path}"
+            )
 
         # Add script directory to path if necessary to allow relative imports within the script
         script_dir = os.path.dirname(script_path)
         if script_dir and script_dir not in sys.path:
-             sys.path.insert(0, script_dir)
+            sys.path.insert(0, script_dir)
 
         # Create spec and module
         spec = importlib.util.spec_from_file_location(module_name, script_path)
         if spec is None or spec.loader is None:
             raise ImportError(f"Could not load script from {script_path}")
-            
+
         module = importlib.util.module_from_spec(spec)
-        
+
         # Add the module to sys.modules to handle imports correctly
         sys.modules[module_name] = module
-        
+
         # Apply globals to the module
         # Filter out builtins potentially captured in globals to avoid overriding them
-        filtered_globals = {k: v for k, v in globals_dict.items() if not (k.startswith('__') and k.endswith('__'))}
+        filtered_globals = {
+            k: v
+            for k, v in globals_dict.items()
+            if not (k.startswith("__") and k.endswith("__"))
+        }
         module.__dict__.update(filtered_globals)
-        
+
         # Execute the module with loaded globals
         spec.loader.exec_module(module)
-        
+
         return module
+
+
+def replay_session_sequence(
+    starting_function_id: int,
+    db_path: str,
+    ignore_globals: Optional[List[str]] = None,
+    enable_monitoring: bool = True,
+) -> Optional[int]:
+    """
+    Replays a sequence of function calls from a monitoring session.
+
+    Loads the state (code, globals) once at the start, then executes the
+    original function call sequence, loading only locals for each subsequent call.
+    The new execution can optionally be recorded by the active PyMonitoring instance.
+
+    Args:
+        starting_function_id: The integer ID of the function execution within the
+                               original session to start the replay from.
+        db_path: Path to the database file.
+        ignore_globals: Optional list of global variable names to ignore when
+                        loading the initial state.
+        enable_monitoring: Whether to enable monitoring during replay (default: True)
+
+    Returns:
+        The integer ID of the first function call recorded in the new replay
+        sequence, or None if replay fails.
+
+    Raises:
+        ValueError: If IDs not found, function/module fails to load, etc.
+        RuntimeError: If PyMonitoring instance is not available and monitoring is enabled.
+    """
+    monitor_instance = PyMonitoring.get_instance()
+    if enable_monitoring and (not monitor_instance or not monitor_instance.session):
+        raise RuntimeError(
+            "PyMonitoring is not initialized or has no active session. Cannot replay with monitoring enabled."
+        )
+
+    # Use a separate session for reading original data to avoid conflicts
+    ReadSession = init_db(db_path)
+    read_session = ReadSession()
+
+    # Cache for loaded modules during replay
+    loaded_modules_cache: Dict[str, Any] = {}
+    first_replayed_call_id: Optional[int] = None
+    # We need ObjectManager associated with the read session
+    read_obj_manager = ObjectManager(read_session)
+    # We need FunctionCallRepository associated with the read session
+    read_call_repository = FunctionCallRepository(read_session)
+
+    # Backup monitor state (optional, but good practice)
+    original_parent_id_for_next_call = None
+    original_recording_state = None
+    if monitor_instance:
+        original_parent_id_for_next_call = monitor_instance._parent_id_for_next_call
+        if not enable_monitoring:
+            original_recording_state = monitor_instance.is_recording_enabled
+            monitor_instance.is_recording_enabled = False
+
+    try:
+        # 1. Load Starting State (using read_session)
+        logger.info(f"Loading starting function call info: {starting_function_id}")
+        start_call_info = read_call_repository.get_call(str(starting_function_id))
+        if not start_call_info:
+            raise ValueError(
+                f"Function execution ID {starting_function_id} not found in db: {db_path}"
+            )
+
+        # 2. Load Starting Function Object (load/reload module ONCE)
+        logger.info(
+            f"Loading starting function and module... :{start_call_info}, {loaded_modules_cache}"
+        )
+        start_function, start_module = _load_or_reload_function_and_module(
+            start_call_info.to_dict(), loaded_modules_cache, reload_module=True
+        )
+        logger.info(
+            f"Loaded starting function: {start_function.__name__} from module {start_module.__name__}"
+        )
+
+        # 3. Load Starting Args & Globals
+        logger.info("Loading starting arguments and globals...")
+        start_args, start_kwargs = _load_execution_data_from_call_info(
+            start_call_info.to_dict(), read_obj_manager
+        )
+        current_globals = _load_globals_from_call_info(
+            start_call_info.to_dict(), read_obj_manager, ignore_globals
+        )
+        logger.info(
+            f"Loaded {len(start_args)} args, {len(start_kwargs)} kwargs, {len(current_globals)} globals."
+        )
+
+        # 4. Inject Initial Globals
+        _inject_globals(start_module, start_function, current_globals)
+
+        # --- Start Replay Execution ---
+
+        # 5. Execute First Call (monitor will record if enabled)
+        if enable_monitoring and monitor_instance:
+            logger.info(f"Setting parent ID for next call to: {starting_function_id}")
+            monitor_instance._parent_id_for_next_call = starting_function_id
+
+        logger.info(f"Executing first replay call: {start_function.__name__}...")
+        start_function(*start_args, **start_kwargs)  # Execution happens here
+
+        # Check if the call was actually recorded by the monitor (only if monitoring enabled)
+        if enable_monitoring and monitor_instance:
+            first_replayed_call_id = monitor_instance._current_session_last_call_id
+            if monitor_instance._parent_id_for_next_call is not None:
+                # This means the flag wasn't reset by monitor_callback_function_start,
+                # likely because the function wasn't monitored or capture_call failed.
+                monitor_instance._parent_id_for_next_call = None  # Reset anyway
+                raise RuntimeError(
+                    f"First function call '{start_function.__name__}' was executed but not recorded by the monitor. Aborting replay."
+                )
+
+            logger.info(f"First replayed call recorded with ID: {first_replayed_call_id}")
+
+        # 6. Loop through subsequent original calls - use session ordering instead of next_call_id
+        # Note: UI filtering is separate from replay execution
+        original_current_call_id: Optional[int] = starting_function_id
+        while original_current_call_id is not None:
+            # Get the current call from the *original* sequence (using read_session)
+            original_call = read_session.get(
+                models.FunctionCall, original_current_call_id
+            )
+            if not original_call:
+                logger.warning(
+                    f"Warning: Could not find original call {original_current_call_id} in read session."
+                )
+                break
+            
+            # Find the next call in the session sequence using order_in_session
+            original_next_call_id = None
+            if original_call.session_id is not None and original_call.order_in_session is not None:
+                # Get the next call in the same session with the next order number
+                next_call = read_session.query(models.FunctionCall).filter(
+                    models.FunctionCall.session_id == original_call.session_id,
+                    models.FunctionCall.function == original_call.function,
+                    models.FunctionCall.order_in_session > original_call.order_in_session
+                ).first()
+                
+                if next_call:
+                    original_next_call_id = next_call.id
+            
+            if not original_next_call_id:
+                logger.info("Reached end of original sequence.")
+                break  # End of original chain
+
+            logger.info(f"Processing next original call ID: {original_next_call_id}")
+
+            # Fetch details of the next original call
+            next_call_info = read_call_repository.get_call_with_code(str(original_next_call_id))
+            if not next_call_info:
+                logger.warning(
+                    f"Warning: Could not get call info for original call {original_next_call_id}"
+                )
+                original_current_call_id = original_next_call_id  # Skip to next potential
+                continue
+
+            # Load function object (DO NOT reload module)
+            try:
+                next_function, next_module = _load_or_reload_function_and_module(
+                    next_call_info, loaded_modules_cache, reload_module=False
+                )
+            except Exception as load_exc:
+                logger.error(
+                    f"Error loading function/module for call {original_next_call_id}: {load_exc}. Skipping call."
+                )
+                original_current_call_id = original_next_call_id
+                continue
+
+            # Load LOCALS ONLY for this call
+            try:
+                next_args, next_kwargs = _load_execution_data_from_call_info(
+                    next_call_info, read_obj_manager
+                )
+            except Exception as locals_exc:
+                logger.error(
+                    f"Error loading locals for call {original_next_call_id}: {locals_exc}. Skipping call."
+                )
+                original_current_call_id = original_next_call_id
+                continue
+
+            # Execute the next function (monitor records it, linking automatically if enabled)
+            logger.info(f"Executing next replay call: {next_function.__name__}...")
+            try:
+                next_function(*next_args, **next_kwargs)
+                logger.info(f"Call {original_next_call_id} replayed successfully.")
+            except Exception as exec_exc:
+                logger.error(
+                    f"Error executing replayed call for original ID {original_next_call_id} ('{next_function.__name__}'): {exec_exc}"
+                )
+                logger.info("Stopping replay sequence due to execution error.")
+                break
+
+            # Move to the next call in the original sequence for the next iteration
+            original_current_call_id = original_next_call_id
+
+        # --- End Replay Loop ---
+
+        # 7. Commit monitor session to save all recorded calls from the replay (if monitoring enabled)
+        if enable_monitoring and monitor_instance:
+            logger.info(
+                f"Committing monitor session to save replayed calls (starting from {first_replayed_call_id})."
+            )
+            monitor_instance.session.commit()
+            logger.info("Replay sequence committed.")
+
+        return first_replayed_call_id  # Return ID of the start of the new branch
+
+    except Exception as e:
+        logger.error(f"Error during session replay: {e}")
+        traceback.print_exc()  # Print full traceback for debugging
+        # Rollback the *main* monitor session to undo potential partial recordings (if monitoring enabled)
+        if enable_monitoring and monitor_instance:
+            try:
+                monitor_instance.session.rollback()
+                logger.info("Rolled back main monitoring session due to error.")
+            except Exception as rb_err:
+                logger.error(f"Error rolling back main monitoring session: {rb_err}")
+        return None  # Indicate failure
     finally:
-        # Close the session
-        session.close() 
+        # Restore monitor state if backed up
+        if monitor_instance:
+            if original_parent_id_for_next_call is not None:
+                monitor_instance._parent_id_for_next_call = (
+                    original_parent_id_for_next_call
+                )
+            if original_recording_state is not None:
+                monitor_instance.is_recording_enabled = original_recording_state
+        # Close the separate read session
+        read_session.close()
+        logger.info("Replay function finished.")
+
 
 # Helper function (can be moved elsewhere if preferred)
-def _load_or_reload_function_and_module(call_info: FunctionCallInfo, 
-                                         loaded_modules_cache: Dict[str, Any], 
-                                         reload_module: bool = True) -> Tuple[Callable, Any]:
+def _load_or_reload_function_and_module(
+    call_info: Dict[str, Any],
+    loaded_modules_cache: Dict[str, Any],
+    reload_module: bool = True,
+) -> Tuple[Callable, Any]:
     """Loads/reloads module and gets function object based on call_info."""
-    function_name = call_info['function']
-    file_path = call_info['file']
+    function_name = call_info["function"]
+    file_path = call_info["file"]
     # Safely get module_path, handling if 'code' key exists but is None
-    code_info = call_info.get('code') # Get 'code' dict or None
-    module_path_from_info = code_info.get('module_path') if code_info else None
+    code_info = call_info.get("code")  # Get 'code' dict or None
+    module_path_from_info = code_info.get("module_path") if code_info else None
     module = None
-    module_key = None # Use file_path or module_path as key
+    module_key = None  # Use file_path or module_path as key
 
     # Prioritize file_path if it exists
-    if file_path and file_path.endswith('.py') and os.path.exists(file_path):
+    if file_path and file_path.endswith(".py") and os.path.exists(file_path):
         module_key = file_path
         if module_key in loaded_modules_cache:
             module = loaded_modules_cache[module_key]
         else:
             file_dir = os.path.dirname(file_path)
-            module_name_from_path = os.path.basename(file_path)[:-3]
+            module_name_from_path = os.path.basename(file_path)[
+                :-3
+            ]  # Remove .py extension
+
+            # Ensure the directory is in sys.path
             if file_dir and file_dir not in sys.path:
                 sys.path.insert(0, file_dir)
 
@@ -556,12 +775,15 @@ def _load_or_reload_function_and_module(call_info: FunctionCallInfo,
             if module_name_from_path in sys.modules and reload_module:
                 module = importlib.reload(sys.modules[module_name_from_path])
             elif module_name_from_path in sys.modules:
-                 module = sys.modules[module_name_from_path]
+                module = sys.modules[module_name_from_path]
             else:
                 module = importlib.import_module(module_name_from_path)
-            
+
             if module:
-                 loaded_modules_cache[module_key] = module
+                loaded_modules_cache[module_key] = module
+                
+                # FIX: Handle __main__ vs module name mapping for pickle compatibility
+                _setup_module_name_mapping(module, module_name_from_path)
 
     # Fallback to module_path from code info
     elif module_path_from_info:
@@ -572,276 +794,228 @@ def _load_or_reload_function_and_module(call_info: FunctionCallInfo,
             if module_path_from_info in sys.modules and reload_module:
                 module = importlib.reload(sys.modules[module_path_from_info])
             elif module_path_from_info in sys.modules:
-                 module = sys.modules[module_path_from_info]
+                module = sys.modules[module_path_from_info]
             else:
                 module = importlib.import_module(module_path_from_info)
-            
+
             if module:
-                 loaded_modules_cache[module_key] = module
+                loaded_modules_cache[module_key] = module
+                
+                # FIX: Handle __main__ vs module name mapping for pickle compatibility
+                _setup_module_name_mapping(module, module_path_from_info)
 
         if not module:
-            raise ValueError(f"Could not load module for function '{function_name}'. Checked file '{file_path}' and module path '{module_path_from_info}'.")
+            raise ValueError(
+                f"Could not load module for function '{function_name}'. Checked file '{file_path}' and module path '{module_path_from_info}'."
+            )
 
     # Handle qualified names (e.g., Class.method)
-    func_parts = function_name.split('.')
+    func_parts = function_name.split(".")
     obj = module
     try:
         for part in func_parts:
             obj = getattr(obj, part)
         function = obj
     except AttributeError:
-         # Check if module exists before accessing __name__
-         module_name_str = module.__name__ if module else "<unknown module>"
-         raise ValueError(f"Could not find function/method '{function_name}' in module '{module_name_str}'.")
-         
+        # Check if module exists before accessing __name__
+        module_name_str = module.__name__ if module else "<unknown module>"
+        raise ValueError(
+            f"Could not find function/method '{function_name}' in module '{module_name_str}'."
+        )
+
     if not callable(function):
-         raise ValueError(f"Attribute '{function_name}' found but is not callable.")
+        raise ValueError(f"Attribute '{function_name}' found but is not callable.")
 
     return function, module
 
+
+def _setup_module_name_mapping(module: Any, module_name: str):
+    """
+    Set up module name mapping to handle __main__ vs module name mismatch during pickle.
+    
+    This function ensures that classes defined in a script are available under both
+    the __main__ namespace (when run as script) and the module namespace (when imported).
+    """
+    try:
+        # Enhanced approach: Use metadata-driven normalization instead of simple mapping
+        logger.info(f"Setting up module mapping for {module_name}")
+        
+        # Ensure the module is available under both names in sys.modules
+        if '__main__' in sys.modules and module_name not in sys.modules:
+            sys.modules[module_name] = module
+            logger.info(f"Made module available as {module_name}")
+        elif module_name in sys.modules and '__main__' not in sys.modules:
+            sys.modules['__main__'] = module
+            logger.info("Made module available as __main__")
+        
+        # For all classes in the module, ensure they can be found under the correct module path
+        for name in dir(module):
+            attr = getattr(module, name)
+            if isinstance(attr, type):  # It's a class
+                # The PickleConfig will handle the module path normalization during pickle/unpickle
+                # We just need to ensure the class is accessible
+                logger.debug(f"Found class {name} in module {module_name}")
+                    
+    except Exception as e:
+        logger.warning(f"Error setting up module name mapping for {module_name}: {e}")
+
+
+def _ensure_class_availability_for_unpickling(obj_manager: ObjectManager, module: Any):
+    """
+    Ensure that classes are available in the correct namespace before unpickling objects.
+    
+    This function inspects the stored objects and tries to make their classes available
+    in the current execution context using the metadata-driven approach.
+    """
+    try:
+        # The ObjectManager now handles module path normalization automatically
+        # using stored metadata, so we just need to ensure basic module availability
+        
+        logger.info(f"Ensuring class availability for module {module.__name__}")
+        
+        # Make sure the module is available under common names
+        if module.__name__ not in sys.modules:
+            sys.modules[module.__name__] = module
+            
+        # If this is a main script, also make it available as __main__
+        if module.__name__ == "main" and '__main__' not in sys.modules:
+            sys.modules['__main__'] = module
+            logger.info("Made main module available as __main__")
+                            
+    except Exception as e:
+        logger.warning(f"Error ensuring class availability for unpickling: {e}")
+
+
 # Helper function
-def _load_execution_data_from_info(call_info: FunctionCallInfo, obj_manager: ObjectManager) -> Tuple[List[Any], Dict[str, Any]]:
+def _load_execution_data_from_call_info(
+    call_info: Dict[str, Any],
+    obj_manager: ObjectManager,
+    use_signature_parsing: bool = False,
+) -> Tuple[List[Any], Dict[str, Any]]:
     """Rehydrates args and kwargs from call_info locals."""
-    locals_dict = obj_manager.rehydrate_dict(call_info.get('locals', {}))
+    if not call_info:
+        raise ValueError("call_info cannot be None")
+
+    locals_refs = call_info.get("locals_refs", {})
+    locals_dict = obj_manager.rehydrate_dict(locals_refs)
+
     args: List[Any] = []
     kwargs: Dict[str, Any] = {}
-    
-    # Basic reconstruction (improve later if needed based on function signature)
-    # For now, assume all non-arg-looking keys are kwargs, others are args.
-    # This is a simplification and might need refinement based on actual function def.
-    
-    # A more robust way would parse the signature from call_info['code']['content']
-    # but let's start simple.
-    
-    # Simple approach: return all as kwargs for now
+
+    if use_signature_parsing:
+        # Try to get function code information to separate args from kwargs
+        code_definition_id = call_info.get("code_definition_id")
+        if code_definition_id is not None:
+            code_info = call_info.get("code")
+            code_content = code_info.get("content") if code_info else None
+
+            if code_content:
+                # Try to identify function parameters
+                # Look for def function_name(params): pattern
+                match = re.search(r"def\s+([^(]+)\s*\(([^)]*)\)", code_content)
+                if match:
+                    param_str = match.group(2)
+                    params = [p.strip() for p in param_str.split(",")]
+
+                    # Extract positional args based on parameter order
+                    args = []
+                    kwargs = {}
+                    for param in params:
+                        # Skip empty parameters
+                        if not param:
+                            continue
+
+                        # Handle default values
+                        if "=" in param:
+                            param_name = param.split("=")[0].strip()
+                            if param_name in locals_dict:
+                                kwargs[param_name] = locals_dict[param_name]
+                        else:
+                            # Remove any type annotations
+                            if ":" in param:
+                                param_name = param.split(":")[0].strip()
+                            else:
+                                param_name = param.strip()
+
+                            # Skip self/cls parameter for methods
+                            if param_name in ("self", "cls"):
+                                continue
+
+                            if param_name in locals_dict:
+                                args.append(locals_dict[param_name])
+
+                    return args, kwargs
+
+    # Fallback: return all as kwargs
     kwargs = locals_dict
-    args = [] 
-    
-    # Example refinement (requires parsing signature): 
-    # param_names = parse_signature(call_info.get('code', {}).get('content')) 
-    # for name in param_names:
-    #     if name in locals_dict:
-    #          args.append(locals_dict.pop(name))
-    # kwargs = locals_dict # Remaining are kwargs
+    args = []
 
     return args, kwargs
 
-def _load_pygame_event(call_info: FunctionCallInfo, obj_manager: ObjectManager) -> Tuple[List[Any], Dict[str, Any]]:
-    """Rehydrates Pygame event from call_info locals."""
-    if metadata:=call_info.get('call_metadata'):
-        if "events" in metadata:
-            metadata_dict = obj_manager.rehydrate_dict(metadata)
-            pygame = sys.modules['pygame']
-            print(f"Posting pygame events: {metadata_dict}")
-            for event in metadata_dict["events"]:
-                type = event["type"]
-                del event["type"]
-                print(f"Posting pygame event: {event}")
-                pygame.event.post(pygame.event.Event(type, event))
-
 
 # Helper function
-def _load_globals_from_info(call_info: FunctionCallInfo, obj_manager: ObjectManager, 
-                            ignore_globals: Optional[List[str]]) -> Dict[str, Any]:
+def _load_globals_from_call_info(
+    call_info: Dict[str, Any],
+    obj_manager: ObjectManager,
+    ignore_globals: Optional[List[str]],
+) -> Dict[str, Any]:
     """Rehydrates and filters globals from call_info."""
-    globals_dict = obj_manager.rehydrate_dict(call_info.get('globals', {}))
+    if not call_info:
+        raise ValueError("call_info cannot be None")
+
+    globals_refs = call_info.get("globals_refs", {})
+    globals_dict = obj_manager.rehydrate_dict(globals_refs)
     filtered_globals = {
-        k: v for k, v in globals_dict.items()
-        if not (k.startswith('__') and k.endswith('__')) and \
-            not (ignore_globals and k in ignore_globals)
+        k: v
+        for k, v in globals_dict.items()
+        if not (k.startswith("__") and k.endswith("__"))
+        and not (ignore_globals and k in ignore_globals)
     }
     return filtered_globals
+
 
 # Helper function
 def _inject_globals(module: Any, function: Callable, globals_dict: Dict[str, Any]):
     """Injects globals into module and function context."""
     if module:
         module.__dict__.update(globals_dict)
-    
+
     if function:
         try:
             # Update the function's own __globals__ dict as well
             function.__globals__.update(globals_dict)
         except (AttributeError, TypeError) as e:
-             print(f"Warning: Could not update __globals__ for function {getattr(function, '__name__', '<unknown>')}: {e}")
+            print(
+                f"Warning: Could not update __globals__ for function {getattr(function, '__name__', '<unknown>')}: {e}"
+            )
 
-def replay_session_from(
-    starting_function_id: int, 
-    db_path: str,
-    ignore_globals: Optional[List[str]] = None
-) -> Optional[int]:
+
+# Backward compatibility aliases
+def reanimate_function(*args, **kwargs):
     """
-    Replays a monitoring session sequence starting from a specific function call,
-    recording the new execution path linked to the original.
-
-    Loads the state (code, globals) once at the start, then executes the 
-    original function call sequence, loading only locals for each subsequent call.
-    The new execution is recorded by the active PyMonitoring instance.
-
-    Args:
-        starting_function_id: The integer ID of the function execution within the
-                               original session to start the replay from.
-        db_path: Path to the database file.
-        ignore_globals: Optional list of global variable names to ignore when
-                        loading the initial state.
-
-    Returns:
-        The integer ID of the first function call recorded in the new replay 
-        sequence, or None if replay fails.
-
-    Raises:
-        ValueError: If IDs not found, function/module fails to load, etc.
-        RuntimeError: If PyMonitoring instance is not available.
+    Deprecated: Use execute_function_call() instead.
+    This function is kept for backward compatibility.
     """
-    monitor_instance = PyMonitoring.get_instance()
-    if not monitor_instance or not monitor_instance.session:
-        raise RuntimeError("PyMonitoring is not initialized or has no active session. Cannot replay session.")
+    import warnings
 
-    # Use a separate session for reading original data to avoid conflicts
-    ReadSession = init_db(db_path)
-    read_session = ReadSession()
-    
-    # Cache for loaded modules during replay
-    loaded_modules_cache: Dict[str, Any] = {}
-    first_replayed_call_id: Optional[int] = None
-    # We need ObjectManager associated with the read session
-    read_obj_manager = ObjectManager(read_session) 
-    # We need CallTracker associated with the read session
-    read_call_tracker = FunctionCallTracker(read_session)
+    warnings.warn(
+        "reanimate_function() is deprecated. Use execute_function_call() instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return execute_function_call(*args, **kwargs)
 
-    # Backup monitor state (optional, but good practice)
-    original_parent_id_for_next_call = monitor_instance._parent_id_for_next_call
 
-    try:
-        # 1. Load Starting State (using read_session)
-        print(f"Loading starting function call info: {starting_function_id}")
-        start_call_info = read_call_tracker.get_call(str(starting_function_id))
-        if not start_call_info:
-            raise ValueError(f"Function execution ID {starting_function_id} not found in db: {db_path}")
+def replay_session_from(*args, **kwargs):
+    """
+    Deprecated: Use replay_session_sequence() instead.
+    This function is kept for backward compatibility.
+    """
+    import warnings
 
-        # 2. Load Starting Function Object (load/reload module ONCE)
-        print("Loading starting function and module...")
-        start_function, start_module = _load_or_reload_function_and_module(
-            start_call_info, loaded_modules_cache, reload_module=True
-        )
-        print(f"Loaded starting function: {start_function.__name__} from module {start_module.__name__}")
-
-        # 3. Load Starting Args & Globals
-        print("Loading starting arguments and globals...")
-        start_args, start_kwargs = _load_execution_data_from_info(start_call_info, read_obj_manager)
-        current_globals = _load_globals_from_info(start_call_info, read_obj_manager, ignore_globals)
-        print(f"Loaded {len(start_args)} args, {len(start_kwargs)} kwargs, {len(current_globals)} globals.")
-
-        # 4. Inject Initial Globals
-        _inject_globals(start_module, start_function, current_globals)
-
-        # 4.1 Inject Pygame Event if present
-        _load_pygame_event(start_call_info, read_obj_manager)
-
-        # --- Start Replay Execution --- 
-        
-        # 5. Execute First Call (monitor will record)
-        print(f"Setting parent ID for next call to: {starting_function_id}")
-        monitor_instance._parent_id_for_next_call = starting_function_id 
-        
-        print(f"Executing first replay call: {start_function.__name__}...")
-        start_function(*start_args, **start_kwargs) # Execution happens here
-        
-        # Check if the call was actually recorded by the monitor
-        first_replayed_call_id = monitor_instance._current_session_last_call_id
-        if monitor_instance._parent_id_for_next_call is not None: 
-             # This means the flag wasn't reset by monitor_callback_function_start, 
-             # likely because the function wasn't monitored or capture_call failed.
-             monitor_instance._parent_id_for_next_call = None # Reset anyway
-             raise RuntimeError(f"First function call '{start_function.__name__}' was executed but not recorded by the monitor. Aborting replay.")
-        
-        print(f"First replayed call recorded with ID: {first_replayed_call_id}")
-        
-        # 6. Loop through subsequent original calls
-        original_current_call_id: Optional[int] = starting_function_id
-        while original_current_call_id is not None:
-            # Get the *next* call ID from the *original* sequence (using read_session)
-            original_call = read_session.get(models.FunctionCall, original_current_call_id)
-            if not original_call:
-                 print(f"Warning: Could not find original call {original_current_call_id} in read session.")
-                 break 
-            
-            original_next_call_id = original_call.next_call_id
-            if not original_next_call_id:
-                 print("Reached end of original sequence.")
-                 break # End of original chain
-
-            print(f"Processing next original call ID: {original_next_call_id}")
-
-            # Fetch details of the next original call
-            next_call_info = read_call_tracker.get_call(str(original_next_call_id))
-            if not next_call_info:
-                 print(f"Warning: Could not get call info for original call {original_next_call_id}")
-                 original_current_call_id = original_next_call_id # Skip to next potential
-                 continue
-
-            # Load function object (DO NOT reload module)
-            try:
-                 next_function, next_module = _load_or_reload_function_and_module(
-                     next_call_info, loaded_modules_cache, reload_module=False
-                 )
-            except Exception as load_exc:
-                 print(f"Error loading function/module for call {original_next_call_id}: {load_exc}. Skipping call.")
-                 original_current_call_id = original_next_call_id
-                 continue
-
-            # Load LOCALS ONLY for this call
-            try:
-                 next_args, next_kwargs = _load_execution_data_from_info(next_call_info, read_obj_manager)
-            except Exception as locals_exc:
-                 print(f"Error loading locals for call {original_next_call_id}: {locals_exc}. Skipping call.")
-                 original_current_call_id = original_next_call_id
-                 continue
-            
-            try:
-                _load_pygame_event(next_call_info, read_obj_manager)
-            except Exception as pygame_exc:
-                print(f"Error loading pygame event for call {original_next_call_id}: {pygame_exc}. Skipping call.")
-                original_current_call_id = original_next_call_id
-                continue
-
-            # Execute the next function (monitor records it, linking automatically)
-            print(f"Executing next replay call: {next_function.__name__}...")
-            try:
-                 next_function(*next_args, **next_kwargs)
-                 print(f"Call {original_next_call_id} replayed successfully.")
-            except Exception as exec_exc:
-                 print(f"Error executing replayed call for original ID {original_next_call_id} ('{next_function.__name__}'): {exec_exc}")
-                 print("Stopping replay sequence due to execution error.")
-                 # Log the error in the *last recorded* function call maybe?
-                 # For now, just break the loop.
-                 break 
-
-            # Move to the next call in the original sequence for the next iteration
-            original_current_call_id = original_next_call_id
-
-        # --- End Replay Loop ---
-
-        # 7. Commit monitor session to save all recorded calls from the replay
-        print(f"Committing monitor session to save replayed calls (starting from {first_replayed_call_id}).")
-        monitor_instance.session.commit()
-        print("Replay sequence committed.")
-
-        return first_replayed_call_id # Return ID of the start of the new branch
-
-    except Exception as e:
-        print(f"Error during session replay: {e}")
-        traceback.print_exc() # Print full traceback for debugging
-        # Rollback the *main* monitor session to undo potential partial recordings
-        try:
-            monitor_instance.session.rollback()
-            print("Rolled back main monitoring session due to error.")
-        except Exception as rb_err:
-             print(f"Error rolling back main monitoring session: {rb_err}")
-        return None # Indicate failure
-    finally:
-        # Restore monitor state if backed up
-        monitor_instance._parent_id_for_next_call = original_parent_id_for_next_call
-        # Close the separate read session
-        read_session.close()
-        print("Replay function finished.") 
+    warnings.warn(
+        "replay_session_from() is deprecated. Use replay_session_sequence() instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return replay_session_sequence(*args, **kwargs)

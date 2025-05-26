@@ -1,21 +1,16 @@
 import inspect
+import atexit
 import types
 import sys
 import dis
-import uuid
 import datetime
 import logging
-import os
 import traceback
 import sqlite3
-from sqlalchemy import text, inspect as sqlainspect
-from sqlalchemy.orm.attributes import instance_state
 from .models import init_db, FunctionCall, MonitoringSession, StackSnapshot
-from .function_call import FunctionCallTracker
-from typing import Optional
-import time
-import typing
-from .representation import PickleConfig
+from .function_call import FunctionCallRepository
+from typing import Optional, Dict, Any
+from .representation import ObjectManager, PickleConfig
 
 # Configure logging - only show warnings and errors
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -37,14 +32,12 @@ class PyMonitoring:
         """
         return cls._instance
 
-    def __init__(self, db_path="monitoring.db", pickle_config=None):
+    def __init__(self, db_path="monitoring.db", pickle_config: Optional[PickleConfig] = None):
         if hasattr(self, 'initialized') and self._instance is not None:
             return
         self.initialized = True
         self.db_path = db_path
-        self.execution_stack = []
-        self.call_id_stack = []  # Stack to keep track of function call IDs
-        self.tracked_functions = {}  # Functions to track when inside a monitored context
+        self.call_stack : list[FunctionCall] = []  # Stack to keep track of FunctionCall objects instead of just IDs
         self.MONITOR_TOOL_ID = sys.monitoring.PROFILER_ID
         
         # Custom pickle configuration
@@ -54,11 +47,11 @@ class PyMonitoring:
         self.is_recording_enabled = True
         
         # Current session information
-        self.current_session = None  # Current monitoring session
+        self.current_session : Optional[MonitoringSession] = None  # Current monitoring session
         self.session_function_calls = {}  # Dict mapping function names to lists of call IDs
         self._current_session_first_call_id = None # ID of the first call in the current session chain
         self._current_session_last_call_id = None  # ID of the last call in the current session chain
-        self._parent_id_for_next_call: Optional[int] = None # Correct type hint
+        self._parent_id_for_next_call: Optional[int] = None
         
         # Initialize the database and managers
         try:
@@ -67,7 +60,8 @@ class PyMonitoring:
             
             # Initialize the function call tracker
             self.session = Session()
-            self.call_tracker = FunctionCallTracker(self.session, monitor=self, pickle_config=self.pickle_config)
+            self.call_tracker = FunctionCallRepository(self.session, pickle_config=self.pickle_config)
+            self.object_manager = ObjectManager(self.session, pickle_config=self.pickle_config)
             
             logger.info(f"Database initialized successfully at {self.db_path}")
         except Exception as e:
@@ -325,7 +319,82 @@ class PyMonitoring:
             
         # Add the call ID to the list
         self.session_function_calls[function_name].append(call_id)
-    
+
+    def _store_variables(self, variables: Dict[str, Any]) -> Dict[str, str]:
+        """Store variables and return a dictionary of variable names to object references"""
+        refs = {}
+        for name, value in variables.items():
+            # Skip special variables and functions
+            if name.startswith('__') or callable(value):
+                continue
+            try:
+                # Store the value and get its reference
+                ref = self.object_manager.store(value)
+                # Always store the reference, not the value
+                refs[name] = ref
+            except Exception as e:
+                # Log warning but continue if we can't store a variable
+                logger.warning(f"Could not store variable {name}: {e}")
+        return refs
+
+    def create_stack_snapshot(self, call_id: int, line_number: int, locals_dict: Dict[str, str], globals_dict: Dict[str, str], order_in_call: Optional[int] = None) -> Optional[StackSnapshot]:
+        """
+        Create a stack snapshot for a function call.
+        
+        Args:
+            call_id: The ID of the function call
+            line_number: The line number where the snapshot was taken
+            locals_dict: Dictionary of local variable references
+            globals_dict: Dictionary of global variable references
+            order_in_call: Position in the execution sequence (optional)
+            
+        Returns:
+            The created StackSnapshot object or None if creation fails
+        """
+        if self.call_tracker is None:
+            return None
+            
+        try:
+            # Get the function call
+            call = self.session.get(FunctionCall, call_id)
+            if not call:
+                logger.error(f"Function call {call_id} not found during stack snapshot creation")
+                return None
+            
+            # Find the previous snapshot if any
+            prev_snapshot = None
+            if order_in_call is not None and order_in_call > 0:
+                prev_snapshot = self.session.query(StackSnapshot).filter(
+                    StackSnapshot.function_call_id == call_id,
+                    StackSnapshot.order_in_call == order_in_call - 1
+                ).first()
+            
+            # Create the new snapshot
+            snapshot = StackSnapshot(
+                function_call_id=call_id,
+                line_number=line_number,
+                locals_refs=locals_dict,
+                globals_refs=globals_dict,
+                order_in_call=order_in_call
+            )
+            
+            # Set bidirectional link if previous snapshot exists
+            if prev_snapshot:
+                prev_snapshot.next_snapshot_id = snapshot.id
+            
+            self.session.add(snapshot)
+            
+            # If this is the first snapshot for this call, update the call record
+            if order_in_call == 0 or not call.first_snapshot_id:
+                call.first_snapshot_id = snapshot.id
+            
+            self.session.flush()  # Flush to get the ID
+            
+            return snapshot
+        except Exception as e:
+            logger.error(f"Error creating stack snapshot for call {call_id}: {e}")
+            logger.error(traceback.format_exc())
+            return None
 
     def monitor_callback_function_start(self, code: types.CodeType, offset):
         # Check if recording is enabled
@@ -357,16 +426,14 @@ class PyMonitoring:
         # If we found tracking information, verify it's in our call stack
         if tracking_function_name:
             # Only track this function if we're inside its tracking function
-            if not self.call_id_stack:
+            if not self.call_stack:
                 # We're not inside any monitored function, so don't track
                 return
             
             # We're inside some monitoring context, let's check if it matches
             # If this function was tracked by a specific function, verify it's in our stack
-            for call_id in self.call_id_stack:
-                # Get the function call from the database
-                call = self.session.get(FunctionCall, call_id)
-                if call and call.function == tracking_function_name:
+            for call in self.call_stack:
+                if call.function == tracking_function_name:
                     is_tracked_function = True
                     break
                     
@@ -396,7 +463,13 @@ class PyMonitoring:
         # Get hooks from the function object
         start_hooks = []
         if func_obj:
-            start_hooks = PyMonitoring._monitored_functions[func_name]["start_hooks"] or []
+            # Safely get start_hooks, handling case where function isn't registered
+            if func_name in PyMonitoring._monitored_functions:
+                start_hooks = PyMonitoring._monitored_functions[func_name]["start_hooks"] or []
+            else:
+                # Function not explicitly registered for monitoring, use empty hooks
+                logger.debug(f"Function '{func_name}' not found in _monitored_functions, using empty start_hooks")
+                start_hooks = []
             
         # Filter locals and globals based on the ignore list
         function_locals = {k: v for k, v in function_locals.items() if k not in ignored_variables}
@@ -408,16 +481,23 @@ class PyMonitoring:
             if inspect.isfunction(func_obj):
                 source_code = inspect.getsource(func_obj)
                 first_line_no = inspect.getsourcelines(func_obj)[1]  # This gets the starting line number
-                module_path = inspect.getmodule(func_obj).__file__
                 
-                # Get code definition ID by storing/retrieving
-                code_def_id = self.call_tracker.object_manager.store_code_definition(
-                    name=code.co_name, 
-                    type='function',
-                    module_path=module_path,
-                    code_content=source_code, 
-                    first_line_no=first_line_no
-                )
+                # Safely get the module path
+                module = inspect.getmodule(func_obj)
+                module_path = module.__file__ if module and hasattr(module, '__file__') else None
+                
+                # Only store code definition if we have all required info
+                if module_path:
+                    # Get code definition ID by storing/retrieving
+                    code_def_id = self.call_tracker.object_manager.store_code_definition(
+                        name=code.co_name, 
+                        type='function',
+                        module_path=module_path,
+                        code_content=source_code, 
+                        first_line_no=first_line_no
+                    )
+                else:
+                    code_def_id = None
             else:
                 code_def_id = None
         except Exception as e:
@@ -449,9 +529,12 @@ class PyMonitoring:
         except Exception:
             pass  # Use simple name if extraction fails
         
-        
-        # Capture the function call
+        # Create the function call directly (inlined capture_call)
         try:
+            # Store local and global variables
+            locals_refs = self._store_variables(function_locals)
+            globals_refs = self._store_variables(globals_used)
+
             # Check if a parent ID was set for replay
             parent_id = self._parent_id_for_next_call
             if parent_id is not None:
@@ -460,10 +543,10 @@ class PyMonitoring:
                 logger.info(f"Replay detected: Setting parent_call_id to {parent_id} for next call.")
             
             # If we're inside another monitored function (stack isn't empty), get the parent ID
-            if not parent_id and len(self.call_id_stack) > 0:
-                parent_id = self.call_id_stack[-1]
+            if not parent_id and len(self.call_stack) > 0:
+                parent_id = self.call_stack[-1].id
                 
-            # Calculate order in session
+            # Calculate order in session using existing calls count
             order_in_session = None
             if self.current_session is not None:
                 # Count existing calls in session
@@ -472,7 +555,7 @@ class PyMonitoring:
                 ).count()
                 order_in_session = count
                 
-            # Calculate order within parent function
+            # Calculate order within parent function using existing child calls count
             order_in_parent = None
             if parent_id is not None:
                 # Count existing child calls of this parent
@@ -480,55 +563,68 @@ class PyMonitoring:
                     FunctionCall.parent_call_id == parent_id
                 ).count()
                 order_in_parent = count
-            
-            # Capture the call with the order_in_session
-            call_id = self.call_tracker.capture_call(
-                function_qualname,
-                function_locals,
-                globals_used,
+
+            # Get the current session ID from the monitor instance, if available
+            current_session_id = None
+            if self.current_session:
+                current_session_id = self.current_session.id
+
+            # Create function call record directly
+            call = FunctionCall(
+                function=function_qualname,
+                file=file_name,
+                line=line_number,
+                start_time=datetime.datetime.now(),
+                locals_refs=locals_refs,
+                globals_refs=globals_refs,
                 code_definition_id=code_def_id,
-                file_name=file_name,
-                line_number=line_number,
-                initial_metadata=start_metadata,
-                order_in_session=order_in_session,
+                call_metadata=start_metadata,
                 parent_call_id=parent_id,
+                session_id=current_session_id,
+                order_in_session=order_in_session,
                 order_in_parent=order_in_parent
             )
             
-            if call_id is None:
-                # If capture_call failed, log and exit
-                logger.error(f"Failed to capture function call for {function_qualname}.")
+            self.session.add(call)
+            self.session.flush()  # Flush to get the ID
+            
+            if call.id is None:
+                logger.error(f"Failed to obtain ID for new FunctionCall for {function_qualname}")
+                self.session.rollback()
                 return
-
-            self.call_id_stack.append(call_id)
+            
+            # Add the FunctionCall object to the stack instead of just the ID
+            self.call_stack.append(call)
             
             # Track the first call in the session as the entry point
             if self._current_session_first_call_id is None:
-                self._current_session_first_call_id = call_id
-                logger.debug(f"Set first call ID for session to {call_id}")
+                self._current_session_first_call_id = call.id
+                logger.debug(f"Set first call ID for session to {call.id}")
 
             # Update the last call ID to the current one
-            self._current_session_last_call_id = call_id
+            self._current_session_last_call_id = call.id
             
             # If we have an active session, add this function call to it
-            if self.current_session is not None and call_id is not None:
-                self.add_function_call_to_session(function_qualname, call_id)
+            if self.current_session is not None and call.id is not None:
+                self.add_function_call_to_session(function_qualname, call.id)
+                
         except Exception as e:
             logger.error(f"Error capturing function call: {e}")
             logger.error(traceback.format_exc())
+            self.session.rollback()
 
     def monitor_callback_function_return(self, code: types.CodeType, offset, return_value):
         # Check if recording is enabled
         if not self.is_recording_enabled:
             return
             
-        if self.call_tracker is None or not self.call_id_stack:
+        if self.call_tracker is None or not self.call_stack:
             return
 
         collected_return_metadata = {}
         try:
-            # Get the call ID for this function
-            call_id = self.call_id_stack.pop()
+            # Get the FunctionCall object for this function
+            call = self.call_stack.pop()
             
             # Get the function object from the frame
             frame = inspect.currentframe()
@@ -537,7 +633,13 @@ class PyMonitoring:
             func_obj = frame.f_back.f_globals.get(code.co_name)
             return_hooks = []
             if func_obj:
-                return_hooks = PyMonitoring._monitored_functions[code.co_name]["return_hooks"] or []
+                # Safely get return_hooks, handling case where function isn't registered
+                if code.co_name in PyMonitoring._monitored_functions:
+                    return_hooks = PyMonitoring._monitored_functions[code.co_name]["return_hooks"] or []
+                else:
+                    # Function not explicitly registered for monitoring, use empty hooks
+                    logger.debug(f"Function '{code.co_name}' not found in _monitored_functions, using empty return_hooks")
+                    return_hooks = []
             
             # Execute return hooks if any
             for hook in return_hooks:
@@ -553,16 +655,29 @@ class PyMonitoring:
                     logger.error(f"Error executing return hook {hook.__name__} for {code.co_name}: {hook_exc}")
                     logger.error(traceback.format_exc())
             
-            # Capture the return value
-            self.call_tracker.capture_return(call_id, return_value)
-            
-            # Update metadata with hook results (if any)
-            if collected_return_metadata:
-                # Update metadata - the method handles merging internally
-                self.call_tracker.update_metadata(call_id, collected_return_metadata)
-            
-            # Commit the changes
-            self.session.commit()
+            # Inline capture_return functionality - store return value and update call
+            try:
+                return_ref = self.call_tracker.object_manager.store(return_value)
+                call.return_ref = return_ref
+                call.end_time = datetime.datetime.now()
+                
+                # Update metadata with hook results (if any)
+                if collected_return_metadata:
+                    # If there's existing metadata, merge it with the new data
+                    if call.call_metadata:
+                        # Create a new dict to avoid modifying the original
+                        updated_metadata = dict(call.call_metadata)
+                        updated_metadata.update(collected_return_metadata)
+                        call.call_metadata = updated_metadata
+                    else:
+                        call.call_metadata = collected_return_metadata
+                
+                # Commit the changes
+                self.session.commit()
+                
+            except Exception as e:
+                logger.warning(f"Could not store return value: {e}")
+                self.session.rollback()
             
         except Exception as e:
             logger.error(f"Error capturing function return: {e}")
@@ -638,9 +753,9 @@ class PyMonitoring:
         
         try:
             # Get the current function call from the stack
-            if not self.call_id_stack:
+            if not self.call_stack:
                 return
-            current_call_id = self.call_id_stack[-1]
+            current_call = self.call_stack[-1]
             
             # Get function's locals and globals
             function_locals = {}
@@ -669,11 +784,11 @@ class PyMonitoring:
             try:
                 # Get the current snapshot count to use as order_in_call
                 snapshots_count = self.session.query(StackSnapshot).filter(
-                    StackSnapshot.function_call_id == current_call_id
+                    StackSnapshot.function_call_id == current_call.id
                 ).count()
                 
-                snapshot = self.call_tracker.create_stack_snapshot(
-                    current_call_id,
+                snapshot = self.create_stack_snapshot(
+                    current_call.id,
                     line_number,
                     function_locals,
                     globals_used,
@@ -787,7 +902,11 @@ def pymonitor(mode="function", ignore=None, start_hooks=None, return_hooks=None,
                 
                 # Use function mode for tracked functions to avoid overhead
                 tracked_events = sys.monitoring.events.PY_START | sys.monitoring.events.PY_RETURN
-                sys.monitoring.set_local_events(sys.monitoring.PROFILER_ID, tracked_func.__code__, tracked_events)
+                if not hasattr(tracked_func, '__code__'):
+                    logger.warning(f"Tracked function {tracked_func.__name__} has no __code__ attribute, skipping monitoring")
+                    continue
+                else:
+                    sys.monitoring.set_local_events(sys.monitoring.PROFILER_ID, tracked_func.__code__, tracked_events)
 
         return func
     
@@ -822,7 +941,6 @@ def init_monitoring(*args, **kwargs):
     # If custom_picklers is specified but pickle_config is not,
     # create a new pickle_config with the custom picklers
     if 'custom_picklers' in kwargs and 'pickle_config' not in kwargs:
-        from .representation import PickleConfig
         kwargs['pickle_config'] = PickleConfig(custom_picklers=kwargs.pop('custom_picklers'))
     # If both are specified, update the existing pickle_config
     elif 'custom_picklers' in kwargs and 'pickle_config' in kwargs:
@@ -833,8 +951,7 @@ def init_monitoring(*args, **kwargs):
     monitor = PyMonitoring(*args, **kwargs)
     return monitor
 
-# Register an atexit handler to ensure logs are flushed on program exit
-import atexit
+
 
 def _cleanup_monitoring():
     if PyMonitoring._instance is not None:
@@ -851,5 +968,6 @@ if "pygame" in sys.modules:
     def get(*args, **kwargs):
         result = pygame.event._old_get(*args, **kwargs)
         return result
+    #get._monitoringpy_ignore_code_definition = True
     pygame.event.get = get
     

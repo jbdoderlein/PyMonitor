@@ -16,10 +16,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from monitoringpy.core import (
     init_db, StoredObject, FunctionCall, StackSnapshot, 
-    CodeDefinition, FunctionCallTracker, ObjectManager,
+    CodeDefinition, FunctionCallRepository, ObjectManager,
     MonitoringSession
 )
-from monitoringpy.core.function_call import FunctionCallInfo
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -109,25 +108,25 @@ def serialize_stored_value(ref: Optional[str]) -> Dict[str, Any]:
         logger.error(f"Error serializing value for ref {ref}: {e}")
         return {"value": f"<error: {str(e)}>", "type": "Error"}
 
-def serialize_call_info(call_info: FunctionCallInfo) -> Dict[str, Any]:
+def serialize_call_info(call_info: Dict[str, Any]) -> Dict[str, Any]:
     """Serialize a function call info object to a JSON-compatible dict"""
     
     result = {k: v for k, v in call_info.items()}
     
         
     # Process locals
-    if "locals" in call_info and call_info["locals"]:
+    if "locals_refs" in call_info and call_info["locals_refs"]:
         locals_dict = {}
-        for name, value in call_info["locals"].items():
+        for name, value in call_info["locals_refs"].items():
             locals_dict[name] = serialize_stored_value(value)
         result["locals"] = locals_dict
     else:
         result["locals"] = {}
     
     # Process globals
-    if "globals" in call_info and call_info["globals"]:
+    if "globals_refs" in call_info and call_info["globals_refs"]:
         globals_dict = {}
-        for name, value in call_info["globals"].items():
+        for name, value in call_info["globals_refs"].items():
             if not name.startswith("__") and not name.endswith("__"):
                 globals_dict[name] = serialize_stored_value(value)
         result["globals"] = globals_dict
@@ -135,8 +134,8 @@ def serialize_call_info(call_info: FunctionCallInfo) -> Dict[str, Any]:
         result["globals"] = {}
     
     # Process return value
-    if "return_value" in call_info:
-        result["return_value"] = serialize_stored_value(call_info["return_value"])
+    if "return_ref" in call_info:
+        result["return_value"] = serialize_stored_value(call_info["return_ref"])
         
     return result
 
@@ -703,7 +702,7 @@ async def get_function_call(call_id: str):
         if call_tracker is None or session is None:
             raise ValueError("Session is not initialized")
                 
-        call_info = call_tracker.get_call(call_id)
+        call_info = call_tracker.get_call_with_code(call_id)
         if call_info is None:
             raise ValueError(f"Function call {call_id} not found")
         
@@ -906,7 +905,7 @@ def initialize_db(db_file: str):
     Session = init_db(db_file)
     session = Session()
     object_manager = ObjectManager(session)
-    call_tracker = FunctionCallTracker(session)
+    call_tracker = FunctionCallRepository(session)
     db_path = db_file
     
     logger.info(f"Database initialized: {db_file}")

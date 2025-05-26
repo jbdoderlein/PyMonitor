@@ -1,7 +1,8 @@
-from sqlalchemy import Column, String, DateTime, Integer, ForeignKey, create_engine, LargeBinary, Boolean, JSON, Text, desc, Index
+from sqlalchemy import String, DateTime, Integer, ForeignKey, create_engine, LargeBinary, Boolean, JSON, Text, desc, Index
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, relationship, object_session
+from sqlalchemy.orm import sessionmaker, relationship, Mapped, mapped_column
 from sqlalchemy.sql import func
+from typing import Optional, Dict, Any, List
 import datetime
 import os
 import logging
@@ -17,10 +18,10 @@ class ObjectIdentity(Base):
     """Model for tracking object identity"""
     __tablename__ = 'object_identities'
 
-    id = Column(Integer, primary_key=True)
-    identity_hash = Column(String, unique=True, nullable=False)
-    name = Column(String, nullable=True)
-    creation_time = Column(DateTime, default=datetime.datetime.now)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    identity_hash: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    creation_time: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.now)
     
     # Relationship - one identity has many object states/versions
     versions = relationship("StoredObject", back_populates="identity", order_by="StoredObject.version_number")
@@ -47,13 +48,13 @@ class StoredObject(Base):
     """Model for storing object versions"""
     __tablename__ = 'stored_objects'
 
-    id = Column(String, primary_key=True)
-    identity_id = Column(Integer, ForeignKey('object_identities.id'), nullable=False)
-    version_number = Column(Integer, nullable=False)
-    type_name = Column(String, nullable=False)
-    is_primitive = Column(Boolean, nullable=False)
-    primitive_value = Column(String, nullable=True)
-    pickle_data = Column(LargeBinary, nullable=True)
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    identity_id: Mapped[int] = mapped_column(Integer, ForeignKey('object_identities.id'), nullable=False)
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    type_name: Mapped[str] = mapped_column(String, nullable=False)
+    is_primitive: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    primitive_value: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    pickle_data: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True)
     
     # Relationships
     identity = relationship("ObjectIdentity", back_populates="versions")
@@ -68,19 +69,19 @@ class StackSnapshot(Base):
     """
     __tablename__ = 'stack_snapshots'
 
-    id = Column(Integer, primary_key=True)
-    function_call_id = Column(Integer, ForeignKey('function_calls.id'), nullable=False)
-    line_number = Column(Integer, nullable=False)
-    timestamp = Column(DateTime, default=datetime.datetime.now)
-    locals_refs = Column(JSON, nullable=False, default=dict)  # Dict[str, str] mapping variable names to object refs
-    globals_refs = Column(JSON, nullable=False, default=dict)  # Dict[str, str] mapping variable names to object refs
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    function_call_id: Mapped[int] = mapped_column(Integer, ForeignKey('function_calls.id'), nullable=False)
+    line_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    timestamp: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.now)
+    locals_refs: Mapped[Dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)  # Dict[str, str] mapping variable names to object refs
+    globals_refs: Mapped[Dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)  # Dict[str, str] mapping variable names to object refs
     
     # Chronological ordering within a function call
-    order_in_call = Column(Integer, nullable=True)  # Position in the execution sequence
+    order_in_call: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # Position in the execution sequence
     
     # Relationships
     function_call = relationship("FunctionCall", back_populates="stack_snapshots")
-    next_snapshot_id = Column(Integer, ForeignKey('stack_snapshots.id'), nullable=True)
+    next_snapshot_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey('stack_snapshots.id'), nullable=True)
     next_snapshot = relationship("StackSnapshot", foreign_keys=[next_snapshot_id], remote_side=[id], uselist=False)
     
     def get_previous_snapshot(self, session):
@@ -111,36 +112,36 @@ class FunctionCall(Base):
     """Model for storing function call information"""
     __tablename__ = 'function_calls'
 
-    id = Column(Integer, primary_key=True)
-    function = Column(String, nullable=False)
-    file = Column(String, nullable=True)
-    line = Column(Integer, nullable=True)
-    start_time = Column(DateTime, nullable=False)
-    end_time = Column(DateTime, nullable=True)
-    call_metadata = Column(JSON, nullable=True)  # For storing additional data like PyRAPL measurements
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    function: Mapped[str] = mapped_column(String, nullable=False)
+    file: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    line: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    start_time: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=False)
+    end_time: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
+    call_metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)  # For storing additional data like PyRAPL measurements
     
     # Store references to objects
-    locals_refs = Column(JSON, nullable=False, default=dict)  # Dict[str, str] mapping variable names to object refs
-    globals_refs = Column(JSON, nullable=False, default=dict)  # Dict[str, str] mapping variable names to object refs
-    return_ref = Column(String, nullable=True)  # Reference to return value in object manager
+    locals_refs: Mapped[Dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)  # Dict[str, str] mapping variable names to object refs
+    globals_refs: Mapped[Dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)  # Dict[str, str] mapping variable names to object refs
+    return_ref: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # Reference to return value in object manager
 
     # Code version tracking
-    code_definition_id = Column(String, ForeignKey('code_definitions.id'), nullable=True)
+    code_definition_id: Mapped[Optional[str]] = mapped_column(String, ForeignKey('code_definitions.id'), nullable=True)
     
     # Session relationship
-    session_id = Column(Integer, ForeignKey('monitoring_sessions.id'), nullable=True)
+    session_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey('monitoring_sessions.id'), nullable=True)
 
     # Hierarchical structure - parent/child relationships
-    parent_call_id = Column(Integer, ForeignKey('function_calls.id'), nullable=True)
+    parent_call_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey('function_calls.id'), nullable=True)
     
     # Ordering within the parent function (position among siblings)
-    order_in_parent = Column(Integer, nullable=True)
+    order_in_parent: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     
     # Chronological ordering within a session
-    order_in_session = Column(Integer, nullable=True)  # Position in the session sequence
+    order_in_session: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # Position in the session sequence
     
     # First snapshot reference for efficient stack trace retrieval
-    first_snapshot_id = Column(Integer, nullable=True)
+    first_snapshot_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     
     # Relationships
     session = relationship("MonitoringSession", foreign_keys=[session_id], back_populates="function_calls")
@@ -202,6 +203,27 @@ class FunctionCall(Base):
             
         return node
 
+    def to_dict(self):
+        """Convert the FunctionCall object to a dictionary for API responses"""
+        return {
+            "id": self.id,
+            "function": self.function,
+            "file": self.file,
+            "line": self.line,
+            "start_time": self.start_time.isoformat() if self.start_time else None,
+            "end_time": self.end_time.isoformat() if self.end_time else None,
+            "call_metadata": self.call_metadata,
+            "locals_refs": self.locals_refs,
+            "globals_refs": self.globals_refs,
+            "return_ref": self.return_ref,
+            "code_definition_id": self.code_definition_id,
+            "session_id": self.session_id,
+            "parent_call_id": self.parent_call_id,
+            "order_in_parent": self.order_in_parent,
+            "order_in_session": self.order_in_session,
+            "first_snapshot_id": self.first_snapshot_id
+        }
+
 class CodeDefinition(Base):
     """Represents a code definition (class, function, etc.).
     
@@ -210,13 +232,13 @@ class CodeDefinition(Base):
     """
     __tablename__ = 'code_definitions'
 
-    id = Column(String, primary_key=True)  # Hash of the code content
-    name = Column(String, nullable=False)  # Class/function name
-    type = Column(String, nullable=False)  # 'class' or 'function'
-    module_path = Column(String, nullable=False)  # Full module path
-    code_content = Column(Text, nullable=False)  # The actual code
-    first_line_no = Column(Integer, nullable=True)  # Line offset in the file
-    creation_time = Column(DateTime, server_default=func.now())
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # Hash of the code content
+    name: Mapped[str] = mapped_column(String, nullable=False)  # Class/function name
+    type: Mapped[str] = mapped_column(String, nullable=False)  # 'class' or 'function'
+    module_path: Mapped[str] = mapped_column(String, nullable=False)  # Full module path
+    code_content: Mapped[str] = mapped_column(Text, nullable=False)  # The actual code
+    first_line_no: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # Line offset in the file
+    creation_time: Mapped[datetime.datetime] = mapped_column(DateTime, server_default=func.now())
     
     # Direct relationships
     function_calls = relationship("FunctionCall", back_populates="code_definition")
@@ -234,10 +256,10 @@ class CodeObjectLink(Base):
     """
     __tablename__ = 'code_object_links'
 
-    id = Column(Integer, primary_key=True)
-    object_id = Column(String, ForeignKey('stored_objects.id'), nullable=False)
-    definition_id = Column(String, ForeignKey('code_definitions.id'), nullable=False)
-    timestamp = Column(DateTime, server_default=func.now())
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    object_id: Mapped[str] = mapped_column(String, ForeignKey('stored_objects.id'), nullable=False)
+    definition_id: Mapped[str] = mapped_column(String, ForeignKey('code_definitions.id'), nullable=False)
+    timestamp: Mapped[datetime.datetime] = mapped_column(DateTime, server_default=func.now())
     
     # Add indexes for faster queries
     __table_args__ = (
@@ -254,14 +276,14 @@ class MonitoringSession(Base):
     """
     __tablename__ = 'monitoring_sessions'
 
-    id = Column(Integer, primary_key=True)
-    name = Column(String, nullable=True)  # Optional name for the session
-    description = Column(String, nullable=True)  # Optional description
-    start_time = Column(DateTime, nullable=False, default=datetime.datetime.now)
-    end_time = Column(DateTime, nullable=True)  # Will be filled when session ends
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # Optional name for the session
+    description: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # Optional description
+    start_time: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=False, default=datetime.datetime.now)
+    end_time: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)  # Will be filled when session ends
     
     # Metadata about the session - renamed to avoid SQLAlchemy reserved name conflict
-    session_metadata = Column(JSON, nullable=True)  # For any additional data
+    session_metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)  # For any additional data
     
     # Relationships
     function_calls = relationship("FunctionCall", foreign_keys=[FunctionCall.session_id], back_populates="session")
@@ -269,9 +291,13 @@ class MonitoringSession(Base):
     @property
     def duration(self):
         """Return the duration of the session in seconds, or None if session is still active"""
-        if not self.end_time:
+        end_time_value = getattr(self, 'end_time', None)
+        if not end_time_value:
             return None
-        return (self.end_time - self.start_time).total_seconds()
+        start_time_value = getattr(self, 'start_time', None)
+        if not start_time_value:
+            return None
+        return (end_time_value - start_time_value).total_seconds()
     
     def get_function_calls_by_name(self, session, function_name):
         """Get all function calls with the given name in this session

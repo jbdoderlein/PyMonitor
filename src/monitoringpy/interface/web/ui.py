@@ -19,7 +19,7 @@ except ImportError:
     sys.exit(1)
 
 from monitoringpy.core import (
-    init_db, FunctionCallTracker, ObjectManager
+    init_db, FunctionCallRepository, ObjectManager
 )
 from monitoringpy.interface.web.api import serialize_call_info
 
@@ -147,7 +147,7 @@ class WebUIExplorer:
         Session = init_db(self.db_file)
         self.session = Session()
         self.object_manager = ObjectManager(self.session)
-        self.call_tracker = FunctionCallTracker(self.session)
+        self.call_tracker = FunctionCallRepository(self.session)
         
         # Set global variables for Flask app
         call_tracker = self.call_tracker
