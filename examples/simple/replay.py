@@ -242,10 +242,64 @@ def demonstrate_replay_capabilities():
         traceback.print_exc()
     
     # ========================================
-    # 6. Show session summary
+    # 6. Replay complex function sequence WITH mocking
     # ========================================
     print("\n" + "=" * 40)
-    print("6. Replay Session Summary")
+    print("6. Replaying complex function sequence with get_event mocking")
+    print("=" * 40)
+    
+    try:
+        # Get the first complex_function call to start the sequence
+        first_complex_call = complex_calls[0]
+        
+        print(f"🔄 Replaying sequence starting from complex_function (ID: {first_complex_call.id}) with get_event mocking...")
+        print("📝 This will replay the entire sequence of complex_function calls using original recorded get_event values")
+        
+        result6 = replay_session_sequence(
+            first_complex_call.id,
+            "main.db",
+            mock_functions=["get_event"],
+            enable_monitoring=True
+        )
+        print(f"✅ Complex sequence replay (with mocking) started with call ID: {result6}")
+        
+        # Verify that the mocked sequence produced consistent results
+        with monitoringpy.core.reanimation.get_db_session("main.db") as session:
+            # Get the newly created calls from this replay
+            new_replay_calls = session.query(FunctionCall).filter(
+                FunctionCall.session_id == replay_session_id,
+                FunctionCall.function == "complex_function",
+                FunctionCall.id >= result6  # Only calls from this latest replay
+            ).order_by(FunctionCall.order_in_session).all()
+            
+            print(f"\n📊 Sequence replay created {len(new_replay_calls)} new complex_function calls:")
+            
+            # Compare results with original calls
+            for i, (original_call, replayed_call) in enumerate(zip(complex_calls, new_replay_calls)):
+                # Verify that custom metrics are also preserved
+                if (original_call.call_metadata and replayed_call.call_metadata and
+                    "custom_return_metric" in original_call.call_metadata and
+                    "custom_return_metric" in replayed_call.call_metadata):
+                    
+                    original_metric = original_call.call_metadata["custom_return_metric"]
+                    replayed_metric = replayed_call.call_metadata["custom_return_metric"]
+                    print(f"     Original metric: {original_metric}")
+                    print(f"     Replayed metric: {replayed_metric}")
+                    print(f"     Metric match: {'✅' if original_metric == replayed_metric else '❌'}")
+        
+        print("📝 Note: With mocking, get_event() returns the exact same values as in the original execution")
+        print("📝 This ensures deterministic replay of the entire sequence")
+        
+    except Exception as e:
+        print(f"❌ Error replaying complex sequence with mocking: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    # ========================================
+    # 7. Show session summary
+    # ========================================
+    print("\n" + "=" * 40)
+    print("7. Replay Session Summary")
     print("=" * 40)
     
     # End the replay session

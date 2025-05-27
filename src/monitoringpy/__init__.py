@@ -7,7 +7,7 @@ from .core import (
     init_monitoring,
     pymonitor,
     PyMonitoring,
-    FunctionCallTracker,
+    FunctionCallRepository,
     CodeManager,
     ObjectManager,
     StoredObject,
@@ -17,7 +17,6 @@ from .core import (
     CodeDefinition,
     CodeObjectLink,
     MonitoringSession,
-    delete_function_execution,
     load_execution_data,
     reanimate_function,
     load_snapshot,
@@ -45,7 +44,7 @@ __all__ = [
     # Core functionality
     'init_db',
     'PyMonitoring',
-    'FunctionCallTracker',
+    'FunctionCallRepository',
     'CodeManager',
     'ObjectManager',
     #decorators
@@ -76,7 +75,6 @@ __all__ = [
     'load_execution_data',
     'reanimate_function',
     'run_with_state',
-    'delete_function_execution',
     'load_snapshot',
     'load_snapshot_in_frame',
     'replay_session_from',

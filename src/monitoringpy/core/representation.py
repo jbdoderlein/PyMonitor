@@ -73,15 +73,9 @@ class PickleConfig:
                 else:
                     module = importlib.import_module(full_module_name)
                 
-                # Look for reducer functions and register them
-                for attr_name in dir(module):
-                    if attr_name.startswith('reduce_'):
-                        reducer = getattr(module, attr_name)
-                        if callable(reducer):
-                            # Try to determine the type this reducer is for
-                            # This is a simple heuristic - you might want to make this more sophisticated
-                            type_name = attr_name[7:]  # Remove 'reduce_' prefix
-                            logger.info(f"Registered custom reducer for {type_name}")
+                if module and hasattr(module, 'get_dispatch_table'):
+                    dispatch_table = module.get_dispatch_table()
+                    self.dispatch_table.update(dispatch_table)
                             
             except Exception as e:
                 logger.error(f"Error loading custom pickler for {module_name}: {e}")

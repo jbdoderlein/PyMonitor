@@ -18,6 +18,7 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
+    "debugpy>=1.8.14",
     "fastapi>=0.115.12",
     "flask>=2.0.0",
     "flask-cors>=4.0.0",

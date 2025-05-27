@@ -16,6 +16,7 @@ from .representation import ObjectManager, PickleConfig
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+MONITOR_TOOL_ID = sys.monitoring.PROFILER_ID
 
 class PyMonitoring:
     _instance = None
@@ -38,7 +39,7 @@ class PyMonitoring:
         self.initialized = True
         self.db_path = db_path
         self.call_stack : list[FunctionCall] = []  # Stack to keep track of FunctionCall objects instead of just IDs
-        self.MONITOR_TOOL_ID = sys.monitoring.PROFILER_ID
+        self.MONITOR_TOOL_ID = MONITOR_TOOL_ID
         
         # Custom pickle configuration
         self.pickle_config = pickle_config
@@ -400,7 +401,7 @@ class PyMonitoring:
         # Check if recording is enabled
         if not self.is_recording_enabled:
             return
-            
+        
         if self.call_tracker is None:
             return
         current_frame = inspect.currentframe()
@@ -412,6 +413,7 @@ class PyMonitoring:
         
         # Get the function object from the frame
         func_name = code.co_name
+        
         func_obj = frame.f_globals.get(func_name)
         
         # Check if this is a tracked function and if so, 
@@ -858,8 +860,8 @@ def pymonitor(mode="function", ignore=None, start_hooks=None, return_hooks=None,
         logger.info(f"Applying pymonitor decorator to function: {func.__name__}")
         
         # Ensure monitoring tool is initialized
-        if sys.monitoring.get_tool(sys.monitoring.PROFILER_ID) is None:
-            sys.monitoring.use_tool_id(sys.monitoring.PROFILER_ID, "py_monitoring")
+        if sys.monitoring.get_tool(MONITOR_TOOL_ID) is None:
+            sys.monitoring.use_tool_id(MONITOR_TOOL_ID, "py_monitoring")
         
         # Set events based on mode
         if mode == "line":
@@ -870,7 +872,7 @@ def pymonitor(mode="function", ignore=None, start_hooks=None, return_hooks=None,
             events = sys.monitoring.events.PY_START | sys.monitoring.events.PY_RETURN
         
         # Enable monitoring for this function
-        sys.monitoring.set_local_events(sys.monitoring.PROFILER_ID, func.__code__, events)
+        sys.monitoring.set_local_events(MONITOR_TOOL_ID, func.__code__, events)
         
         # Store metadata on the function object
         PyMonitoring._monitored_functions[func.__name__] = {
@@ -883,7 +885,6 @@ def pymonitor(mode="function", ignore=None, start_hooks=None, return_hooks=None,
         # Also enable monitoring for tracked functions
         for tracked_func in track:
             if callable(tracked_func):
-
                 # Mark the tracked function with the parent that's tracking it
                 
                 PyMonitoring._tracked_functions[tracked_func.__name__] = {
@@ -897,7 +898,6 @@ def pymonitor(mode="function", ignore=None, start_hooks=None, return_hooks=None,
                         "return_hooks": [],
                         "tracked_functions": []
                     }
-                
                 logger.info(f"Enabling monitoring for tracked function: {tracked_func.__name__} (tracked by {func.__name__})")
                 
                 # Use function mode for tracked functions to avoid overhead
@@ -906,7 +906,7 @@ def pymonitor(mode="function", ignore=None, start_hooks=None, return_hooks=None,
                     logger.warning(f"Tracked function {tracked_func.__name__} has no __code__ attribute, skipping monitoring")
                     continue
                 else:
-                    sys.monitoring.set_local_events(sys.monitoring.PROFILER_ID, tracked_func.__code__, tracked_events)
+                    sys.monitoring.set_local_events(MONITOR_TOOL_ID, tracked_func.__code__, tracked_events)
 
         return func
     
@@ -959,15 +959,3 @@ def _cleanup_monitoring():
 
 atexit.register(_cleanup_monitoring)
 
-# Module replacmeent registering
-# Pygame
-if "pygame" in sys.modules:
-    pygame = sys.modules["pygame"]
-    # Event get
-    pygame.event._old_get = pygame.event.get
-    def get(*args, **kwargs):
-        result = pygame.event._old_get(*args, **kwargs)
-        return result
-    #get._monitoringpy_ignore_code_definition = True
-    pygame.event.get = get
-    

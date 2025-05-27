@@ -216,37 +216,8 @@ def execute_function_call(
             _inject_globals(module, function_obj, globals_dict)
 
             # Mock functions if provided
-            if mock_function:
-                fct = (
-                    session.query(models.FunctionCall)
-                    .filter_by(id=function_execution_id)
-                    .first()
-                )
-                if fct:
-                    subcalls = fct.get_child_calls(session)
-                else:
-                    subcalls = []
-                if subcalls:
-                    possible_names = set(map(lambda x: x.function, subcalls))
-                    return_values_dict = defaultdict(list)
-                    for subcall in subcalls:
-                        return_values_dict[subcall.function].append(
-                            subcall.return_ref
-                        )
-                    # convert to generators
-                    return_values_dict = {
-                        k: (obj_manager.get(x)[0] for x in v)
-                        for k, v in return_values_dict.items()
-                    }
+            _load_mock_functions(session, function_execution_id, obj_manager, module, mock_function)
 
-                    for func_name in mock_function:
-                        if func_name in possible_names:
-                            if func_name in module.__dict__:
-                                module.__dict__[f"_old_{func_name}"] = module.__dict__[func_name]
-                                module.__dict__[func_name] = lambda *args, **kwargs: next(return_values_dict[func_name])
-                            else:
-                                pass #TODO
-            
             # Execute the function
             result = function_obj(*args, **kwargs)
 
@@ -514,6 +485,7 @@ def replay_session_sequence(
     db_path: str,
     ignore_globals: Optional[List[str]] = None,
     enable_monitoring: bool = True,
+    mock_functions: Optional[List[str]] = None,
 ) -> Optional[int]:
     """
     Replays a sequence of function calls from a monitoring session.
@@ -529,7 +501,7 @@ def replay_session_sequence(
         ignore_globals: Optional list of global variable names to ignore when
                         loading the initial state.
         enable_monitoring: Whether to enable monitoring during replay (default: True)
-
+        mock_functions: Optional list of function names to mock during replay
     Returns:
         The integer ID of the first function call recorded in the new replay
         sequence, or None if replay fails.
@@ -599,6 +571,10 @@ def replay_session_sequence(
 
         # 4. Inject Initial Globals
         _inject_globals(start_module, start_function, current_globals)
+
+        # 5. Mock Functions
+        if mock_functions:
+            _load_mock_functions(read_session, starting_function_id, read_obj_manager, start_module, mock_functions)
 
         # --- Start Replay Execution ---
 
@@ -689,12 +665,18 @@ def replay_session_sequence(
                 original_current_call_id = original_next_call_id
                 continue
 
+            # 7 . Inject mock functions
+            if mock_functions:
+                _load_mock_functions(read_session, original_next_call_id, read_obj_manager, next_module, mock_functions)
+
             # Execute the next function (monitor records it, linking automatically if enabled)
             logger.info(f"Executing next replay call: {next_function.__name__}...")
             try:
                 next_function(*next_args, **next_kwargs)
                 logger.info(f"Call {original_next_call_id} replayed successfully.")
             except Exception as exec_exc:
+                import debugpy
+                debugpy.breakpoint()
                 logger.error(
                     f"Error executing replayed call for original ID {original_next_call_id} ('{next_function.__name__}'): {exec_exc}"
                 )
@@ -1019,3 +1001,55 @@ def replay_session_from(*args, **kwargs):
         stacklevel=2,
     )
     return replay_session_sequence(*args, **kwargs)
+
+
+def _load_mock_functions(session, function_execution_id, obj_manager, module, mock_function):
+    """
+    Loads mock functions for a given function execution.
+    
+    Args:
+        session: The database session.
+        function_execution_id: The ID of the function execution.
+        obj_manager: The ObjectManager instance.
+        module: The module to inject mock functions into.
+        mock_function: List of function names to mock.
+    
+    Returns:
+        None
+    """
+    if not mock_function:
+        return
+
+    fct = session.query(models.FunctionCall).filter_by(id=function_execution_id).first()
+    if not fct:
+        return
+    subcalls = fct.get_child_calls(session)
+    if not subcalls:
+        return
+
+    possible_names = set(map(lambda x: x.function, subcalls))
+    return_values_dict = defaultdict(list)
+    for subcall in subcalls:
+        return_values_dict[subcall.function].append(subcall.return_ref)
+
+    # Convert to generators
+    return_values_dict = {k: (obj_manager.get(x)[0] for x in v) for k, v in return_values_dict.items()}
+    for func_name in mock_function:
+        if func_name in possible_names and func_name in module.__dict__:
+            module.__dict__[f"_old_{func_name}"] = module.__dict__[func_name]
+            
+            # Create a closure that captures the current func_name value
+            def create_mock_func(captured_func_name):
+                def mock_func(*args, **kwargs):
+                    try:
+                        return next(return_values_dict[captured_func_name])
+                    except StopIteration:
+                        print(f"Generator for {captured_func_name} is exhausted, returning original function")
+                        # If the generator is exhausted, return the original function
+                        old_func = module.__dict__[f"_old_{captured_func_name}"]
+                        return old_func(*args, **kwargs)
+                return mock_func
+            
+            module.__dict__[func_name] = create_mock_func(func_name)
+        else:
+            pass  # TODO: Handle case when func_name is not in module.__dict__

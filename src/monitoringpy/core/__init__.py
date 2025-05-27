@@ -14,7 +14,7 @@ from .models import (
     MonitoringSession,
 )
 from .monitoring import PyMonitoring, pymonitor, init_monitoring
-from .function_call import FunctionCallTracker, delete_function_execution
+from .function_call import FunctionCallRepository
 from .code_manager import CodeManager
 from .representation import ObjectManager
 from .reanimation import load_execution_data, reanimate_function, load_snapshot, load_snapshot_in_frame, run_with_state, replay_session_from
@@ -96,7 +96,7 @@ __all__ = [
     'init_monitoring',
     # Core classes
     'PyMonitoring',
-    'FunctionCallTracker',
+    'FunctionCallRepository',
     'CodeManager',
     'ObjectManager',
     # Models
@@ -115,8 +115,6 @@ __all__ = [
     'disable_recording',
     'enable_recording',
     'recording_context',
-    # Function management
-    'delete_function_execution',
     # Reanimation
     'load_execution_data',
     'reanimate_function',
