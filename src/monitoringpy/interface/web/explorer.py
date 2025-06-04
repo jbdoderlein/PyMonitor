@@ -13,14 +13,14 @@ from typing import Tuple, Optional
 
 from sqlalchemy.orm import Session
 from monitoringpy.core import (
-    init_db, FunctionCallTracker, ObjectManager
+    init_db, FunctionCallRepository, ObjectManager
 )
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-def init_explorer(db_file: str) -> Tuple[Session, FunctionCallTracker, ObjectManager]:
+def init_explorer(db_file: str) -> Tuple[Session, FunctionCallRepository, ObjectManager]:
     """Initialize the database and tracker
     
     Args:
@@ -38,7 +38,7 @@ def init_explorer(db_file: str) -> Tuple[Session, FunctionCallTracker, ObjectMan
     Session = init_db(db_file)
     session = Session()
     object_manager = ObjectManager(session)
-    call_tracker = FunctionCallTracker(session)
+    call_tracker = FunctionCallRepository(session)
     
     return session, call_tracker, object_manager
 

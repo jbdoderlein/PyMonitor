@@ -301,6 +301,9 @@ async def get_snapshot(snapshot_id: str):
                         logger.error(f"Error serializing global {name}: {e}")
                         globals_data[name] = {"value": f"<error: {str(e)}>", "type": "Error"}
         
+        # Get previous snapshot using the model method
+        previous_snapshot = snapshot.get_previous_snapshot(session)
+        
         return {
             "id": snapshot.id,
             "function_call_id": snapshot.function_call_id,
@@ -310,7 +313,7 @@ async def get_snapshot(snapshot_id: str):
             "timestamp": snapshot.timestamp.isoformat() if snapshot.timestamp else None,
             "locals": locals_data,
             "globals": globals_data,
-            "previous_snapshot_id": snapshot.previous_snapshot_id,
+            "previous_snapshot_id": previous_snapshot.id if previous_snapshot else None,
             "next_snapshot_id": snapshot.next_snapshot_id
         }
     except ValueError as e:
@@ -653,32 +656,32 @@ async def get_function_calls(
             query = query.filter(FunctionCall.function.ilike(function_lower))
         function_calls = query.limit(100).all()
         
-        # Convert to a serializable format
+        # Convert to a serializable format using the model's to_dict method
         result = []
         for fc in function_calls:
-            # get locals
+            # Use the model's to_dict method as base
+            call_data = fc.to_dict()
+            
+            # Add additional fields for API
+            call_data["duration"] = (fc.end_time - fc.start_time).total_seconds() if fc.end_time and fc.start_time else None
+            call_data["has_stack_recording"] = session.query(StackSnapshot).filter(StackSnapshot.function_call_id == fc.id).count() > 0
+            
+            # Add serialized locals
             locals_data = {}
-            for name, value in fc.locals_refs.items():
-                locals_data[name] = serialize_stored_value(value)
-            # get globals
+            if fc.locals_refs:
+                for name, value in fc.locals_refs.items():
+                    locals_data[name] = serialize_stored_value(value)
+            call_data["locals"] = locals_data
+            
+            # Add serialized globals
             globals_data = {}
-            for name, value in fc.globals_refs.items():
-                globals_data[name] = serialize_stored_value(value)
-            # get return value
-            return_value = serialize_stored_value(fc.return_ref)
-            call_data = {
-                "id": fc.id,
-                "function": fc.function,
-                "file": fc.file,
-                "line": fc.line,
-                "start_time": fc.start_time.isoformat() if fc.start_time else None,
-                "end_time": fc.end_time.isoformat() if fc.end_time else None,
-                "duration": (fc.end_time - fc.start_time).total_seconds() if fc.end_time and fc.start_time else None,
-                "has_stack_recording": session.query(StackSnapshot).filter(StackSnapshot.function_call_id == fc.id).count() > 0,
-                "locals": locals_data,
-                "globals": globals_data,
-                "return_value": return_value
-            }
+            if fc.globals_refs:
+                for name, value in fc.globals_refs.items():
+                    globals_data[name] = serialize_stored_value(value)
+            call_data["globals"] = globals_data
+            
+            # Add serialized return value
+            call_data["return_value"] = serialize_stored_value(fc.return_ref)
             
             result.append(call_data)
         
@@ -783,6 +786,7 @@ async def get_monitoring_sessions():
                 "description": ms.description,
                 "start_time": ms.start_time.isoformat(),
                 "end_time": ms.end_time.isoformat() if ms.end_time else None,
+                "duration": ms.duration,  # Use the new duration property
                 "function_calls": [f.id for f in call_sequence],
                 "function_count": {f.function: sum(1 for x in call_sequence if x.function == f.function) for f in call_sequence},
                 "metadata": ms.session_metadata
@@ -877,6 +881,7 @@ async def get_session_details(session_id: str):
             "description": monitoring_session.description,
             "start_time": monitoring_session.start_time.isoformat(),
             "end_time": monitoring_session.end_time.isoformat() if monitoring_session.end_time else None,
+            "duration": monitoring_session.duration,  # Use the new duration property
             "function_calls": function_calls,
             "function_calls_map": function_calls_map,
             "function_count": {f.function: sum(1 for x in call_sequence if x.function == f.function) for f in call_sequence},
@@ -889,6 +894,30 @@ async def get_session_details(session_id: str):
         raise HTTPException(status_code=404 if "not found" in str(e) else 400, detail=str(e))
     except Exception as e:
         logger.error(f"Error getting session details: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/function-call/{call_id}/execution-tree")
+async def get_execution_tree(call_id: str, max_depth: int = Query(5, description="Maximum depth of execution tree")):
+    """Get the hierarchical execution tree for a function call"""
+    global session
+    
+    try:
+        if session is None:
+            raise ValueError("Session is not initialized")
+        
+        # Get the function call
+        function_call = session.query(FunctionCall).filter(FunctionCall.id == call_id).first()
+        if not function_call:
+            raise ValueError(f"Function call {call_id} not found")
+        
+        # Get the execution tree using the model method
+        execution_tree = function_call.get_execution_tree(session, max_depth=max_depth)
+        
+        return {"execution_tree": execution_tree}
+    except ValueError as e:
+        raise HTTPException(status_code=404 if "not found" in str(e) else 400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error getting execution tree: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 def initialize_db(db_file: str):

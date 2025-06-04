@@ -78,8 +78,8 @@ __all__ = [
     'load_snapshot',
     'load_snapshot_in_frame',
     'replay_session_from',
-    # Wrapped modules
-    'pygame',
+    # Wrapped modules - pygame is available but not imported by default
+    # 'pygame',  # Use: from monitoringpy import pygame (when needed)
 ]
 
 
