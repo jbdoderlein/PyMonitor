@@ -14,29 +14,14 @@ SCREEN_HEIGHT = 700
 SCREEN = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
 pygame.display.set_caption("Flappy Bird")
 
-# Colors
-WHITE = (255, 255, 255)
-BLACK = (0, 0, 0)
-GREEN = (0, 128, 0)
-BLUE = (0, 0, 255)
-RED = (255, 0, 0)
-BG_COLOR = (135, 206, 235)  # Sky blue
 
 # Game variables
-GRAVITY = 0.35
-BIRD_MOVEMENT = 0
-PIPE_GAP = 200 
-PIPE_WIDTH = 100
-PIPE_SPEED = 3  
-PIPE_SPAWN_DISTANCE = 300
+BIRD_MOVEMENT = 0 
 GAME_ACTIVE = True
-SCORE = 0
-HIGH_SCORE = 0
 FONT = pygame.font.SysFont("Arial", 30)
 
 # Bird parameters
-BIRD_SIZE = 40
-bird_rect = pygame.Rect(SCREEN_WIDTH // 3, SCREEN_HEIGHT // 2, BIRD_SIZE, BIRD_SIZE)
+bird_rect = pygame.Rect(SCREEN_WIDTH // 3, SCREEN_HEIGHT // 2, 40, 40)
 
 # Pipe list
 pipes = []
@@ -49,11 +34,12 @@ def create_pipe():
     # Random position for the gap between top and bottom pipes
     gap_y_pos = random.randint(200, SCREEN_HEIGHT - 200)
     
+    pipe_gap = 200
     # Bottom pipe starts at the gap position and extends to the bottom of the screen
-    bottom_pipe = pygame.Rect(SCREEN_WIDTH, gap_y_pos + PIPE_GAP//2, PIPE_WIDTH, SCREEN_HEIGHT - gap_y_pos - PIPE_GAP//2)
+    bottom_pipe = pygame.Rect(SCREEN_WIDTH, gap_y_pos + pipe_gap//2, 100, SCREEN_HEIGHT - gap_y_pos - pipe_gap//2)
     
     # Top pipe starts at the top of the screen and extends to the gap position
-    top_pipe = pygame.Rect(SCREEN_WIDTH, 0, PIPE_WIDTH, gap_y_pos - PIPE_GAP//2)
+    top_pipe = pygame.Rect(SCREEN_WIDTH, 0, 100, gap_y_pos - pipe_gap//2)
     
     return bottom_pipe, top_pipe
 
@@ -61,7 +47,7 @@ def move_pipes():
     global pipes
     pipes_to_remove = []
     for pipe in pipes:
-        pipe.x -= PIPE_SPEED
+        pipe.x -= 3 # Pipe speed
         if pipe.right < 0: # Check if pipe is completely off-screen to the left
             pipes_to_remove.append(pipe)
         
@@ -74,9 +60,9 @@ def draw_pipes():
     global pipes
     for pipe in pipes:
         if pipe.y == 0:  # Top pipe
-            pygame.draw.rect(SCREEN, GREEN, pipe)
+            pygame.draw.rect(SCREEN, (0, 128, 0), pipe)
         else:  # Bottom pipe
-            pygame.draw.rect(SCREEN, GREEN, pipe)
+            pygame.draw.rect(SCREEN, (0, 128, 0), pipe)
 
 def check_collision(pipes, bird_rect):
     """Check if bird collides with pipes or goes off screen"""
@@ -109,9 +95,9 @@ def save_screen(m,c,o,r):
 @monitoringpy.pymonitor(
         ignore=['SCREEN','FONT', 'clock'], 
         return_hooks=[save_screen],
-        track=[get_events,create_pipe])
+        track=[get_events,random.randint])
 def display_game():
-    global GAME_ACTIVE, BIRD_MOVEMENT, pipes, HIGH_SCORE
+    global GAME_ACTIVE, BIRD_MOVEMENT, pipes
     for event in get_events():
         if event.type == pygame.QUIT:
             return False
@@ -124,18 +110,18 @@ def display_game():
                 reset_game()
     
     # Fill background
-    SCREEN.fill(BG_COLOR)
+    SCREEN.fill((135, 206, 235))
     
     if GAME_ACTIVE:
         # Bird movement
-        BIRD_MOVEMENT += GRAVITY
+        BIRD_MOVEMENT += 0.35 # Gravity
         bird_rect.y = int(bird_rect.y + BIRD_MOVEMENT)
         
         # Draw bird
-        pygame.draw.rect(SCREEN, RED, bird_rect, border_radius=10)
+        pygame.draw.rect(SCREEN, (255, 0, 0), bird_rect, border_radius=10)
         
         # Pipe logic
-        if len(pipes) == 0 or pipes[-1].x < SCREEN_WIDTH - PIPE_SPAWN_DISTANCE:
+        if len(pipes) == 0 or pipes[-1].x < SCREEN_WIDTH - 300:
             bottom_pipe, top_pipe = create_pipe()
             pipes.append(bottom_pipe)
             pipes.append(top_pipe)
@@ -146,12 +132,12 @@ def display_game():
         # Check collision
         if check_collision(pipes, bird_rect):
             GAME_ACTIVE = False
-            HIGH_SCORE = max(HIGH_SCORE, SCORE)
+
         
         
     else:
         # Game over screen
-        game_over_text = FONT.render("Game Over! \nPress SPACE to restart", True, BLACK)
+        game_over_text = FONT.render("Game Over!", True, (0, 0, 0))
         SCREEN.blit(game_over_text, (SCREEN_WIDTH//2 - 180, SCREEN_HEIGHT//2 - 15))
     
     

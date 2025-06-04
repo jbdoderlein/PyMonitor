@@ -51,11 +51,10 @@ class FlappyReplay:
         # Tree state management
         self.expanded_items = set()  # Track which tree items are expanded
         
-        # Branching and transparency overlay features
+        # Branching and comparison overlay features
         self.session_relationships = {}  # Dict[session_id, Dict] containing parent/child relationships
-        self.transparency_session_id = None  # Session ID to show with transparency
-        self.transparency_var = None  # Will be created in _create_ui
-        self.transparency_dropdown = None  # Reference to the dropdown widget
+        self.comparison_session_id = None  # Session ID to compare with (for previous variables)
+        self.comparison_checkboxes = {}  # Dict[session_id, tk.BooleanVar] for comparison checkboxes
         
         # Initialize database
         self._init_database()
@@ -200,13 +199,13 @@ class FlappyReplay:
             'call_index': call_index
         }
         
-    def _get_transparency_call_data(self, current_session_id: int, current_call_index: int) -> Optional[Dict[str, Any]]:
-        """Get call data from transparency session that corresponds to the current position"""
-        if not self.transparency_session_id or self.transparency_session_id not in self.sessions_data:
+    def _get_comparison_call_data(self, current_session_id: int, current_call_index: int) -> Optional[Dict[str, Any]]:
+        """Get call data from comparison session that corresponds to the current position"""
+        if not self.comparison_session_id or self.comparison_session_id not in self.sessions_data:
             return None
             
         # Check if transparency session is a child of current session
-        transparency_rel = self.session_relationships.get(self.transparency_session_id, {})
+        transparency_rel = self.session_relationships.get(self.comparison_session_id, {})
         if transparency_rel.get('parent_session_id') == current_session_id:
             # Transparency session branches from current session
             branch_point_index = transparency_rel.get('branch_point_index')
@@ -214,21 +213,21 @@ class FlappyReplay:
                 # Current position is at or after the branch point
                 # Map to corresponding position in transparency session
                 offset_in_transparency = current_call_index - branch_point_index
-                transparency_calls = self.sessions_data[self.transparency_session_id]['calls']
+                transparency_calls = self.sessions_data[self.comparison_session_id]['calls']
                 if offset_in_transparency < len(transparency_calls):
-                    return self._get_call_data(self.transparency_session_id, offset_in_transparency)
+                    return self._get_call_data(self.comparison_session_id, offset_in_transparency)
         
         # Check if current session is a child of transparency session
         current_rel = self.session_relationships.get(current_session_id, {})
-        if current_rel.get('parent_session_id') == self.transparency_session_id:
+        if current_rel.get('parent_session_id') == self.comparison_session_id:
             # Current session branches from transparency session
             branch_point_index = current_rel.get('branch_point_index')
             if branch_point_index is not None:
                 # Map current position back to transparency session
                 transparency_index = branch_point_index + current_call_index
-                transparency_calls = self.sessions_data[self.transparency_session_id]['calls']
+                transparency_calls = self.sessions_data[self.comparison_session_id]['calls']
                 if transparency_index < len(transparency_calls):
-                    return self._get_call_data(self.transparency_session_id, transparency_index)
+                    return self._get_call_data(self.comparison_session_id, transparency_index)
         
         return None
         
@@ -241,10 +240,10 @@ class FlappyReplay:
             # Create PIL Image
             pil_image = Image.open(io.BytesIO(image_bytes))
             
-            # Resize image to be smaller (scale down by 0.6)
+            # Resize image to be smaller (scale down by 0.8)
             original_width, original_height = pil_image.size
-            new_width = int(original_width * 0.6)
-            new_height = int(original_height * 0.6)
+            new_width = int(original_width * 0.8)
+            new_height = int(original_height * 0.8)
             pil_image = pil_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
             
             # If transparency overlay is provided, blend the images
@@ -300,8 +299,8 @@ class FlappyReplay:
             transparency_image_data = None
             
             # Check if we should show transparency overlay
-            if self.transparency_session_id and self.transparency_session_id != session_id:
-                transparency_call_data = self._get_transparency_call_data(session_id, call_index)
+            if self.comparison_session_id and self.comparison_session_id != session_id:
+                transparency_call_data = self._get_comparison_call_data(session_id, call_index)
                 if transparency_call_data:
                     transparency_image_data = transparency_call_data.get('image_data')
             
@@ -338,23 +337,20 @@ class FlappyReplay:
         except (ValueError, IndexError) as e:
             print(f"Error updating display: {e}")
             
-    def _on_transparency_selection_changed(self, event):
-        """Handle transparency overlay selection change"""
-        if not self.transparency_var:
-            return
-            
-        selected_name = self.transparency_var.get()
+    def _on_comparison_selection_changed(self, session_id: int):
+        """Handle comparison overlay selection change"""
+        # First, uncheck all other checkboxes (only one can be selected at a time)
+        for sid, var in self.comparison_checkboxes.items():
+            if sid != session_id:
+                var.set(False)
         
-        if selected_name == "None":
-            self.transparency_session_id = None
+        # Set the comparison session based on checkbox state
+        if self.comparison_checkboxes[session_id].get():
+            self.comparison_session_id = session_id
         else:
-            # Find session ID by name
-            for session_id, session_data in self.sessions_data.items():
-                if session_data['name'] == selected_name:
-                    self.transparency_session_id = session_id
-                    break
+            self.comparison_session_id = None
         
-        # Refresh the current display to apply/remove transparency
+        # Refresh the current display to apply/remove comparison
         if self.current_session_id is not None:
             self._update_display(self.current_session_id, self.current_call_index)
             
@@ -417,40 +413,17 @@ class FlappyReplay:
                                 
                                 print(f"Synced child session {child_session_id} slider to position {child_index}")
     
-    def _update_transparency_dropdown(self):
-        """Update the transparency dropdown options after database refresh"""
-        if not self.transparency_var or not self.transparency_dropdown:
-            return
-            
-        try:
-            # Get current selection
-            current_selection = self.transparency_var.get()
-            
-            # Create new options list
-            transparency_options = ["None"] + [self.sessions_data[sid]['name'] for sid in self.sessions_data.keys()]
-            
-            # Update the dropdown values
-            self.transparency_dropdown.configure(values=transparency_options)
-            
-            # Check if current selection is still valid
-            if current_selection != "None":
-                valid_names = [self.sessions_data[sid]['name'] for sid in self.sessions_data.keys()]
-                if current_selection not in valid_names:
-                    self.transparency_var.set("None")
-                    self.transparency_session_id = None
-                    print(f"Reset transparency selection - '{current_selection}' no longer available")
-                    
-        except Exception as e:
-            print(f"Error updating transparency dropdown: {e}")
-            
+    def _update_comparison_checkboxes(self):
+        """Update the comparison checkboxes after database refresh"""
+        # This method will be called after database refresh to update checkboxes
+        # For now, we'll recreate them in the UI creation
+        pass
+    
     def _create_ui(self):
         """Create the Tkinter UI"""
         self.root = tk.Tk()
         self.root.title("Flappy Bird Replay - Multi-Branch")
         self.root.geometry("1400x900")
-        
-        # Create transparency variable now that root exists
-        self.transparency_var = tk.StringVar(value="None")
         
         # Main frame
         main_frame = ttk.Frame(self.root)
@@ -476,15 +449,18 @@ class FlappyReplay:
         info_frame = ttk.LabelFrame(right_frame, text="Variables (Locals & Globals)", padding=10)
         info_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
         
-        # Create treeview for variables
-        tree_frame = ttk.Frame(info_frame)
-        tree_frame.pack(fill=tk.BOTH, expand=True)
+        # Create treeview for variables with fixed height
+        tree_frame = ttk.Frame(info_frame, height=300)
+        tree_frame.pack(fill=tk.X, expand=False)
+        tree_frame.pack_propagate(False)  # Prevent frame from shrinking to fit contents
         
-        self.variables_tree = ttk.Treeview(tree_frame, columns=('value',), show='tree headings')
+        self.variables_tree = ttk.Treeview(tree_frame, columns=('value', 'previous_value'), show='tree headings', height=12)
         self.variables_tree.heading('#0', text='Variable')
-        self.variables_tree.heading('value', text='Value')
+        self.variables_tree.heading('value', text='Current Value')
+        self.variables_tree.heading('previous_value', text='Previous Value')
         self.variables_tree.column('#0', width=200)
-        self.variables_tree.column('value', width=300)
+        self.variables_tree.column('value', width=250)
+        self.variables_tree.column('previous_value', width=250)
         
         # Scrollbars for the tree
         tree_v_scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.variables_tree.yview)
@@ -511,7 +487,7 @@ class FlappyReplay:
         globals_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
         
         # Scrollable frame for globals
-        globals_canvas = tk.Canvas(globals_frame, height=120)
+        globals_canvas = tk.Canvas(globals_frame, height=100)
         globals_scrollbar = ttk.Scrollbar(globals_frame, orient="vertical", command=globals_canvas.yview)
         self.globals_content = ttk.Frame(globals_canvas)
         
@@ -525,13 +501,12 @@ class FlappyReplay:
         
         globals_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         globals_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        
         # Tracked Functions frame
         tracked_frame = ttk.LabelFrame(right_frame, text="Tracked Functions", padding=10)
         tracked_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
         
         # Scrollable frame for tracked functions
-        tracked_canvas = tk.Canvas(tracked_frame, height=80)
+        tracked_canvas = tk.Canvas(tracked_frame, height=60)
         tracked_scrollbar = ttk.Scrollbar(tracked_frame, orient="vertical", command=tracked_canvas.yview)
         self.tracked_content = ttk.Frame(tracked_canvas)
         
@@ -578,24 +553,6 @@ class FlappyReplay:
         ttk.Button(buttons_frame, text="Replay All", command=self._replay_all).pack(side=tk.LEFT, padx=(0, 5))
         ttk.Button(buttons_frame, text="Replay From Here", command=self._replay_from_here).pack(side=tk.LEFT, padx=(0, 5))
         ttk.Button(buttons_frame, text="Refresh DB", command=self._refresh_database).pack(side=tk.LEFT, padx=(0, 5))
-        
-        # Transparency overlay controls
-        transparency_frame = ttk.Frame(buttons_frame)
-        transparency_frame.pack(side=tk.LEFT, padx=(20, 5))
-        
-        ttk.Label(transparency_frame, text="Transparency Overlay:").pack(side=tk.LEFT)
-        
-        # Create dropdown for transparency session selection
-        transparency_options = ["None"] + [self.sessions_data[sid]['name'] for sid in self.sessions_data.keys()]
-        self.transparency_dropdown = ttk.Combobox(
-            transparency_frame, 
-            textvariable=self.transparency_var,
-            values=transparency_options,
-            state="readonly",
-            width=15
-        )
-        self.transparency_dropdown.pack(side=tk.LEFT, padx=(5, 0))
-        self.transparency_dropdown.bind('<<ComboboxSelected>>', self._on_transparency_selection_changed)
         
         # Status label
         self.status_label = ttk.Label(buttons_frame, text="Ready", foreground="green")
@@ -650,6 +607,22 @@ class FlappyReplay:
             slider_container = ttk.Frame(session_frame)
             slider_container.pack(fill=tk.X, pady=(5, 0))
             
+            # Add comparison checkbox next to slider
+            checkbox_frame = ttk.Frame(slider_container)
+            checkbox_frame.pack(side=tk.LEFT, padx=(0, 10))
+            
+            # Create comparison checkbox variable if not exists
+            if session_id not in self.comparison_checkboxes:
+                self.comparison_checkboxes[session_id] = tk.BooleanVar(value=False)
+            
+            comparison_cb = ttk.Checkbutton(
+                checkbox_frame,
+                text="Compare",
+                variable=self.comparison_checkboxes[session_id],
+                command=lambda sid=session_id: self._on_comparison_selection_changed(sid)
+            )
+            comparison_cb.pack()
+            
             # Calculate slider positioning for branching visualization
             if is_branch and branch_point_index is not None:
                 # For branch sessions, create offset and reduced size slider
@@ -696,7 +669,8 @@ class FlappyReplay:
             self.session_sliders[session_id] = {
                 'frame': session_frame,
                 'slider': slider,
-                'info_label': info_label
+                'info_label': info_label,
+                'comparison_checkbox': comparison_cb
             }
             
     def _get_sorted_sessions_for_display(self) -> List[int]:
@@ -766,6 +740,13 @@ class FlappyReplay:
         session_id = call_data.get('session_id')
         call_index = call_data.get('call_index', 0)
         
+        # Get comparison data if a comparison session is selected
+        comparison_variables = {}
+        if self.comparison_session_id and self.comparison_session_id != session_id and session_id is not None:
+            comparison_call_data = self._get_comparison_call_data(session_id, call_index)
+            if comparison_call_data:
+                comparison_variables = comparison_call_data.get('variables', {})
+        
         # Update basic info
         if self.info_label and session_id in self.sessions_data:
             session_name = self.sessions_data[session_id]['name']
@@ -775,53 +756,83 @@ class FlappyReplay:
             timestamp = call_data.get('timestamp')
             if timestamp:
                 info_text += f"Time: {timestamp.strftime('%H:%M:%S.%f')[:-3]}"
+            if self.comparison_session_id and self.comparison_session_id in self.sessions_data:
+                comparison_name = self.sessions_data[self.comparison_session_id]['name']
+                info_text += f" | Comparing with: {comparison_name}"
             self.info_label.configure(text=info_text)
         
         # Add locals section
         locals_vars = variables.get('locals', {})
+        comparison_locals = comparison_variables.get('locals', {})
         if locals_vars and self.variables_tree:
-            locals_root = self.variables_tree.insert('', 'end', text='Locals', values=('',), open=True)
+            locals_root = self.variables_tree.insert('', 'end', text='Locals', values=('', ''), open=True)
             for name, value in locals_vars.items():
-                self._add_variable_to_tree(locals_root, name, value)
+                comparison_value = comparison_locals.get(name, None)
+                self._add_variable_to_tree(locals_root, name, value, comparison_value)
         
         # Add globals section
         globals_vars = variables.get('globals', {})
+        comparison_globals = comparison_variables.get('globals', {})
         if globals_vars and self.variables_tree:
-            globals_root = self.variables_tree.insert('', 'end', text='Globals', values=('',), open=True)
+            globals_root = self.variables_tree.insert('', 'end', text='Globals', values=('', ''), open=True)
             for name, value in globals_vars.items():
-                self._add_variable_to_tree(globals_root, name, value)
+                comparison_value = comparison_globals.get(name, None)
+                self._add_variable_to_tree(globals_root, name, value, comparison_value)
         
         # Restore expanded state after rebuilding
         self._restore_tree_expanded_state()
     
-    def _add_variable_to_tree(self, parent, name: str, value: Any, max_depth: int = 3, current_depth: int = 0):
+    def _add_variable_to_tree(self, parent, name: str, value: Any, comparison_value: Any = None):
         """Recursively add a variable and its sub-fields to the tree"""
         if not self.variables_tree:
             return
             
-        if current_depth >= max_depth:
-            self.variables_tree.insert(parent, 'end', text=name, values=(f'{type(value).__name__} (max depth reached)',))
-            return
-            
         # Format the value for display
         value_str = self._format_value_for_display(value)
+        comparison_str = self._format_value_for_display(comparison_value) if comparison_value is not None else ""
+        
+        # Check if values are different for color coding
+        values_different = False
+        if comparison_value is not None:
+            try:
+                # Compare the actual values, not just their string representations
+                values_different = value != comparison_value
+            except Exception:
+                # If comparison fails (e.g., different types), consider them different
+                values_different = True
         
         # Insert the main item
-        item = self.variables_tree.insert(parent, 'end', text=name, values=(value_str,))
+        item = self.variables_tree.insert(parent, 'end', text=name, values=(value_str, comparison_str))
+        
+        # Apply green color if values are different
+        if values_different:
+            self.variables_tree.set(item, 'value', value_str)
+            # Configure tag for green text
+            self.variables_tree.tag_configure('different', foreground='green')
+            self.variables_tree.item(item, tags=('different',))
         
         # Add sub-fields if the value has interesting attributes
         if hasattr(value, '__dict__') and value.__dict__:
             for attr_name, attr_value in value.__dict__.items():
                 if not attr_name.startswith('_'):  # Skip private attributes
-                    self._add_variable_to_tree(item, attr_name, attr_value, max_depth, current_depth + 1)
+                    comp_attr_value = None
+                    if comparison_value is not None and hasattr(comparison_value, '__dict__'):
+                        comp_attr_value = getattr(comparison_value, attr_name, None)
+                    self._add_variable_to_tree(item, attr_name, attr_value, comp_attr_value)
         elif isinstance(value, dict) and len(value) < 20:  # Limit dict expansion
             for key, val in value.items():
                 key_str = str(key)
                 if len(key_str) < 50:  # Limit key length
-                    self._add_variable_to_tree(item, f'[{key_str}]', val, max_depth, current_depth + 1)
+                    comp_val = None
+                    if isinstance(comparison_value, dict):
+                        comp_val = comparison_value.get(key, None)
+                    self._add_variable_to_tree(item, f'[{key_str}]', val, comp_val)
         elif isinstance(value, (list, tuple)) and len(value) < 20:  # Limit list expansion
             for i, val in enumerate(value):
-                self._add_variable_to_tree(item, f'[{i}]', val, max_depth, current_depth + 1)
+                comp_val = None
+                if isinstance(comparison_value, (list, tuple)) and i < len(comparison_value):
+                    comp_val = comparison_value[i]
+                self._add_variable_to_tree(item, f'[{i}]', val, comp_val)
     
     def _format_value_for_display(self, value: Any) -> str:
         """Format a value for display in the tree"""
@@ -1184,9 +1195,6 @@ class FlappyReplay:
             
             # Re-analyze session relationships
             self._analyze_session_relationships()
-            
-            # Update transparency dropdown options
-            self._update_transparency_dropdown()
             
             if self.status_label:
                 self.status_label.configure(text=f"Refreshed - {new_session_count} sessions loaded", foreground="green")
