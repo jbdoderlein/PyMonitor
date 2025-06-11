@@ -2,7 +2,7 @@ from sqlalchemy import String, DateTime, Integer, ForeignKey, create_engine, Lar
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship, Mapped, mapped_column
 from sqlalchemy.sql import func
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 import datetime
 import os
 import logging
@@ -325,7 +325,7 @@ class MonitoringSession(Base):
         """
         return session.query(FunctionCall).filter(
             FunctionCall.session_id == self.id,
-            FunctionCall.parent_call_id == None  # Only top-level calls
+            FunctionCall.parent_call_id is None  # Only top-level calls
         ).order_by(FunctionCall.order_in_session).all()
 
 def init_db(db_path):

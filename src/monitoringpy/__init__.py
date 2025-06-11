@@ -31,8 +31,6 @@ from .core import (
     recording_context,
 )
 
-from .core.monitoring import pymonitor
-
 from .interface import (
     WebExplorer,
 )

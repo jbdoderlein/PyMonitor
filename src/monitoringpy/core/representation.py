@@ -49,7 +49,7 @@ class PickleConfig:
         
         # First make sure the picklers package is imported
         try:
-            import monitoringpy.picklers
+            import monitoringpy.picklers  # noqa: F401
         except ImportError:
             logger.warning("Could not import picklers package")
             
@@ -526,8 +526,8 @@ class ObjectManager:
                             try:
                                 # Try to safely unpickle just the content
                                 self._content = pickle.loads(pickle_data)
-                            except:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"Failed to unpickle content of {type_name}: {e}")
                     
                     def __str__(self):
                         if self._content is not None:

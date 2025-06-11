@@ -8,8 +8,7 @@ API endpoints for PyMonitor database access.
 import os
 import sys
 import logging
-import datetime
-from typing import Dict, Any, List, Optional, TypedDict, cast
+from typing import Dict, Any, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -82,7 +81,7 @@ def serialize_stored_value(ref: Optional[str]) -> Dict[str, Any]:
         # Try to get the value using ObjectManager
         try:
             result = object_manager.get(ref)
-        except Exception as e:
+        except Exception:
             result = object_manager.get_without_pickle(ref)
         
         # Handle case where result is None
@@ -102,7 +101,7 @@ def serialize_stored_value(ref: Optional[str]) -> Dict[str, Any]:
             }
             
         # Handle unexpected result type
-        return {"value": f"<error: unexpected result type>", "type": "Error"}
+        return {"value": "<error: unexpected result type>", "type": "Error"}
             
     except Exception as e:
         logger.error(f"Error serializing value for ref {ref}: {e}")
@@ -498,7 +497,8 @@ async def get_object_graph(show_isolated: bool = False):
                         try:
                             if hasattr(obj_value, "__len__"):
                                 container_size = len(obj_value)
-                        except:
+                        except Exception as e:
+                            logger.debug(f"Error getting container size for {obj.id}: {e}")
                             pass
                         
                         if container_size is not None:

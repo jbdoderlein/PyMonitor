@@ -1,11 +1,11 @@
 import inspect
 import hashlib
 import types
-from typing import Optional, Dict, List, Any, Type
+from typing import Optional, Dict, Any, Type
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 import logging
-from .models import CodeDefinition, CodeObjectLink, StoredObject
+from .models import CodeDefinition, CodeObjectLink
 
 logger = logging.getLogger(__name__)
 
@@ -96,14 +96,7 @@ class CodeManager:
         if existing_def:
             return code_hash
             
-        # Check if we have any previous versions of this class
-        previous_def = self.session.query(CodeDefinition).filter(
-            CodeDefinition.name == cls.__name__,
-            CodeDefinition.module_path == cls.__module__
-        ).order_by(CodeDefinition.creation_time.desc()).first()
-        
-        # Get the next version number
-        next_version = 1
+            
             
         # Create new code definition
         code_def = CodeDefinition(

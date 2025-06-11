@@ -35,6 +35,15 @@ wheels = [
 ]
 
 [[package]]
+name = "bytecode"
+version = "0.16.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/53/bb/51d95655573fefef01943b911875ddc94a2ff0a82167c4a831c11d248150/bytecode-0.16.2.tar.gz", hash = "sha256:f05020b6dc1f48cdadd946f7c3a03131ba0f312bd103767c5d75559de5c308f8", size = 103023, upload-time = "2025-04-14T13:39:25.895Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a7/98/2e09512abee834dc98afa3c167c04b042f2dd29846f5832da3fbe2907660/bytecode-0.16.2-py3-none-any.whl", hash = "sha256:0a7dea0387ec5cae5ec77578690c5ca7470c8a202c50ce64a426d86380cddd7f", size = 42029, upload-time = "2025-04-14T13:39:24.497Z" },
+]
+
+[[package]]
 name = "click"
 version = "8.2.0"
 source = { registry = "https://pypi.org/simple" }
@@ -561,6 +570,7 @@ name = "pymonitor"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "bytecode" },
     { name = "debugpy" },
     { name = "fastapi" },
     { name = "flask" },
@@ -574,6 +584,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "bytecode", specifier = ">=0.16.2" },
     { name = "debugpy", specifier = ">=1.8.14" },
     { name = "fastapi", specifier = ">=0.115.12" },
     { name = "flask", specifier = ">=2.0.0" },

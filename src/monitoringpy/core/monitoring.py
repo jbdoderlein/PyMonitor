@@ -789,7 +789,7 @@ class PyMonitoring:
                     StackSnapshot.function_call_id == current_call.id
                 ).count()
                 
-                snapshot = self.create_stack_snapshot(
+                self.create_stack_snapshot(
                     current_call.id,
                     line_number,
                     function_locals,

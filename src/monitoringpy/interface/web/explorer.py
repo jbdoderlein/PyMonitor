@@ -9,7 +9,7 @@ import os
 import sys
 import argparse
 import logging
-from typing import Tuple, Optional
+from typing import Tuple
 
 from sqlalchemy.orm import Session
 from monitoringpy.core import (
