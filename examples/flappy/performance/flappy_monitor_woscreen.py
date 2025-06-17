@@ -1,6 +1,7 @@
 import base64
 import io
 import random
+import time
 import pygame
 import monitoringpy
 
@@ -87,14 +88,8 @@ def reset_game():
 def get_events():
     return pygame.event.get()
 
-def save_screen(m,c,o,r):
-    buffer = io.BytesIO()
-    pygame.image.save(pygame.display.get_surface(), buffer, "PNG")
-    return {"image": base64.encodebytes(buffer.getvalue()).decode('utf-8')}
-
 @monitoringpy.pymonitor(
-        ignore=['SCREEN','FONT', 'clock'], 
-        return_hooks=[save_screen],
+        ignore=['SCREEN','FONT', 'clock'],
         track=[get_events,random.randint])
 def display_game():
     global GAME_ACTIVE, BIRD_MOVEMENT, pipes
@@ -150,8 +145,11 @@ def display_game():
 if __name__ == "__main__":
     monitor = monitoringpy.init_monitoring(db_path=":memory:", custom_picklers=["pygame"])
     monitoringpy.start_session("Flappy Bird")
-    while display_game():
-        pass
+    t1 = time.time()
+    for _ in range(500):
+        display_game()
+    t2 = time.time()
+    print(f"Time taken: {t2 - t1} seconds")
     monitoringpy.end_session()
-    monitor.export_db("flappy.db")
+    monitor.export_db("flappy_woscreen.db")
     pygame.quit()

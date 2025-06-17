@@ -20,18 +20,19 @@ from pathlib import Path
 import importlib
 import sys
 
-# Import available pickler modules
+# List available pickler modules without importing them automatically
 pickler_modules = []
 for f in Path(__file__).parent.glob("*.py"):
     if f.name != "__init__.py" and f.is_file():
         module_name = f.stem
-        try:
-            # Ensure module can be imported from the correct path
-            module_path = f"monitoringpy.picklers.{module_name}"
-            if module_path not in sys.modules:
-                module = importlib.import_module(f".{module_name}", package="monitoringpy.picklers")
-                pickler_modules.append(module_name)
-        except Exception as e:
-            print(f"Failed to import pickler module {module_name}: {e}")
+        pickler_modules.append(module_name)
 
-__all__ = pickler_modules 
+def get_pickler_module(name):
+    """Lazy import a pickler module only when needed."""
+    try:
+        return importlib.import_module(f".{name}", package="monitoringpy.picklers")
+    except Exception as e:
+        print(f"Failed to import pickler module {name}: {e}")
+        return None
+
+__all__ = pickler_modules + ['get_pickler_module'] 

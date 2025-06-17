@@ -8,20 +8,18 @@ Web UI for exploring PyMonitor databases.
 import os
 import sys
 import logging
-from pathlib import Path
 from typing import Optional
 
 try:
-    from flask import Flask, render_template, request, jsonify, abort, send_from_directory, Response
+    from flask import Flask, render_template
     from flask_cors import CORS
 except ImportError:
     print("Flask is required for the web explorer. Install it with: pip install flask flask-cors")
     sys.exit(1)
 
 from monitoringpy.core import (
-    init_db, FunctionCallTracker, ObjectManager
+    init_db, FunctionCallRepository, ObjectManager
 )
-from monitoringpy.interface.web.api import serialize_call_info
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -147,7 +145,7 @@ class WebUIExplorer:
         Session = init_db(self.db_file)
         self.session = Session()
         self.object_manager = ObjectManager(self.session)
-        self.call_tracker = FunctionCallTracker(self.session)
+        self.call_tracker = FunctionCallRepository(self.session)
         
         # Set global variables for Flask app
         call_tracker = self.call_tracker

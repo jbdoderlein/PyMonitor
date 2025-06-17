@@ -1,6 +1,7 @@
 import base64
 import io
 import random
+import time
 import pygame
 import monitoringpy
 
@@ -150,8 +151,11 @@ def display_game():
 if __name__ == "__main__":
     monitor = monitoringpy.init_monitoring(db_path=":memory:", custom_picklers=["pygame"])
     monitoringpy.start_session("Flappy Bird")
-    while display_game():
-        pass
+    t1 = time.time()
+    for _ in range(500):
+        display_game()
+    t2 = time.time()
+    print(f"Time taken: {t2 - t1} seconds")
     monitoringpy.end_session()
-    monitor.export_db("flappy.db")
+    monitor.export_db("flappy_full.db")
     pygame.quit()

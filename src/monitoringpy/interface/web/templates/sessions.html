@@ -79,6 +79,30 @@ document.addEventListener('DOMContentLoaded', () => {
                     const startTime = session.start_time ? new Date(session.start_time).toLocaleString() : 'N/A';
                     const endTime = session.end_time ? new Date(session.end_time).toLocaleString() : 'In Progress';
                     
+                    // Convert function_count from object to a readable format
+                    let functionsList = '';
+                    let totalCalls = 0;
+                    
+                    if (session.function_count && typeof session.function_count === 'object') {
+                        // Count total calls and create a simplified representation
+                        const functionNames = Object.keys(session.function_count);
+                        const functionCount = functionNames.length;
+                        totalCalls = Object.values(session.function_count).reduce((sum, count) => sum + count, 0);
+                        functionsList = functionNames.length > 0 ? `${functionCount} distinct functions` : 'None';
+                    } else if (Array.isArray(session.function_calls) && session.function_calls.length > 0) {
+                        // Alternative: If function_calls array is available
+                        const uniqueFunctions = new Set(session.function_calls.map(id => {
+                            // This assumes we don't have direct access to function names
+                            // We just count distinct IDs
+                            return id;
+                        }));
+                        totalCalls = session.function_calls.length;
+                        functionsList = `${uniqueFunctions.size} distinct functions`;
+                    } else {
+                        functionsList = 'None';
+                        totalCalls = 0;
+                    }
+                    
                     tableHtml += `
                         <tr>
                             <td>${session.id}</td>
@@ -86,8 +110,8 @@ document.addEventListener('DOMContentLoaded', () => {
                             <td>${session.description || ''}</td>
                             <td>${startTime}</td>
                             <td>${endTime}</td>
-                            <td>${session.function_count}</td>
-                            <td>${session.total_calls}</td>
+                            <td>${functionsList}</td>
+                            <td>${totalCalls}</td>
                             <td>
                                 <a href="/session/${session.id}" class="btn btn-sm btn-primary">
                                     <i class="bi bi-eye"></i> View

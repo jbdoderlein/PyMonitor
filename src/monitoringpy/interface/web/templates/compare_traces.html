@@ -54,11 +54,32 @@ document.addEventListener('DOMContentLoaded', function() {
 
 async function loadFunctions() {
     try {
-        const response = await fetch(getApiUrl('/api/functions-with-stack-recordings'));
-        const functions = await response.json();
+        // Use the existing function-calls endpoint and filter for functions with stack recordings
+        const response = await fetch(getApiUrl('/api/function-calls'));
+        const data = await response.json();
+        
+        // Filter to get only function calls with stack recordings
+        const functions = data.function_calls.filter(func => func.has_stack_recording);
+        
+        // Group functions by name+file+line to avoid duplicates
+        const groupedFunctions = {};
+        functions.forEach(func => {
+            const key = `${func.function}-${func.file}-${func.line}`;
+            if (!groupedFunctions[key]) {
+                groupedFunctions[key] = {
+                    id: func.id,
+                    function: func.function,
+                    file: func.file,
+                    line: func.line,
+                    trace_count: 1
+                };
+            } else {
+                groupedFunctions[key].trace_count++;
+            }
+        });
         
         const select = document.getElementById('function-select');
-        functions.forEach(func => {
+        Object.values(groupedFunctions).forEach(func => {
             const option = document.createElement('option');
             option.value = func.id;
             option.textContent = `${func.function} (${func.file}:${func.line}) - ${func.trace_count} traces`;
@@ -89,16 +110,75 @@ function setupEventListeners() {
 
 async function loadTraces(functionId) {
     try {
-        const response = await fetch(getApiUrl(`/api/function-traces/${functionId}`));
+        // Update this to use the stack-recording endpoint instead
+        const response = await fetch(getApiUrl(`/api/stack-recording/${functionId}`));
         const data = await response.json();
         traces.clear();
         
-        // Handle case where the data is returned directly or nested in a 'traces' property
-        const traceData = Array.isArray(data) ? data : (data.traces || []);
+        // Create a single trace from the stack recording data
+        const mainTrace = {
+            id: functionId,
+            function: data.function.name || data.function.function,
+            file: data.function.file,
+            line: data.function.line,
+            timestamp: data.function.time || data.function.start_time,
+            snapshots: data.frames.map(frame => ({
+                id: frame.snapshot_id || frame.id,
+                line: frame.line || frame.line_number,
+                timestamp: frame.timestamp,
+                locals: frame.locals || {},
+                globals: frame.globals || {}
+            }))
+        };
         
-        traceData.forEach(trace => {
-            traces.set(trace.id, trace);
-        });
+        // Add main trace to our map
+        traces.set(parseInt(functionId), mainTrace);
+        
+        // Now fetch additional traces for the same function (this will be a separate API call)
+        try {
+            // We'll make a request to get other function calls for the same function
+            const functionResponse = await fetch(getApiUrl('/api/function-calls'));
+            const functionData = await functionResponse.json();
+            
+            // Find other traces of the same function (by name, file and line)
+            const mainFunction = mainTrace.function;
+            const mainFile = mainTrace.file;
+            const mainLine = mainTrace.line;
+            
+            const relatedFunctions = functionData.function_calls.filter(func => 
+                func.function === mainFunction && 
+                func.file === mainFile && 
+                func.line === mainLine && 
+                func.id !== functionId &&
+                func.has_stack_recording
+            );
+            
+            // For each related function, fetch its stack recording
+            for (const relatedFunc of relatedFunctions) {
+                const traceResponse = await fetch(getApiUrl(`/api/stack-recording/${relatedFunc.id}`));
+                const traceData = await traceResponse.json();
+                
+                const trace = {
+                    id: relatedFunc.id,
+                    function: traceData.function.name || traceData.function.function,
+                    file: traceData.function.file,
+                    line: traceData.function.line,
+                    timestamp: traceData.function.time || traceData.function.start_time,
+                    snapshots: traceData.frames.map(frame => ({
+                        id: frame.snapshot_id || frame.id,
+                        line: frame.line || frame.line_number,
+                        timestamp: frame.timestamp,
+                        locals: frame.locals || {},
+                        globals: frame.globals || {}
+                    }))
+                };
+                
+                traces.set(parseInt(relatedFunc.id), trace);
+            }
+        } catch (error) {
+            console.error('Error loading related traces:', error);
+        }
+        
     } catch (error) {
         console.error('Error loading traces:', error);
     }
@@ -285,8 +365,15 @@ function updateGraph() {
 }
 
 function formatVariables(variables) {
+    if (!variables) return "No variables available";
+    
     return Object.entries(variables)
-        .map(([name, data]) => `${name}: ${data.value}`)
+        .map(([name, data]) => {
+            // Handle both direct values and object with type/value
+            const value = typeof data === 'object' && data.value ? data.value : data;
+            const type = typeof data === 'object' && data.type ? `(${data.type})` : '';
+            return `${name} ${type}: ${value}`;
+        })
         .join('\n');
 }
 

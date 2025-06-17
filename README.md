@@ -1,269 +1,109 @@
 # PyMonitor
 
-PyMonitor is a powerful Python monitoring and introspection tool that allows you to track function calls, arguments, return values, and object states during program execution. It provides detailed insights into your code's behavior and performance, making it easier to debug, profile, and understand complex applications.
+PyMonitor is a Python execution monitoring and analysis tool that helps you understand how your code executes by tracking function calls, variable values, and execution flow.
 
 ## Features
 
-- **Function Call Monitoring**: Track all function calls, their arguments, and return values
-- **Object Introspection**: Capture detailed information about objects, including their attributes and structure
-- **Database Storage**: Store monitoring data in SQLite databases for later analysis
-- **Web Explorer**: Browse and analyze monitoring data through a user-friendly web interface
-- **Low Overhead**: Designed to minimize performance impact on monitored applications
-- **Custom Object Support**: Handles custom classes, nested objects, and complex data structures
-- **Automatic Schema Migration**: Seamlessly upgrade database schemas when the library is updated
-- **Object Versioning**: Track changes to objects over time with detailed version history
-- **Function Reanimation**: Replay previous function executions using stored arguments
+- **Function Execution Monitoring**: Track function calls, arguments, and return values
+- **Line-by-Line Execution**: Record the state of variables at each line of code execution
+- **Object Tracking**: Monitor how objects are created and modified during execution
+- **Session Management**: Group related function calls into logical sessions
+- **Reanimation**: Replay function executions with exact recorded state
+- **Recording Control**: Selectively enable or disable monitoring for specific code sections
+- **Web Interface**: Visualize and explore execution data through a web-based interface
+- **MCP Protocol**: Remote monitoring and analysis
 
 ## Installation
 
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/PyMonitor.git
-cd PyMonitor
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Install in development mode
-pip install -e .
+pip install pymonitor
 ```
 
 ## Quick Start
 
-### Basic Usage
-
 ```python
-from monitoringpy import init_monitoring, stop_monitoring
+from monitoringpy import init_monitoring, pymonitor, start_session, end_session
 
 # Initialize monitoring
-init_monitoring("my_app.db")
+monitor = init_monitoring()
 
-# Your code to monitor
-def my_function(a, b):
-    return a + b
+# Start a monitoring session
+start_session("Example Session")
 
-result = my_function(5, 10)
+# Decorate functions you want to monitor
+@pymonitor
+def factorial(n):
+    if n <= 1:
+        return 1
+    return n * factorial(n-1)
+
+# Call your functions
+result = factorial(5)
 print(f"Result: {result}")
 
-# Stop monitoring
-stop_monitoring()
+# End the session
+end_session()
 ```
 
-### Viewing Results
+## Recording Control
 
-```bash
-# Run the web explorer
-python -m monitoringpy.web_explorer my_app.db
-```
+PyMonitor allows you to selectively enable or disable monitoring during execution, which is useful for:
 
-Then open your browser at http://127.0.0.1:5000 to explore the monitoring data.
+- Excluding heavy computations from monitoring to reduce overhead
+- Focusing monitoring on specific parts of your code
+- Creating targeted recording sessions for complex applications
 
-## Advanced Usage
-
-### Monitoring with Context Manager
+### Ways to Control Recording
 
 ```python
-from monitoringpy import MonitoringContext
-
-# Use context manager for monitoring a specific block of code
-with MonitoringContext("my_app.db"):
-    # Code to monitor
-    result = complex_calculation(data)
-```
-
-### Custom Object Handling
-
-PyMonitor can handle custom objects and their attributes:
-
-```python
-from monitoringpy import init_monitoring, stop_monitoring
-
-class Point:
-    def __init__(self, x, y):
-        self.x = x
-        self.y = y
-        
-    def distance(self, other):
-        return ((self.x - other.x)**2 + (self.y - other.y)**2)**0.5
+from monitoringpy import (
+    init_monitoring, pymonitor, 
+    disable_recording, enable_recording, recording_context
+)
 
 # Initialize monitoring
-init_monitoring("custom_objects.db")
-
-# Create and use custom objects
-p1 = Point(3, 4)
-p2 = Point(6, 8)
-distance = p1.distance(p2)
-print(f"Distance: {distance}")
-
-# Stop monitoring
-stop_monitoring()
-```
-
-### Custom Pickle Handlers
-
-For objects that need special handling during pickling (like pygame events, numpy arrays, etc.), PyMonitor supports custom pickle handlers:
-
-```python
-import pygame
-import copyreg
-from monitoringpy import init_monitoring, pymonitor
-from monitoringpy.core.representation import PickleConfig
-
-# Define a custom reducer for pygame events
-def reduce_pygame_event(e):
-    return (pygame.event.Event, (e.type, e.dict.copy()))
-
-# Create a custom pickle config
-dispatch_table = copyreg.dispatch_table.copy()
-dispatch_table[pygame.event.EventType] = reduce_pygame_event
-pickle_config = PickleConfig(dispatch_table=dispatch_table)
-
-# Initialize monitoring with custom pickle config
-monitor = init_monitoring(db_path="game_events.db", pickle_config=pickle_config)
+monitor = init_monitoring()
 
 @pymonitor
-def process_event(event):
-    # Now pygame events will be correctly pickled and stored
-    if event.type == pygame.KEYDOWN:
-        print(f"Key pressed: {pygame.key.name(event.key)}")
-    return event
+def my_function():
+    # This part will be monitored
+    step1()
+    
+    # Disable monitoring for expensive operations
+    disable_recording()
+    expensive_operation()
+    enable_recording()
+    
+    # Use a context manager for cleaner code
+    with recording_context(enabled=False):
+        another_expensive_operation()
+    
+    # Back to being monitored
+    final_step()
 ```
 
-This feature is particularly useful for libraries that use custom objects that don't pickle well by default. See `examples/custom_pickle_example.py` for a complete demonstration.
+See the `examples/recording_control_demo.py` file for a complete example.
 
-### Performance Monitoring with PyRAPL
+## Web Interface
 
-If you have PyRAPL installed, PyMonitor can track energy consumption:
+PyMonitor includes a web interface for visualizing execution data:
 
 ```python
-from monitoringpy import init_monitoring, stop_monitoring
+from monitoringpy import WebExplorer
 
-# Initialize monitoring with PyRAPL enabled
-init_monitoring("performance.db", enable_pyrapl=True)
-
-# Your code to monitor
-result = compute_intensive_function()
-
-# Stop monitoring
-stop_monitoring()
+# After collecting monitoring data
+explorer = WebExplorer("monitoring.db")
+explorer.start()  # Opens http://localhost:5000 by default
 ```
 
-## Function Reanimation
+## Documentation
 
-PyMonitor allows you to replay previous function executions using the stored arguments:
-
-```python
-import monitoringpy
-
-# Load the arguments from a previous function execution
-args, kwargs = monitoringpy.load_execution_data("123", "monitoring.db")
-
-# Import the function manually
-from your_module import your_function
-
-# Execute the function with the same arguments
-result = your_function(*args, **kwargs)
-print(f"Result: {result}")
-
-# Or use the shorthand method that handles everything
-result = monitoringpy.reanimate_function("123", "monitoring.db")
-print(f"Result: {result}")
-```
-
-For detailed documentation on the reanimation features, see [docs/reanimation.md](docs/reanimation.md).
-
-## Web Explorer
-
-The web explorer provides a user-friendly interface to browse and analyze monitoring data:
-
-- View all function calls with timestamps and durations
-- Explore function arguments and return values
-- Examine object structures and attributes
-- Filter and search for specific functions or objects
-- Analyze performance metrics (if PyRAPL is enabled)
-- View object version history and compare changes between versions
-
-To run the web explorer:
-
-```bash
-python -m monitoringpy.web_explorer your_database.db
-```
-
-For more details, see [WEB_EXPLORER.md](WEB_EXPLORER.md).
-
-## Database Schema Migration
-
-PyMonitor automatically handles database schema migrations when the library is updated. If you encounter issues with older databases, you can manually migrate them:
-
-```python
-from monitoringpy.migrate_db import migrate_database
-
-# Migrate an older database to the current schema
-migrate_database("old_database.db")
-```
-
-## Examples
-
-Check out the `examples/` directory for more usage examples:
-
-- `basic.py`: Simple function monitoring
-- `custom_objects.py`: Monitoring with custom objects
-- `performance.py`: Performance monitoring with PyRAPL
-
-## Testing
-
-PyMonitor includes a comprehensive test suite to ensure reliability and correctness:
-
-```bash
-# Run all tests
-python tests/run_tests.py
-
-# Or use the standard unittest module
-python -m unittest discover tests
-```
-
-The tests cover:
-
-- Object hashing and identity management
-- Object storage and retrieval
-- Object versioning and version history
-- Function call data with versioned objects
-- Complex object structures and custom classes
-
-For more details on the test suite, see [tests/README.md](tests/README.md).
-
-## Troubleshooting
-
-### Common Issues
-
-1. **Database Errors**: If you encounter database errors, try migrating the database:
-   ```python
-   from monitoringpy.migrate_db import migrate_database
-   migrate_database("your_database.db")
-   ```
-
-2. **Module Not Found Errors**: Ensure your Python path includes the project directory:
-   ```bash
-   export PYTHONPATH=$PYTHONPATH:/path/to/PyMonitor
-   ```
-
-3. **Performance Issues**: If monitoring causes significant slowdowns, consider:
-   - Reducing the monitoring depth (default is 3)
-   - Disabling PyRAPL if it's enabled
-   - Monitoring only specific functions instead of all functions
+For detailed documentation, visit [https://pymonitor.readthedocs.io](https://pymonitor.readthedocs.io)
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Add tests for your changes
-4. Ensure all tests pass (`python tests/run_tests.py`)
-5. Commit your changes (`git commit -m 'Add some amazing feature'`)
-6. Push to the branch (`git push origin feature/amazing-feature`)
-7. Open a Pull Request
+Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details. 
+PyMonitor is released under the MIT License. See [LICENSE](LICENSE) for details. 

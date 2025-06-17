@@ -1,247 +1,382 @@
-from sqlalchemy import Column, String, DateTime, Integer, ForeignKey, create_engine, LargeBinary, Boolean, JSON, Text
+from sqlalchemy import String, DateTime, Integer, ForeignKey, create_engine, LargeBinary, Boolean, JSON, Text, desc, Index
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, relationship
+from sqlalchemy.orm import sessionmaker, relationship, Mapped, mapped_column
 from sqlalchemy.sql import func
+from typing import Optional, Dict, Any
 import datetime
 import os
 import logging
-import sqlite3
 import shutil
+import sqlite3
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 Base = declarative_base()
 
-class StoredObject(Base):
-    """Model for storing objects"""
-    __tablename__ = 'stored_objects'
-
-    id = Column(String, primary_key=True)
-    type_name = Column(String, nullable=False)
-    is_primitive = Column(Boolean, nullable=False)
-    primitive_value = Column(String, nullable=True)
-    pickle_data = Column(LargeBinary, nullable=True)
-    created_at = Column(DateTime, default=datetime.datetime.now)
-
-    # Relationships
-    versions = relationship("ObjectVersion", back_populates="object", cascade="all, delete-orphan")
-    identities = relationship("ObjectIdentity", back_populates="latest_version")
-
-class ObjectVersion(Base):
-    """Model for tracking object versions"""
-    __tablename__ = 'object_versions'
-
-    id = Column(Integer, primary_key=True)
-    object_id = Column(String, ForeignKey('stored_objects.id'), nullable=False)
-    identity_id = Column(Integer, ForeignKey('object_identities.id'), nullable=False)
-    version_number = Column(Integer, nullable=False)
-    timestamp = Column(DateTime, default=datetime.datetime.now)
-
-    # Relationships
-    object = relationship("StoredObject", back_populates="versions")
-    identity = relationship("ObjectIdentity", back_populates="versions")
-
 class ObjectIdentity(Base):
-    """Model for tracking object identity across versions"""
+    """Model for tracking object identity"""
     __tablename__ = 'object_identities'
 
-    id = Column(Integer, primary_key=True)
-    identity_hash = Column(String, unique=True, nullable=False)
-    name = Column(String, nullable=True)
-    creation_time = Column(DateTime, default=datetime.datetime.now)
-    latest_version_id = Column(String, ForeignKey('stored_objects.id'), nullable=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    identity_hash: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    creation_time: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.now)
+    
+    # Relationship - one identity has many object states/versions
+    versions = relationship("StoredObject", back_populates="identity", order_by="StoredObject.version_number")
+    
+    def get_latest_version(self, session=None):
+        """Get the latest version using a direct query
+        
+        Args:
+            session: SQLAlchemy session to use (optional)
+        
+        Returns:
+            The latest StoredObject version or None
+        """
+        if session is None:
+            # If no session provided, we can't query
+            return None
+            
+        # Use SQLAlchemy query to get the latest version by version_number
+        return session.query(StoredObject).filter(
+            StoredObject.identity_id == self.id
+        ).order_by(desc(StoredObject.version_number)).first()
 
+class StoredObject(Base):
+    """Model for storing object versions"""
+    __tablename__ = 'stored_objects'
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    identity_id: Mapped[int] = mapped_column(Integer, ForeignKey('object_identities.id'), nullable=False)
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    type_name: Mapped[str] = mapped_column(String, nullable=False)
+    is_primitive: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    primitive_value: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    pickle_data: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True)
+    
     # Relationships
-    latest_version = relationship("StoredObject", back_populates="identities")
-    versions = relationship("ObjectVersion", back_populates="identity", cascade="all, delete-orphan")
+    identity = relationship("ObjectIdentity", back_populates="versions")
+    code_definitions = relationship("CodeDefinition", secondary="code_object_links", back_populates="objects")
 
 class StackSnapshot(Base):
-    """Model for storing stack state at each line execution"""
+    """Model for storing stack state at each line execution
+    
+    Each snapshot represents the state of local and global variables
+    at a specific line during function execution. Snapshots form a 
+    chronological sequence within a function call.
+    """
     __tablename__ = 'stack_snapshots'
 
-    id = Column(Integer, primary_key=True)
-    function_call_id = Column(Integer, ForeignKey('function_calls.id'), nullable=False)
-    line_number = Column(Integer, nullable=False)
-    timestamp = Column(DateTime, default=datetime.datetime.now)
-    locals_refs = Column(JSON, nullable=False, default=dict)  # Dict[str, str] mapping variable names to object refs
-    globals_refs = Column(JSON, nullable=False, default=dict)  # Dict[str, str] mapping variable names to object refs
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    function_call_id: Mapped[int] = mapped_column(Integer, ForeignKey('function_calls.id'), nullable=False)
+    line_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    timestamp: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.now)
+    locals_refs: Mapped[Dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)  # Dict[str, str] mapping variable names to object refs
+    globals_refs: Mapped[Dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)  # Dict[str, str] mapping variable names to object refs
     
-    # Linked list structure
-    previous_snapshot_id = Column(Integer, ForeignKey('stack_snapshots.id'), nullable=True)
-    next_snapshot_id = Column(Integer, ForeignKey('stack_snapshots.id'), nullable=True)
+    # Chronological ordering within a function call
+    order_in_call: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # Position in the execution sequence
     
     # Relationships
-    function_call = relationship("FunctionCall", foreign_keys=[function_call_id], back_populates="stack_recording")
-    previous_snapshot = relationship("StackSnapshot", foreign_keys=[previous_snapshot_id], remote_side=[id], backref="next_snapshot_ref")
-    next_snapshot = relationship("StackSnapshot", foreign_keys=[next_snapshot_id], remote_side=[id], backref="previous_snapshot_ref")
+    function_call = relationship("FunctionCall", back_populates="stack_snapshots")
+    next_snapshot_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey('stack_snapshots.id'), nullable=True)
+    next_snapshot = relationship("StackSnapshot", foreign_keys=[next_snapshot_id], remote_side=[id], uselist=False)
+    
+    def get_previous_snapshot(self, session):
+        """Get the previous snapshot in the execution sequence.
+        
+        Args:
+            session: SQLAlchemy session to use for query
+            
+        Returns:
+            The previous StackSnapshot or None if this is the first snapshot
+        """
+        return session.query(StackSnapshot).filter(
+            StackSnapshot.function_call_id == self.function_call_id,
+            StackSnapshot.order_in_call < self.order_in_call
+        ).order_by(desc(StackSnapshot.order_in_call)).first()
+        
+    @property
+    def is_first_in_call(self):
+        """Return True if this is the first snapshot in its function call"""
+        return self.order_in_call == 0
+        
+    @property
+    def is_last_in_call(self):
+        """Return True if this is the last snapshot in its function call"""
+        return self.next_snapshot_id is None
 
 class FunctionCall(Base):
     """Model for storing function call information"""
     __tablename__ = 'function_calls'
 
-    id = Column(Integer, primary_key=True)
-    function = Column(String, nullable=False)
-    file = Column(String, nullable=True)
-    line = Column(Integer, nullable=True)
-    start_time = Column(DateTime, nullable=False)
-    end_time = Column(DateTime, nullable=True)
-    call_metadata = Column(JSON, nullable=True)  # For storing additional data like PyRAPL measurements
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    function: Mapped[str] = mapped_column(String, nullable=False)
+    file: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    line: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    start_time: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=False)
+    end_time: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
+    call_metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)  # For storing additional data like PyRAPL measurements
     
     # Store references to objects
-    locals_refs = Column(JSON, nullable=False, default=dict)  # Dict[str, str] mapping variable names to object refs
-    globals_refs = Column(JSON, nullable=False, default=dict)  # Dict[str, str] mapping variable names to object refs
-    return_ref = Column(String, nullable=True)  # Reference to return value in object manager
+    locals_refs: Mapped[Dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)  # Dict[str, str] mapping variable names to object refs
+    globals_refs: Mapped[Dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)  # Dict[str, str] mapping variable names to object refs
+    return_ref: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # Reference to return value in object manager
 
-    # Store error information
-    exception = Column(String, nullable=True)  # Exception information if any
-    error_stack_trace = Column(Text, nullable=True)  # Stack trace at the time of error
-
-    # Reference to the first stack snapshot (if line monitoring is enabled)
-    first_snapshot_id = Column(Integer, ForeignKey('stack_snapshots.id'), nullable=True)
-    
     # Code version tracking
-    code_definition_id = Column(String, ForeignKey('code_definitions.id'), nullable=True)
+    code_definition_id: Mapped[Optional[str]] = mapped_column(String, ForeignKey('code_definitions.id'), nullable=True)
     
-    # New session relationship
-    session_id = Column(Integer, ForeignKey('monitoring_sessions.id'), nullable=True)
+    # Session relationship
+    session_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey('monitoring_sessions.id'), nullable=True)
 
-    # Linked list structure for calls within a session or branch
-    previous_call_id = Column(Integer, ForeignKey('function_calls.id'), nullable=True)
-    next_call_id = Column(Integer, ForeignKey('function_calls.id'), nullable=True)
-
-    # Branching structure for re-executions
-    parent_call_id = Column(Integer, ForeignKey('function_calls.id'), nullable=True)  # Points to the call this branch diverged from
-
+    # Hierarchical structure - parent/child relationships
+    parent_call_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey('function_calls.id'), nullable=True)
+    
+    # Ordering within the parent function (position among siblings)
+    order_in_parent: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    
+    # Chronological ordering within a session
+    order_in_session: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # Position in the session sequence
+    
+    # First snapshot reference for efficient stack trace retrieval
+    first_snapshot_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    
     # Relationships
     session = relationship("MonitoringSession", foreign_keys=[session_id], back_populates="function_calls")
-    stack_recording = relationship("StackSnapshot", foreign_keys=[StackSnapshot.function_call_id], back_populates="function_call")
-    first_snapshot = relationship("StackSnapshot", foreign_keys=[first_snapshot_id], overlaps="stack_recording")
-    code_definition = relationship("CodeDefinition")
-
-    previous_call = relationship("FunctionCall", foreign_keys=[previous_call_id], remote_side=[id], backref="next_call_ref", overlaps="next_call")
-    next_call = relationship("FunctionCall", foreign_keys=[next_call_id], remote_side=[id], backref="previous_call_ref", overlaps="previous_call")
+    stack_snapshots = relationship("StackSnapshot", back_populates="function_call", order_by="StackSnapshot.timestamp")
+    code_definition = relationship("CodeDefinition", back_populates="function_calls")
     parent_call = relationship("FunctionCall", foreign_keys=[parent_call_id], remote_side=[id], backref="child_calls")
-    # child_calls relationship is created by the backref from parent_call
+    
+    def get_child_calls(self, session):
+        """Get all child function calls ordered by their execution sequence
+        
+        Args:
+            session: SQLAlchemy session to use for query
+            
+        Returns:
+            List of child FunctionCall objects in execution order
+        """
+        return session.query(FunctionCall).filter(
+            FunctionCall.parent_call_id == self.id
+        ).order_by(FunctionCall.order_in_parent, FunctionCall.start_time).all()
+    
+    def get_execution_tree(self, session, max_depth=None, current_depth=0):
+        """Recursively build the execution tree starting from this function call
+        
+        Args:
+            session: SQLAlchemy session to use for query
+            max_depth: Maximum depth to traverse (None for unlimited)
+            current_depth: Current depth in the recursion
+            
+        Returns:
+            Dict containing this call's info and its child calls
+        """
+        # Stop recursion if we've reached max depth
+        if max_depth is not None and current_depth >= max_depth:
+            return {"id": self.id, "function": self.function, "has_children": bool(self.child_calls)}
+        
+        # Get child calls ordered by execution
+        children = self.get_child_calls(session)
+        
+        # Build the current node
+        node = {
+            "id": self.id,
+            "function": self.function,
+            "file": self.file,
+            "line": self.line,
+            "start_time": self.start_time.isoformat() if self.start_time else None,
+            "end_time": self.end_time.isoformat() if self.end_time else None,
+            "return_ref": self.return_ref,
+            "children": []
+        }
+        
+        # Recursively add children
+        for child in children:
+            child_node = child.get_execution_tree(
+                session, 
+                max_depth=max_depth, 
+                current_depth=current_depth + 1
+            )
+            node["children"].append(child_node)
+            
+        return node
+
+    def to_dict(self):
+        """Convert the FunctionCall object to a dictionary for API responses"""
+        return {
+            "id": self.id,
+            "function": self.function,
+            "file": self.file,
+            "line": self.line,
+            "start_time": self.start_time.isoformat() if self.start_time else None,
+            "end_time": self.end_time.isoformat() if self.end_time else None,
+            "call_metadata": self.call_metadata,
+            "locals_refs": self.locals_refs,
+            "globals_refs": self.globals_refs,
+            "return_ref": self.return_ref,
+            "code_definition_id": self.code_definition_id,
+            "session_id": self.session_id,
+            "parent_call_id": self.parent_call_id,
+            "order_in_parent": self.order_in_parent,
+            "order_in_session": self.order_in_session,
+            "first_snapshot_id": self.first_snapshot_id
+        }
 
 class CodeDefinition(Base):
-    """Represents a code definition (class, function, etc.)."""
+    """Represents a code definition (class, function, etc.).
+    
+    This stores the actual code content of functions and classes that are monitored,
+    allowing replay and analysis of the exact code version used during execution.
+    """
     __tablename__ = 'code_definitions'
 
-    id = Column(String, primary_key=True)  # Hash of the code content
-    name = Column(String, nullable=False)  # Class/function name
-    type = Column(String, nullable=False)  # 'class' or 'function'
-    module_path = Column(String, nullable=False)  # Full module path
-    code_content = Column(Text, nullable=False)  # The actual code
-    first_line_no = Column(Integer, nullable=True)  # Line offset in the file
-    creation_time = Column(DateTime, server_default=func.now())
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # Hash of the code content
+    name: Mapped[str] = mapped_column(String, nullable=False)  # Class/function name
+    type: Mapped[str] = mapped_column(String, nullable=False)  # 'class' or 'function'
+    module_path: Mapped[str] = mapped_column(String, nullable=False)  # Full module path
+    code_content: Mapped[str] = mapped_column(Text, nullable=False)  # The actual code
+    first_line_no: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # Line offset in the file
+    creation_time: Mapped[datetime.datetime] = mapped_column(DateTime, server_default=func.now())
     
+    # Direct relationships
+    function_calls = relationship("FunctionCall", back_populates="code_definition")
+    objects = relationship("StoredObject", secondary="code_object_links", back_populates="code_definitions")
 
 class CodeObjectLink(Base):
-    """Links objects to their code definitions."""
+    """Links objects to their code definitions.
+    
+    This is a many-to-many join table that connects StoredObjects with CodeDefinitions.
+    It allows tracking which objects were created by which code definitions,
+    enabling features like:
+    1. Finding all objects created by a particular class/function
+    2. Seeing the source code that created a given object
+    3. Analyzing changes in object creation across code versions
+    """
     __tablename__ = 'code_object_links'
 
-    id = Column(Integer, primary_key=True)
-    object_id = Column(String, ForeignKey('stored_objects.id'), nullable=False)
-    definition_id = Column(String, ForeignKey('code_definitions.id'), nullable=False)
-    timestamp = Column(DateTime, server_default=func.now())
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    object_id: Mapped[str] = mapped_column(String, ForeignKey('stored_objects.id'), nullable=False)
+    definition_id: Mapped[str] = mapped_column(String, ForeignKey('code_definitions.id'), nullable=False)
+    timestamp: Mapped[datetime.datetime] = mapped_column(DateTime, server_default=func.now())
+    
+    # Add indexes for faster queries
+    __table_args__ = (
+        Index('idx_code_object_link_object', 'object_id'),
+        Index('idx_code_object_link_definition', 'definition_id'),
+    )
 
 class MonitoringSession(Base):
-    """Model for grouping function calls into a logical session"""
+    """Model for grouping function calls into a logical session
+    
+    A monitoring session represents a continuous period of execution monitoring,
+    typically corresponding to a single run of a program or a specific task.
+    It provides organization and context for function calls captured during that period.
+    """
     __tablename__ = 'monitoring_sessions'
 
-    id = Column(Integer, primary_key=True)
-    name = Column(String, nullable=True)  # Optional name for the session
-    description = Column(String, nullable=True)  # Optional description
-    start_time = Column(DateTime, nullable=False, default=datetime.datetime.now)
-    end_time = Column(DateTime, nullable=True)  # Will be filled when session ends
-    
-    # Store the structure: function_name -> ordered list of function call ids
-    function_calls_map = Column(JSON, nullable=False, default=dict)  # Dict[str, List[int]]
-    
-    # Store precalculated data
-    common_globals = Column(JSON, nullable=False, default=dict)  # Dict[function_name, List[var_name]]
-    common_locals = Column(JSON, nullable=False, default=dict)   # Dict[function_name, List[var_name]]
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # Optional name for the session
+    description: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # Optional description
+    start_time: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=False, default=datetime.datetime.now)
+    end_time: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)  # Will be filled when session ends
     
     # Metadata about the session - renamed to avoid SQLAlchemy reserved name conflict
-    session_metadata = Column(JSON, nullable=True)  # For any additional data
-    
-    # Entry point for the main call sequence in this session
-    entry_point_call_id = Column(Integer, ForeignKey('function_calls.id'), nullable=True)
+    session_metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)  # For any additional data
     
     # Relationships
     function_calls = relationship("FunctionCall", foreign_keys=[FunctionCall.session_id], back_populates="session")
-    entry_point_call = relationship("FunctionCall", foreign_keys=[entry_point_call_id])
+    
+    @property
+    def duration(self):
+        """Return the duration of the session in seconds, or None if session is still active"""
+        end_time_value = getattr(self, 'end_time', None)
+        if not end_time_value:
+            return None
+        start_time_value = getattr(self, 'start_time', None)
+        if not start_time_value:
+            return None
+        return (end_time_value - start_time_value).total_seconds()
+    
+    def get_function_calls_by_name(self, session, function_name):
+        """Get all function calls with the given name in this session
+        
+        Args:
+            session: SQLAlchemy session to use for query
+            function_name: Name of the function to find calls for
+            
+        Returns:
+            List of FunctionCall objects for the given function name
+        """
+        return session.query(FunctionCall).filter(
+            FunctionCall.session_id == self.id,
+            FunctionCall.function == function_name
+        ).order_by(FunctionCall.order_in_session).all()
+    
+    def get_call_sequence(self, session):
+        """Get the chronological sequence of top-level function calls in this session
+        
+        Args:
+            session: SQLAlchemy session to use for query
+            
+        Returns:
+            List of FunctionCall objects in chronological order
+        """
+        return session.query(FunctionCall).filter(
+            FunctionCall.session_id == self.id,
+            FunctionCall.parent_call_id is None  # Only top-level calls
+        ).order_by(FunctionCall.order_in_session).all()
 
 def init_db(db_path):
-    """Initialize the database and return session factory"""
-    if db_path != ":memory:":
-        # Ensure we have an absolute path for file-based databases
-        db_path = os.path.abspath(db_path)
+    """Initialize the database and return session factory
+    
+    Args:
+        db_path: Path to the SQLite database file or ':memory:' for in-memory database
         
-        # Create the directory if it doesn't exist
-        db_dir = os.path.dirname(db_path)
-        if db_dir and not os.path.exists(db_dir):
-            os.makedirs(db_dir)
-        
-        try:
-            # Check if the database file exists and is valid
+    Returns:
+        SQLAlchemy Session factory configured for the database
+    
+    Raises:
+        RuntimeError: If database initialization fails
+    """
+    try:
+        # Handle file-based databases
+        if db_path != ":memory:":
+            # Ensure we have an absolute path
+            db_path = os.path.abspath(db_path)
+            
+            # Create directory if needed
+            db_dir = os.path.dirname(db_path)
+            if db_dir and not os.path.exists(db_dir):
+                os.makedirs(db_dir)
+            
+            # If database exists but appears corrupted, create a backup
             if os.path.exists(db_path):
                 try:
-                    # Try to open the database to check if it's valid
-                    conn = sqlite3.connect(db_path)
-                    # Try a simple query to verify the database is functional
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-                    cursor.fetchall()
-                    conn.close()
-                    logger.info(f"Successfully connected to existing database at {db_path}")
+                    # Quick check if database is accessible
+                    sqlite3.connect(db_path).close()
                 except sqlite3.Error as e:
-                    # If there's an error, the database might be corrupted
-                    logger.error(f"Error connecting to database: {e}")
-                    logger.warning(f"Database at {db_path} might be corrupted. Creating backup and new database.")
-                    
-                    # Create a backup of the potentially corrupted database
+                    # Create backup of corrupted database
                     backup_path = f"{db_path}.backup.{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
-                    try:
-                        shutil.copy2(db_path, backup_path)
-                        logger.info(f"Created backup of potentially corrupted database at {backup_path}")
-                        # Remove the original file to create a fresh database
-                        os.remove(db_path)
-                    except OSError as e:
-                        logger.error(f"Failed to create backup: {e}")
-                        # If we can't create a backup, try to remove the file
-                        try:
-                            os.remove(db_path)
-                            logger.info(f"Removed potentially corrupted database at {db_path}")
-                        except OSError as e2:
-                            logger.error(f"Failed to remove corrupted database: {e2}")
-                            raise RuntimeError(f"Cannot create or access database at {db_path}. Please check file permissions.")
-        except Exception as e:
-            logger.error(f"Unexpected error during database initialization: {e}")
-    
-    # Use appropriate SQLite connection string
-    connection_string = 'sqlite:///:memory:' if db_path == ':memory:' else f'sqlite:///{db_path}'
-    
-    # Create engine with appropriate parameters
-    # SQLite doesn't support pool_size, max_overflow, or pool_timeout
-    engine = create_engine(
-        connection_string, 
-        connect_args={
-            'check_same_thread': False,
-        }
-    )
-    
-    try:
-        # Create tables if they don't exist
+                    logger.warning(f"Database at {db_path} might be corrupted: {e}")
+                    logger.info(f"Creating backup at {backup_path}")
+                    shutil.copy2(db_path, backup_path)
+                    os.remove(db_path)
+        
+        # Create SQLAlchemy engine
+        connection_string = f'sqlite:///{db_path}' if db_path != ':memory:' else 'sqlite:///:memory:'
+        engine = create_engine(
+            connection_string, 
+            connect_args={'check_same_thread': False}
+        )
+        
+        # Create tables
         Base.metadata.create_all(engine)
-        logger.info("Database schema created successfully")
+        
+        # Create and return session factory
+        return sessionmaker(bind=engine, expire_on_commit=False)
+        
     except Exception as e:
-        logger.error(f"Error creating database schema: {e}")
-        raise
-    
-    # Create and return session factory
-    # Set expire_on_commit=False to prevent objects from being expired after commit
-    # This helps prevent "Parent instance is not bound to a Session" errors
-    Session = sessionmaker(bind=engine, expire_on_commit=False)
-    return Session 
+        logger.error(f"Database initialization failed: {e}")
+        raise RuntimeError(f"Failed to initialize database: {e}") from e 

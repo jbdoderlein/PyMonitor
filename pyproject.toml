@@ -18,15 +18,20 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
+    "bytecode>=0.16.2",
+    "debugpy>=1.8.14",
+    "fastapi>=0.115.12",
     "flask>=2.0.0",
     "flask-cors>=4.0.0",
+    "matplotlib>=3.10.3",
+    "pillow>=11.2.1",
+    "pygame>=2.6.1",
     "sqlalchemy>=2.0.0",
-    "pydantic>=2.0.0",
-    "mcp>=0.1.0",
+    "uvicorn>=0.34.2",
 ]
 
 [project.scripts]
-monitoringpy-graph = "monitoringpy.cli:main"
+web-pymonitor = "monitoringpy.interface.web.explorer:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/monitoringpy"] 

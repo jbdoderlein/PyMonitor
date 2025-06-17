@@ -5,8 +5,12 @@ This module provides reduction functions for Pygame types that aren't
 normally picklable, like Surface and Rect.
 """
 
-import pygame
-import io
+# Check if pygame is installed
+try:
+    import pygame
+except ImportError:
+    raise ImportError("pygame is not installed. Please install it using 'pip install pygame'.")
+
 import sys
 
 # Make sure this module is properly importable

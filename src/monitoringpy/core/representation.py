@@ -1,19 +1,15 @@
 import pickle
 import copyreg
-from typing import Any, Dict, Optional, Union, TypeVar, Generic, List as ListType, Sequence, Callable
+from typing import Any, Dict, Mapping, Optional, Tuple, Union, TypeVar, Sequence
 import hashlib
 from enum import Enum
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 import logging
-from .models import StoredObject, ObjectVersion, ObjectIdentity, CodeObjectLink, CodeDefinition
+from .models import StoredObject, ObjectIdentity, CodeObjectLink, CodeDefinition
 import datetime
-import inspect
-import uuid
-import re
 import io
 import importlib.util
-import os
 import sys
 from pathlib import Path
 
@@ -36,6 +32,7 @@ class PickleConfig:
         # Load custom picklers if specified
         if custom_picklers:
             self.load_custom_picklers(custom_picklers)
+
         
     def load_custom_picklers(self, module_names):
         """
@@ -52,47 +49,34 @@ class PickleConfig:
         
         # First make sure the picklers package is imported
         try:
-            import monitoringpy.picklers
+            import monitoringpy.picklers  # noqa: F401
         except ImportError:
             logger.warning("Could not import picklers package")
-        
-        for module_name in module_names:
-            # Construct the file path
-            file_path = base_path / f"{module_name}.py"
             
-            if not file_path.exists():
-                logger.warning(f"Custom pickler module not found: {file_path}")
-                continue
-                
+        for module_name in module_names:
             try:
-                # First try importing normally (in case it was already loaded by __init__)
-                module_path = f"monitoringpy.picklers.{module_name}"
-                try:
-                    if module_path in sys.modules:
-                        module = sys.modules[module_path]
+                # Try to import the module
+                full_module_name = f"monitoringpy.picklers.{module_name}"
+                module = importlib.util.find_spec(full_module_name)
+                if module is None:
+                    # Try loading from file
+                    module_path = base_path / f"{module_name}.py"
+                    if module_path.exists():
+                        spec = importlib.util.spec_from_file_location(full_module_name, module_path)
+                        if spec and spec.loader:
+                            module = importlib.util.module_from_spec(spec)
+                            spec.loader.exec_module(module)
+                            sys.modules[full_module_name] = module
                     else:
-                        module = importlib.import_module(module_path)
-                except ImportError:
-                    # If normal import fails, load directly from file
-                    spec = importlib.util.spec_from_file_location(module_path, file_path)
-                    if not spec or not spec.loader:
-                        logger.error(f"Failed to load spec for {module_name}")
+                        logger.warning(f"Could not find pickler module: {module_name}")
                         continue
-                        
-                    module = importlib.util.module_from_spec(spec)
-                    # Register in sys.modules first to allow for proper function references
-                    sys.modules[module_path] = module
-                    spec.loader.exec_module(module)
-                
-                # Check if the module has a get_dispatch_table function
-                if hasattr(module, 'get_dispatch_table'):
-                    # Get the dispatch table from the module
-                    custom_dispatch = module.get_dispatch_table()
-                    # Update the current dispatch table
-                    self.dispatch_table.update(custom_dispatch)
-                    logger.info(f"Loaded custom pickler for {module_name}")
                 else:
-                    logger.warning(f"Module {module_name} does not have a get_dispatch_table function")
+                    module = importlib.import_module(full_module_name)
+                
+                if module and hasattr(module, 'get_dispatch_table'):
+                    dispatch_table = module.get_dispatch_table()
+                    self.dispatch_table.update(dispatch_table)
+                            
             except Exception as e:
                 logger.error(f"Error loading custom pickler for {module_name}: {e}")
                 logger.exception(e)
@@ -104,22 +88,79 @@ class PickleConfig:
             p.dispatch_table = self.dispatch_table
         return p
         
-    def create_unpickler(self, file):
-        """Create an unpickler"""
+    def create_unpickler(self, file, correct_module_path=None):
+        """Create an unpickler, optionally with module path fixing"""
+        if correct_module_path:
+            return ModulePathFixingUnpickler(file, correct_module_path)
         return pickle.Unpickler(file)
         
-    def dumps(self, obj):
-        """Pickle an object with custom reducers"""
-        f = io.BytesIO()
-        pickler = self.create_pickler(f)
-        pickler.dump(obj)
-        return f.getvalue()
+    def dumps(self, obj, correct_module_path=None):
+        """Pickle an object with custom reducers and optional module path normalization"""
+        # Handle module path normalization for custom classes
+        original_modules = {}
+        if correct_module_path and hasattr(obj, '__class__'):
+            cls = obj.__class__
+            if hasattr(cls, '__module__') and cls.__module__ != correct_module_path:
+                original_modules[cls] = cls.__module__
+                cls.__module__ = correct_module_path
+                logger.debug(f"Temporarily changed {cls.__name__}.__module__ from {original_modules[cls]} to {correct_module_path}")
         
-    def loads(self, data):
-        """Unpickle an object"""
+        try:
+            f = io.BytesIO()
+            pickler = self.create_pickler(f)
+            pickler.dump(obj)
+            return f.getvalue()
+        finally:
+            # Restore original module paths
+            for cls, original_module in original_modules.items():
+                cls.__module__ = original_module
+                logger.debug(f"Restored {cls.__name__}.__module__ to {original_module}")
+        
+    def loads(self, data, correct_module_path=None):
+        """Unpickle an object with optional module path fixing"""
         f = io.BytesIO(data)
-        unpickler = self.create_unpickler(f)
+        unpickler = self.create_unpickler(f, correct_module_path)
         return unpickler.load()
+
+
+class ModulePathFixingUnpickler(pickle.Unpickler):
+    """Custom unpickler that fixes module path mismatches using stored metadata"""
+    
+    def __init__(self, file, correct_module_path):
+        super().__init__(file)
+        self.correct_module_path = correct_module_path
+        
+    def find_class(self, module, name):
+        """Override find_class to fix module path mismatches"""
+        original_module = module
+        
+        # If we're trying to load from __main__ but should use a different module path
+        if module == "__main__" and self.correct_module_path and self.correct_module_path != "__main__":
+            module = self.correct_module_path
+            logger.debug(f"Fixed module path: {original_module}.{name} -> {module}.{name}")
+        
+        # If we're trying to load from a module path but it was originally __main__
+        elif module != "__main__" and self.correct_module_path == "__main__":
+            # Try __main__ first, then fall back to the original module
+            try:
+                return super().find_class("__main__", name)
+            except (ImportError, AttributeError):
+                logger.debug(f"Class not found in __main__, trying original module {module}")
+                # Fall through to use original module
+        
+        try:
+            return super().find_class(module, name)
+        except (ImportError, AttributeError) as e:
+            # If we can't find the class, try some common alternatives
+            if module == "__main__":
+                # Try to find the class in any loaded module
+                for mod_name, mod in sys.modules.items():
+                    if hasattr(mod, name) and isinstance(getattr(mod, name), type):
+                        logger.debug(f"Found class {name} in module {mod_name} instead of {module}")
+                        return getattr(mod, name)
+            
+            # Re-raise the original error if we can't fix it
+            raise e
 
 class Object:
     """Represent an object at a certain state in the program"""
@@ -232,6 +273,19 @@ class ObjectManager:
             # For non-primitives, identity is based on object id
             return str(id(obj.value))
 
+    def _get_correct_module_path_for_object(self, stored_obj: StoredObject) -> Optional[str]:
+        """Get the correct module path for an object from stored metadata"""
+        try:
+            # Get the code definition through the link table
+            code_link = self.session.query(CodeObjectLink).filter_by(object_id=stored_obj.id).first()
+            if code_link:
+                code_def = self.session.query(CodeDefinition).filter_by(id=code_link.definition_id).first()
+                if code_def:
+                    return code_def.module_path
+        except Exception as e:
+            logger.debug(f"Could not get module path for object {stored_obj.id}: {e}")
+        return None
+
     def _store_object(self, obj: Object) -> StoredObject:
         """Store an object in the database"""
         ref = obj.ref()
@@ -241,35 +295,67 @@ class ObjectManager:
         if stored_obj:
             return stored_obj
 
+        # Get or create an identity for the object
+        identity_hash = self._get_identity(obj)
+        identity = self.session.query(ObjectIdentity).filter(ObjectIdentity.identity_hash == identity_hash).first()
+        
+        if not identity:
+            identity = ObjectIdentity(
+                identity_hash=identity_hash,
+                name=type(obj.value).__name__
+            )
+            self.session.add(identity)
+            self.session.flush()  # Ensure identity gets an ID
+        
+        # For custom objects, determine the correct module path for consistent storage
+        correct_module_path = None
+        if obj.type == ObjectType.CUSTOM and hasattr(obj.value, '__class__'):
+            cls = obj.value.__class__
+            if hasattr(cls, '__module__'):
+                # Normalize __main__ to the actual module name if we can determine it
+                if cls.__module__ == "__main__":
+                    # Try to find a better module name from the file path or other context
+                    # For now, we'll store as __main__ but this could be enhanced
+                    correct_module_path = "__main__"
+                else:
+                    correct_module_path = cls.__module__
+        
         # Create new stored object
         if obj.type == ObjectType.PRIMITIVE:
             stored_obj = StoredObject(
                 id=ref,
+                identity_id=identity.id,
+                version_number=1,  # First version
                 type_name=type(obj.value).__name__,  # Store actual type name (int, float, etc.)
                 is_primitive=True,
                 primitive_value=str(obj.value)
             )
         else:
-            # For non-primitive types, use the actual class name of the value
-            actual_type_name = type(obj.value).__name__
+            # Get appropriate type name
+            if obj.type == ObjectType.LIST:
+                actual_type_name = 'list'
+            elif obj.type == ObjectType.DICT:
+                actual_type_name = 'dict'
+            else:
+                # For custom types, get the actual class name
+                actual_type_name = obj.value.__class__.__name__
+                
+            # Use the correct module path for pickling if available
+            pickle_data = self.pickle_config.dumps(obj.value, correct_module_path)
+                
             stored_obj = StoredObject(
                 id=ref,
+                identity_id=identity.id,
+                version_number=1,  # First version
                 type_name=actual_type_name,  # Use the actual class name instead of our representation type
                 is_primitive=False,
-                pickle_data=obj.pickle_config.dumps(obj.value)
+                pickle_data=pickle_data
             )
-
+        
+        # Add to session
         self.session.add(stored_obj)
-        try:
-            self.session.flush()
-        except SQLAlchemyError as e:
-            logger.warning(f"Error storing object: {e}")
-            self.session.rollback()
-            # Try to get the object again (might have been created by another process)
-            stored_obj = self.session.query(StoredObject).filter(StoredObject.id == ref).first()
-            if not stored_obj:
-                raise
-
+        self.session.flush()
+        
         # If it's a custom class and we have a code manager, store the class definition
         if (obj.type == ObjectType.CUSTOM and self.code_manager is not None and 
             not isinstance(obj.value, (int, float, bool, str, list, dict, type(None)))):
@@ -279,7 +365,7 @@ class ObjectManager:
                     self.code_manager.link_object(ref, code_ref)
             except Exception as e:
                 logger.warning(f"Error storing class definition: {e}")
-
+            
         return stored_obj
 
     def store_code_definition(self, name: str, type: str, module_path: str, code_content: str, first_line_no: Optional[int] = None) -> str:
@@ -348,9 +434,9 @@ class ObjectManager:
                         raise
 
             # Check if this exact state already exists in the version history
-            existing_version = self.session.query(ObjectVersion).filter(
-                ObjectVersion.identity_id == identity_record.id,
-                ObjectVersion.object_id == stored_obj.id
+            existing_version = self.session.query(StoredObject).filter(
+                StoredObject.identity_id == identity_record.id,
+                StoredObject.id == stored_obj.id
             ).first()
 
             if existing_version:
@@ -358,26 +444,17 @@ class ObjectManager:
                 return ref
 
             # Get latest version number
-            latest_version = self.session.query(ObjectVersion).filter(
-                ObjectVersion.identity_id == identity_record.id
-            ).order_by(ObjectVersion.version_number.desc()).first()
+            latest_version = self.session.query(StoredObject).filter(
+                StoredObject.identity_id == identity_record.id
+            ).order_by(StoredObject.version_number.desc()).first()
 
-            version_number = 1
+            # No need to create a version record, as StoredObject now includes versioning
+            # Just set the version number on the stored_obj
+            new_version_num = 1
             if latest_version:
-                version_number = latest_version.version_number + 1
-
-            # Create new version
-            version = ObjectVersion(
-                object_id=stored_obj.id,
-                identity_id=identity_record.id,
-                version_number=version_number,
-                timestamp=datetime.datetime.now()
-            )
-            self.session.add(version)
-
-            # Update identity's latest version
-            identity_record.latest_version_id = stored_obj.id
-
+                new_version_num = latest_version.version_number + 1
+            setattr(stored_obj, 'version_number', new_version_num)
+            
             try:
                 self.session.flush()
             except SQLAlchemyError as e:
@@ -387,27 +464,33 @@ class ObjectManager:
 
         return ref
 
-    def get(self, ref: str) -> Optional[Any]:
+    def get(self, ref: str) -> Tuple[Any, str]:
         """Get an object by its reference"""
         stored_obj = self.session.query(StoredObject).filter(StoredObject.id == ref).first()
         if not stored_obj:
-            return None
+            return None, "None"
 
         if stored_obj.is_primitive:
             # Convert primitive value back to appropriate type
             if stored_obj.type_name == 'int':
-                return int(stored_obj.primitive_value)
+                return int(stored_obj.primitive_value), 'int' # type: ignore
             elif stored_obj.type_name == 'float':
-                return float(stored_obj.primitive_value)
+                return float(stored_obj.primitive_value), 'float' # type: ignore
             elif stored_obj.type_name == 'bool':
-                return stored_obj.primitive_value.lower() == 'true'
+                return stored_obj.primitive_value.lower() == 'true', 'bool' # type: ignore
             elif stored_obj.type_name == 'str':
-                return stored_obj.primitive_value
+                return stored_obj.primitive_value, 'str'
             elif stored_obj.type_name == 'NoneType':
-                return None
+                return None, 'NoneType'
+            else:
+                raise ValueError(f"Unknown primitive type: {stored_obj.type_name}")
         else:
             try:
-                return self.pickle_config.loads(stored_obj.pickle_data)
+                # Get the correct module path from stored metadata
+                correct_module_path = self._get_correct_module_path_for_object(stored_obj)
+                
+                # Use the module path fixing unpickler
+                return self.pickle_config.loads(stored_obj.pickle_data, correct_module_path), stored_obj.type_name # type: ignore
             except (ImportError, AttributeError, ModuleNotFoundError) as e:
                 # First try to load the class using the stored code if available
                 if self.class_loader is not None and self.code_manager is not None:
@@ -423,7 +506,8 @@ class ObjectManager:
                                 exec(code_info['code'], namespace)
                                 if stored_obj.type_name in namespace:
                                     # Try unpickling again now that we have recreated the class
-                                    return self.pickle_config.loads(stored_obj.pickle_data)
+                                    correct_module_path = self._get_correct_module_path_for_object(stored_obj)
+                                    return self.pickle_config.loads(stored_obj.pickle_data, correct_module_path), stored_obj.type_name # type: ignore
                                 # Store the code info for the UnpickleableObject
                                 self._last_code_info = code_info
                     except Exception as loader_e:
@@ -442,8 +526,8 @@ class ObjectManager:
                             try:
                                 # Try to safely unpickle just the content
                                 self._content = pickle.loads(pickle_data)
-                            except:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"Failed to unpickle content of {type_name}: {e}")
                     
                     def __str__(self):
                         if self._content is not None:
@@ -472,49 +556,78 @@ class ObjectManager:
                         return None
                 
                 return UnpickleableObject(stored_obj.type_name, stored_obj.pickle_data, 
-                                        getattr(self, '_last_code_info', None))
+                                        getattr(self, '_last_code_info', None)), stored_obj.type_name # type: ignore
             except Exception as e:
                 logger.error(f"Unexpected error unpickling object of type {stored_obj.type_name}: {e}")
-                raise
+                raise e
+
+    def get_without_pickle(self, ref: str) -> Optional[Any]:
+        """Get an object by its reference without unpickling"""
+        stored_obj = self.session.query(StoredObject).filter(StoredObject.id == ref).first()
+        if not stored_obj:
+            return None
+        
+        if stored_obj.is_primitive: # type: ignore
+            # Convert primitive value back to appropriate type
+            if stored_obj.type_name == 'int':
+                return int(stored_obj.primitive_value), 'int' # type: ignore
+            elif stored_obj.type_name == 'float':
+                return float(stored_obj.primitive_value), 'float' # type: ignore
+            elif stored_obj.type_name == 'bool':
+                return stored_obj.primitive_value.lower() == 'true', 'bool' # type: ignore
+            elif stored_obj.type_name == 'str':
+                return stored_obj.primitive_value, 'str'
+            elif stored_obj.type_name == 'NoneType':
+                return None, 'NoneType'
+        elif stored_obj.type_name == 'list':
+            return "WIP", 'list'
+        elif stored_obj.type_name == 'dict':
+            return "WIP", 'dict'
+        else:
+            return stored_obj.id, stored_obj.type_name
 
     def next_ref(self, ref: str) -> Optional[str]:
-        """Get the next version reference of an object"""
-        # Get the current version
-        current_version = self.session.query(ObjectVersion).filter(
-            ObjectVersion.object_id == ref
-        ).first()
-
-        if not current_version:
+        """Get the next version of an object"""
+        try:
+            # Get the current version
+            current_version = self.session.query(StoredObject).filter(
+                StoredObject.id == ref
+            ).first()
+            
+            if not current_version:
+                return None
+                
+            # Get the next version
+            next_version = self.session.query(StoredObject).filter(
+                StoredObject.identity_id == current_version.identity_id,
+                StoredObject.version_number > current_version.version_number
+            ).order_by(StoredObject.version_number.asc()).first()
+            
+            return next_version.id if next_version else None
+        except Exception as e:
+            logger.warning(f"Error getting next version: {e}")
             return None
 
-        # Get the next version with the same identity but higher version number
-        next_version = self.session.query(ObjectVersion).filter(
-            ObjectVersion.identity_id == current_version.identity_id,
-            ObjectVersion.version_number > current_version.version_number
-        ).order_by(ObjectVersion.version_number.asc()).first()
-
-        return next_version.object_id if next_version else None
-
     def get_history(self, ref: str) -> list:
-        """Get the complete history of an object"""
-        # First get the object to find its identity
-        obj = self.session.query(StoredObject).filter(StoredObject.id == ref).first()
-        if not obj:
+        """Get the history of an object (all versions)"""
+        try:
+            # Get the current version
+            version = self.session.query(StoredObject).filter(
+                StoredObject.id == ref
+            ).first()
+            
+            if not version:
+                return []
+                
+            # Get all versions
+            versions = self.session.query(StoredObject).filter(
+                StoredObject.identity_id == version.identity_id
+            ).order_by(StoredObject.version_number.asc()).all()
+            
+            return [v.id for v in versions]
+        except Exception as e:
+            logger.warning(f"Error getting object history: {e}")
             return []
-
-        # Find the identity through any version that references this object
-        version = self.session.query(ObjectVersion).filter(
-            ObjectVersion.object_id == ref
-        ).first()
-        if not version:
-            return [ref]  # No versioning for this object (e.g. primitives)
-
-        # Get all versions for this identity
-        versions = self.session.query(ObjectVersion).filter(
-            ObjectVersion.identity_id == version.identity_id
-        ).order_by(ObjectVersion.version_number.asc()).all()
-
-        return [version.object_id for version in versions]
 
     def rehydrate(self, ref: Optional[str]) -> Any:
         """
@@ -532,11 +645,11 @@ class ObjectManager:
         if ref is None:
             return None
         try:
-            return self.get(ref)
+            return self.get(ref)[0]
         except Exception as e:
             raise ValueError(f"Could not rehydrate object with reference {ref}: {e}")
 
-    def rehydrate_dict(self, refs: Dict[str, Optional[str]]) -> Dict[str, Any]:
+    def rehydrate_dict(self, refs: Mapping[str, Optional[str]]) -> Dict[str, Any]:
         """
         Rehydrate a dictionary of references to their actual values.
         
