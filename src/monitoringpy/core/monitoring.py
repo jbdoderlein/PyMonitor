@@ -7,7 +7,7 @@ import datetime
 import logging
 import traceback
 import sqlite3
-from .models import init_db, FunctionCall, MonitoringSession, StackSnapshot
+from .models import export_db, init_db, FunctionCall, MonitoringSession, StackSnapshot
 from .function_call import FunctionCallRepository
 from typing import Optional, Dict, Any
 from .representation import ObjectManager, PickleConfig
@@ -61,6 +61,7 @@ class PyMonitoring:
             
             # Initialize the function call tracker
             self.session = Session()
+            
             self.call_tracker = FunctionCallRepository(self.session, pickle_config=self.pickle_config)
             self.object_manager = ObjectManager(self.session, pickle_config=self.pickle_config)
             
@@ -106,6 +107,7 @@ class PyMonitoring:
             try:
                 logger.info("Committing final changes and closing session")
                 self.session.commit()
+                self.export_db()
                 self.session.close()
                 logger.info("Database session closed")
             except Exception as e:
@@ -130,7 +132,7 @@ class PyMonitoring:
         logger.info("Enabling monitoring recording")
         self.is_recording_enabled = True
 
-    def export_db(self, target_file_path: str):
+    def export_db(self):
         """Exports the current monitoring database to a specified file.
 
         This is particularly useful when using an in-memory database (":memory:")
@@ -144,74 +146,7 @@ class PyMonitoring:
                         connection cannot be established.
             Exception: Any exceptions raised during the database backup process.
         """
-        logger.info(f"Attempting to export database to {target_file_path}")
-        if not hasattr(self, 'session') or self.session is None:
-            raise ValueError("Monitoring session is not initialized or available.")
-
-        source_engine = self.session.get_bind()
-        if source_engine is None:
-            raise ValueError("Could not get database engine from session.")
-
-        # Ensure any pending changes are committed to release potential locks
-        try:
-            logger.info("Committing session before export...")
-            self.session.commit()
-            logger.info("Session committed.")
-        except Exception as e:
-            logger.error(f"Error committing session before export: {e}. Attempting rollback.")
-            try:
-                self.session.rollback()
-            except Exception as rb_e:
-                logger.error(f"Rollback failed: {rb_e}")
-            # Depending on the error, we might want to raise it or just log and proceed cautiously
-            # For now, let's log and continue, the backup might still work or fail later.
-            # raise ValueError(f"Failed to commit session before export: {e}") from e
-
-        source_conn = None
-        target_conn = None
-        try:
-            # Get the raw DBAPI connection from the engine
-            dbapi_connection = source_engine.raw_connection() # type: ignore
-            
-            # Extract the actual sqlite3 connection object
-            # This might be nested depending on SQLAlchemy version/setup
-            if hasattr(dbapi_connection, 'connection'): # Standard DBAPI connection wrapper
-                source_conn = dbapi_connection.connection # type: ignore
-            else: # Might be the raw connection itself
-                source_conn = dbapi_connection
-
-            # Verify it's an SQLite connection
-            if not isinstance(source_conn, sqlite3.Connection):
-                 raise TypeError(f"Database connection is not a sqlite3 connection. Type is {type(source_conn)}")
-            
-            # Create a connection to the target file database
-            logger.info(f"Creating target database connection: {target_file_path}")
-            target_conn = sqlite3.connect(target_file_path)
-
-            # Perform the backup
-            logger.info("Starting database backup...")
-            with target_conn: # 'with target_conn' handles commit/rollback on the target
-                logger.debug(f"Attempting backup from {source_conn} to {target_conn}")
-                source_conn.backup(target_conn)
-                logger.debug("Backup call finished.")
-            logger.info("Database backup completed successfully.")
-
-        except sqlite3.Error as e:
-            logger.error(f"SQLite error during database export: {e}")
-            logger.error(traceback.format_exc())
-            raise  # Re-raise the exception
-        except Exception as e:
-            logger.error(f"An unexpected error occurred during database export: {e}")
-            logger.error(traceback.format_exc())
-            raise # Re-raise the exception
-        finally:
-            # Ensure the target connection is closed
-            if target_conn:
-                target_conn.close()
-                logger.info(f"Closed target database connection: {target_file_path}")
-            # We don't close the source_conn as it's managed by SQLAlchemy engine
-            # Release the raw connection obtained from the engine
-            # dbapi_connection.close() # Let SQLAlchemy manage the lifecycle of the raw connection pool
+        export_db(self.session, self.db_path)
 
     def start_session(self, name=None, description=None, metadata=None):
         """Start a new monitoring session to group function calls.

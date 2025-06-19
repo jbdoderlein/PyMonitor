@@ -719,6 +719,9 @@ def replay_session_sequence(
             if original_recording_state is not None:
                 monitor_instance.is_recording_enabled = original_recording_state
         # Close the separate read session
+        read_session.commit()
+        assert monitor_instance is not None
+        monitor_instance.export_db()
         read_session.close()
         logger.info("Replay function finished.")
 
@@ -1035,21 +1038,34 @@ def _load_mock_functions(session, function_execution_id, obj_manager, module, mo
     # Convert to generators
     return_values_dict = {k: (obj_manager.get(x)[0] for x in v) for k, v in return_values_dict.items()}
     for func_name in mock_function:
-        if func_name in possible_names and func_name in module.__dict__:
-            module.__dict__[f"_old_{func_name}"] = module.__dict__[func_name]
-            
-            # Create a closure that captures the current func_name value
-            def create_mock_func(captured_func_name):
-                def mock_func(*args, **kwargs):
-                    try:
-                        return next(return_values_dict[captured_func_name])
-                    except StopIteration:
-                        print(f"Generator for {captured_func_name} is exhausted, returning original function")
-                        # If the generator is exhausted, return the original function
-                        old_func = module.__dict__[f"_old_{captured_func_name}"]
-                        return old_func(*args, **kwargs)
-                return mock_func
-            
-            module.__dict__[func_name] = create_mock_func(func_name)
+        if func_name in possible_names:
+            db_func_name = func_name
+            working_module = module
+            if "." in func_name:
+                func_name_parts = func_name.split(".")
+                while len(func_name_parts) > 1:
+                    module_name = func_name_parts.pop(0).lower()
+                    if module_name in working_module.__dict__:
+                        working_module = working_module.__dict__[module_name]
+                    else:
+                        break
+                func_name = func_name_parts[-1]
+              
+            if func_name in working_module.__dict__:
+                working_module.__dict__[f"_old_{func_name}"] = working_module.__dict__[func_name]
+                
+                # Create a closure that captures the current func_name value
+                def create_mock_func(captured_func_name):
+                    def mock_func(*args, **kwargs):
+                        try:
+                            return next(return_values_dict[captured_func_name])
+                        except StopIteration:
+                            print(f"Generator for {captured_func_name} is exhausted, returning original function")
+                            # If the generator is exhausted, return the original function
+                            old_func = working_module.__dict__[f"_old_{captured_func_name}"]
+                            return old_func(*args, **kwargs)
+                    return mock_func
+                
+                working_module.__dict__[func_name] = create_mock_func(db_func_name)
         else:
             pass  # TODO: Handle case when func_name is not in module.__dict__

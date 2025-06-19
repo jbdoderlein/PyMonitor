@@ -6,6 +6,7 @@ A simple Tkinter-based tool to replay the flappy bird game execution
 with multiple sliders for different branches and proper tracked function display.
 """
 
+import sqlite3
 import tkinter as tk
 from tkinter import ttk
 import base64
@@ -13,7 +14,8 @@ import io
 from PIL import Image, ImageTk
 import os
 import sys
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, TypedDict
+import datetime
 
 # Add the src directory to the path to import monitoringpy
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'src'))
@@ -22,12 +24,18 @@ from monitoringpy.core import init_db, FunctionCall, MonitoringSession, ObjectMa
 from monitoringpy.core.reanimation import replay_session_sequence
 import monitoringpy
 
+class SessionData(TypedDict):
+    session: MonitoringSession
+    calls: List[FunctionCall]
+    name: str
+    start_time: datetime.datetime
+
 class FlappyReplay:
     def __init__(self, db_path: str):
         self.db_path = db_path
         self.session = None
         self.object_manager = None
-        self.sessions_data = {}  # Dict[session_id, Dict] containing session info and calls
+        self.sessions_data: Dict[int, SessionData] = {}  # Dict[session_id, SessionData] containing session info and calls
         self.current_session_id = None
         self.current_call_index = 0
         
@@ -55,6 +63,9 @@ class FlappyReplay:
         self.session_relationships = {}  # Dict[session_id, Dict] containing parent/child relationships
         self.comparison_session_id = None  # Session ID to compare with (for previous variables)
         self.comparison_checkboxes = {}  # Dict[session_id, tk.BooleanVar] for comparison checkboxes
+
+
+        self.in_memory_db = True
         
         # Initialize database
         self._init_database()
@@ -380,7 +391,7 @@ class FlappyReplay:
                         parent_slider.set(parent_index)
                         parent_slider.configure(command=old_command)
                         
-                        print(f"Synced parent session {parent_session_id} slider to position {parent_index}")
+                        #print(f"Synced parent session {parent_session_id} slider to position {parent_index}")
     
     def _sync_child_sliders(self, session_id: int, current_index: int):
         """Synchronize child session sliders when exploring a parent session"""
@@ -423,7 +434,7 @@ class FlappyReplay:
         """Create the Tkinter UI"""
         self.root = tk.Tk()
         self.root.title("Flappy Bird Replay - Multi-Branch")
-        self.root.geometry("1400x900")
+        self.root.geometry("1400x1200")
         
         # Main frame
         main_frame = ttk.Frame(self.root)
@@ -749,8 +760,8 @@ class FlappyReplay:
         
         # Update basic info
         if self.info_label and session_id in self.sessions_data:
-            session_name = self.sessions_data[session_id]['name']
-            total_calls = len(self.sessions_data[session_id]['calls'])
+            session_name = self.sessions_data[session_id]['name'] # type: ignore
+            total_calls = len(self.sessions_data[session_id]['calls']) # type: ignore
             info_text = f"{session_name} | Frame {call_index + 1}/{total_calls} | "
             info_text += f"ID: {call_data.get('call_id', 'N/A')} | "
             timestamp = call_data.get('timestamp')
@@ -939,7 +950,7 @@ class FlappyReplay:
 
     def _setup_globals_and_tracked(self):
         """Setup the globals and tracked functions sections"""
-        if not self.sessions_data:
+        if not self.sessions_data or self.session is None:
             return
             
         # Get all unique global variables from all calls across all sessions
@@ -958,7 +969,8 @@ class FlappyReplay:
                 # Get child calls (tracked functions) for each display_game call
                 child_calls = call.get_child_calls(self.session)
                 for child_call in child_calls:
-                    all_tracked_functions.add(child_call.function)
+                    if child_call.function != "display_game":
+                        all_tracked_functions.add(child_call.function)
             
         
         # Filter out system variables
@@ -1151,7 +1163,26 @@ class FlappyReplay:
         try:
             # Close current session
             if self.session:
-                self.session.close()
+                if self.in_memory_db: # Save the in-memory database to a file
+                    source_engine = self.session.get_bind()
+                    self.session.commit()
+                    source_conn = None
+                    target_conn = None
+                    dbapi_connection = source_engine.raw_connection() # type: ignore
+                    if hasattr(dbapi_connection, 'driver_connection'): # Standard DBAPI connection wrapper
+                        source_conn = dbapi_connection.driver_connection # type: ignore
+                    else:
+                        source_conn = dbapi_connection
+
+                    target_conn = sqlite3.connect(self.db_path)
+
+                    with target_conn: # 'with target_conn' handles commit/rollback on the target
+                        source_conn.backup(target_conn) # type: ignore
+
+                    
+                    if target_conn:
+                        target_conn.close()
+                        self.session.close()
             
             # Store current state
             old_session_count = len(self.sessions_data)

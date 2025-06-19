@@ -22,7 +22,7 @@ def run_flappy_limited():
     print("Running Flappy Bird for 100 frames to generate monitoring data...")
     
     # Initialize monitoring
-    monitor = monitoringpy.init_monitoring(db_path=":memory:", custom_picklers=["pygame"])
+    monitor = monitoringpy.init_monitoring(db_path="flappy.db", custom_picklers=["pygame"])
     monitoringpy.start_session("Flappy Bird Limited Run")
     
     while display_game():
@@ -30,7 +30,7 @@ def run_flappy_limited():
         
     # End session and export
     monitoringpy.end_session()
-    monitor.export_db("flappy.db")
+    monitor.export_db()
     pygame.quit()
     
 
