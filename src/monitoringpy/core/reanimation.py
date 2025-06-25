@@ -516,9 +516,11 @@ def replay_session_sequence(
             "PyMonitoring is not initialized or has no active session. Cannot replay with monitoring enabled."
         )
 
-    # Use a separate session for reading original data to avoid conflicts
-    ReadSession = init_db(db_path)
-    read_session = ReadSession()
+    if enable_monitoring and monitor_instance:
+        read_session = monitor_instance.session
+    else:
+        ReadSession = init_db(db_path)
+        read_session = ReadSession()
 
     # Cache for loaded modules during replay
     loaded_modules_cache: Dict[str, Any] = {}

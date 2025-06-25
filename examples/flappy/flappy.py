@@ -34,7 +34,7 @@ def create_pipe():
     # Random position for the gap between top and bottom pipes
     gap_y_pos = random.randint(200, SCREEN_HEIGHT - 200)
     
-    pipe_gap = 300
+    pipe_gap = 200
     # Bottom pipe starts at the gap position and extends to the bottom of the screen
     bottom_pipe = pygame.Rect(SCREEN_WIDTH, gap_y_pos + pipe_gap//2, 100, SCREEN_HEIGHT - gap_y_pos - pipe_gap//2)
     
@@ -133,8 +133,6 @@ def display_game():
         if check_collision(pipes, bird_rect):
             GAME_ACTIVE = False
 
-        
-        
     else:
         # Game over screen
         game_over_text = FONT.render("Game Over!", True, (0, 0, 0))

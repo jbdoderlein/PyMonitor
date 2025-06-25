@@ -1163,26 +1163,8 @@ class FlappyReplay:
         try:
             # Close current session
             if self.session:
-                if self.in_memory_db: # Save the in-memory database to a file
-                    source_engine = self.session.get_bind()
-                    self.session.commit()
-                    source_conn = None
-                    target_conn = None
-                    dbapi_connection = source_engine.raw_connection() # type: ignore
-                    if hasattr(dbapi_connection, 'driver_connection'): # Standard DBAPI connection wrapper
-                        source_conn = dbapi_connection.driver_connection # type: ignore
-                    else:
-                        source_conn = dbapi_connection
-
-                    target_conn = sqlite3.connect(self.db_path)
-
-                    with target_conn: # 'with target_conn' handles commit/rollback on the target
-                        source_conn.backup(target_conn) # type: ignore
-
-                    
-                    if target_conn:
-                        target_conn.close()
-                        self.session.close()
+                self.session.close()
+                
             
             # Store current state
             old_session_count = len(self.sessions_data)
