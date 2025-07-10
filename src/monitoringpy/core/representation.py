@@ -1,3 +1,4 @@
+from functools import cache
 import pickle
 import copyreg
 from typing import Any, Dict, Mapping, Optional, Tuple, Union, TypeVar, Sequence
@@ -264,6 +265,7 @@ class ObjectManager:
             logger.warning("CodeManager/ClassLoader not available, code tracking disabled")
             self.code_manager = None
             self.class_loader = None
+        self._obj_cache = []
 
     def _get_identity(self, obj: Object) -> str:
         """Get the identity of an object (independent of its state)"""
@@ -404,6 +406,10 @@ class ObjectManager:
             obj = CustomClass(value, pickle_config=self.pickle_config)
 
         ref = obj.ref()
+
+        if ref in self._obj_cache:
+            return ref
+
         identity = self._get_identity(obj)
 
         # Store the object
@@ -441,6 +447,8 @@ class ObjectManager:
 
             if existing_version:
                 # This exact state already exists, return its reference
+                if ref not in self._obj_cache:
+                    self._obj_cache.append(ref)
                 return ref
 
             # Get latest version number
@@ -461,6 +469,9 @@ class ObjectManager:
                 logger.warning(f"Error creating version: {e}")
                 self.session.rollback()
                 raise
+
+        if ref not in self._obj_cache: # TODO : check size of cache
+            self._obj_cache.append(ref)
 
         return ref
 

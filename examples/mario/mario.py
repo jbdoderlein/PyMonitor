@@ -63,7 +63,7 @@ def update_player():
         
     # Handle jumping
     if (keys[pygame.K_SPACE] or keys[pygame.K_UP] or keys[pygame.K_w]) and on_ground:
-        player_vel_y = -10  # Jump strength
+        player_vel_y = -14  # Jump strength
         on_ground = False
         
     # Apply gravity

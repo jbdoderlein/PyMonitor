@@ -329,11 +329,12 @@ class MonitoringSession(Base):
             FunctionCall.parent_call_id is None  # Only top-level calls
         ).order_by(FunctionCall.order_in_session).all()
 
-def init_db(db_path):
+def init_db(db_path, in_memory=True):
     """Initialize the database and return session factory
     
     Args:
         db_path: Path to the SQLite database file or ':memory:' for in-memory database
+        in_memory: Whether to use an in-memory database (default: True)
         
     Returns:
         SQLAlchemy Session factory configured for the database
@@ -343,21 +344,23 @@ def init_db(db_path):
     """
     try:
         # Handle file-based databases
-        dest = sqlite3.connect(':memory:')
-        if db_path != ":memory:":
-            # Ensure we have an absolute path
-            db_path = os.path.abspath(db_path)
-            
-            # If database exists but appears corrupted, create a backup
-            if os.path.exists(db_path):
-                source = sqlite3.connect(db_path)
-                source.backup(dest)
-                db_path = ':memory:'
+        if in_memory:
+            dest = sqlite3.connect(':memory:')
+            if db_path != ":memory:":
+                # Ensure we have an absolute path
+                db_path = os.path.abspath(db_path)
+                
+                # If database exists but appears corrupted, create a backup
+                if os.path.exists(db_path):
+                    source = sqlite3.connect(db_path)
+                    source.backup(dest)
+                    db_path = ':memory:'
+        else:
+            dest = sqlite3.connect(db_path)
 
 
         def get_connection():
-            # just a debug print to verify that it's indeed getting called:
-            print("returning the connection") 
+            # just a debug print to verify that it's indeed getting called: 
             return dest
 
         engine = create_engine('sqlite://', creator = get_connection)
