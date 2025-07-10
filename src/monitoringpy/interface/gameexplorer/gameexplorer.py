@@ -5,8 +5,12 @@ Game Explorer - Multi-Branch Replay Tool
 A Tkinter-based tool to replay pygame game execution with multiple sliders 
 for different branches and proper tracked function display.
 """
+from monitoringpy.core import init_db, FunctionCall, MonitoringSession, ObjectManager
+from monitoringpy.core.reanimation import replay_session_sequence
+from monitoringpy.core.session import end_session, start_session
+from monitoringpy.core.monitoring import init_monitoring
 
-import sqlite3
+
 import tkinter as tk
 from tkinter import ttk
 import base64
@@ -17,10 +21,28 @@ import sys
 from typing import List, Optional, Dict, Any, TypedDict
 import datetime
 
+# Import chlorophyll for code editor
+try:
+    from chlorophyll import CodeView
+    CHLOROPHYLL_AVAILABLE = True
+except ImportError:
+    CHLOROPHYLL_AVAILABLE = False
+    print("Warning: chlorophyll not available. Code editor will be disabled.")
+
+import pygame
+HIDDEN_PYGAME = False
+original_set_mode = pygame.display.set_mode
+def modified_set_mode(*args, **kwargs):
+    if 'flags' not in kwargs and HIDDEN_PYGAME:
+        kwargs['flags'] = pygame.HIDDEN
+
+    return original_set_mode(*args, **kwargs)
+pygame.display.set_mode = modified_set_mode
+
+
 # Since we're now inside the monitoringpy module, we can import directly
-from monitoringpy.core import init_db, FunctionCall, MonitoringSession, ObjectManager
-from monitoringpy.core.reanimation import replay_session_sequence
-import monitoringpy
+
+
 
 class SessionData(TypedDict):
     session: MonitoringSession
@@ -54,6 +76,14 @@ class GameExplorer:
         self.globals_content = None
         self.tracked_content = None
         self.status_label = None
+        
+        # Code editor
+        self.code_editor = None
+        self.code_editor_frame = None
+        self.current_source_file = None
+        self.current_highlighted_line = None
+        self.file_modified = False
+        self.save_button = None
         
         # Checkbox variables for globals and tracked functions
         self.global_vars = {}  # Dict[str, tk.BooleanVar]
@@ -397,6 +427,236 @@ class GameExplorer:
             print(f"Error decoding image: {e}")
             return None
             
+    def _load_source_code(self, file_path: str, highlight_line: Optional[int] = None):
+        """Load source code from file into the code editor and optionally highlight a line"""
+        if not self.code_editor:
+            return
+            
+        try:
+            # Clear previous content
+            self.code_editor.delete('1.0', tk.END)
+            
+            # Clear previous highlighting
+            if hasattr(self.code_editor, 'tag_delete'):
+                self.code_editor.tag_delete('highlight_line')
+            
+            if file_path and os.path.exists(file_path):
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    
+                # Insert the content
+                self.code_editor.insert('1.0', content)
+                
+                # Highlight the current line if specified
+                if highlight_line is not None:
+                    self._highlight_line(highlight_line)
+                    
+                # Update the current file reference
+                self.current_source_file = file_path
+                
+                # Reset modification status
+                self.file_modified = False
+                self._update_save_button_state()
+                self._update_code_editor_title()
+            else:
+                # File not found, show a message
+                self.code_editor.insert('1.0', f"Source file not found: {file_path or 'Unknown'}")
+                self.current_source_file = None
+                self.file_modified = False
+                self._update_save_button_state()
+                self._update_code_editor_title()
+                
+        except Exception as e:
+            print(f"Error loading source code from {file_path}: {e}")
+            self.code_editor.insert('1.0', f"Error loading source code: {e}")
+            self.current_source_file = None
+            self.file_modified = False
+            self._update_save_button_state()
+            self._update_code_editor_title()
+    
+    def _highlight_line(self, line_number: int):
+        """Highlight a specific line in the code editor"""
+        if not self.code_editor:
+            return
+            
+        try:
+            # Remove previous highlighting
+            if hasattr(self.code_editor, 'tag_delete'):
+                self.code_editor.tag_delete('highlight_line')
+            
+            # Create highlight tag if it doesn't exist
+            if hasattr(self.code_editor, 'tag_config'):
+                self.code_editor.tag_config('highlight_line', background='#ffff88', relief='raised')
+            
+            # Calculate the start and end indices for the line
+            start_index = f"{line_number}.0"
+            end_index = f"{line_number}.end"
+            
+            # Add the highlight tag to the line
+            if hasattr(self.code_editor, 'tag_add'):
+                self.code_editor.tag_add('highlight_line', start_index, end_index)
+            
+            # Scroll to make the highlighted line visible
+            if hasattr(self.code_editor, 'see'):
+                self.code_editor.see(start_index)
+                
+            # Update the current highlighted line reference
+            self.current_highlighted_line = line_number
+            
+        except Exception as e:
+            print(f"Error highlighting line {line_number}: {e}")
+    
+    def _update_code_editor(self, call_data: Dict[str, Any]):
+        """Update the code editor with source code from the current function call"""
+        if not call_data:
+            return
+            
+        session_id = call_data.get('session_id')
+        call_index = call_data.get('call_index', 0)
+        
+        if session_id is None or session_id not in self.sessions_data:
+            return
+            
+        # Ensure call_index is an integer
+        if call_index is None:
+            call_index = 0
+        try:
+            call_index = int(call_index)
+        except (ValueError, TypeError):
+            call_index = 0
+            
+        calls = self.sessions_data[session_id]['calls']
+        if call_index >= len(calls):
+            return
+            
+        call = calls[call_index]
+        
+        # Try to get source file path and line number
+        file_path = call.file
+        line_number = call.line
+        
+        # If we don't have a direct file path, try to get it from code definition
+        if not file_path and call.code_definition_id and self.session:
+            try:
+                from monitoringpy.core.models import CodeDefinition
+                code_def = self.session.query(CodeDefinition).filter(
+                    CodeDefinition.id == call.code_definition_id
+                ).first()
+                
+                if code_def:
+                    # Use the module path as file path (may need conversion)
+                    module_path = code_def.module_path
+                    if module_path and not module_path.endswith('.py'):
+                        # Try to find the actual file
+                        possible_paths = [
+                            module_path + '.py',
+                            module_path.replace('.', '/') + '.py',
+                            module_path.replace('.', os.sep) + '.py'
+                        ]
+                        for path in possible_paths:
+                            if os.path.exists(path):
+                                file_path = path
+                                break
+                    else:
+                        file_path = module_path
+                    
+                    # Use the first line number from code definition if available
+                    if code_def.first_line_no:
+                        line_number = code_def.first_line_no
+                        
+            except Exception as e:
+                print(f"Error getting code definition: {e}")
+        
+        # Load and display the source code (only if we have a valid file path)
+        if file_path and file_path != self.current_source_file:
+            self._load_source_code(file_path, line_number)
+        elif file_path and line_number and line_number != self.current_highlighted_line:
+            # Same file, just highlight different line
+            self._highlight_line(line_number)
+        elif not file_path:
+            # No source code available, show a message in the editor
+            if self.code_editor:
+                self.code_editor.delete('1.0', tk.END)
+                self.code_editor.insert('1.0', "No source code available for this function call")
+                self.current_source_file = None
+
+    def _on_code_modified(self, event=None):
+        """Handle code editor modifications"""
+        if not self.file_modified and self.current_source_file:
+            self.file_modified = True
+            self._update_save_button_state()
+            self._update_code_editor_title()
+    
+    def _update_save_button_state(self):
+        """Update the save button state based on file modification status"""
+        if self.save_button:
+            if self.file_modified and self.current_source_file:
+                self.save_button.configure(state='normal')
+            else:
+                self.save_button.configure(state='disabled')
+    
+    def _update_code_editor_title(self):
+        """Update the code editor frame title to show modification status"""
+        if hasattr(self, 'code_editor_frame') and self.code_editor_frame:
+            if self.current_source_file:
+                filename = os.path.basename(self.current_source_file)
+                if self.file_modified:
+                    title = f"Code Editor - {filename} *"
+                else:
+                    title = f"Code Editor - {filename}"
+            else:
+                title = "Code Editor"
+            self.code_editor_frame.configure(text=title)
+    
+    def _save_current_file(self):
+        """Save the current file content from the code editor"""
+        if not self.current_source_file or not self.code_editor:
+            return False
+            
+        try:
+            # Get the content from the code editor
+            content = self.code_editor.get('1.0', tk.END + '-1c')  # Exclude the final newline that tkinter adds
+            
+            # Create a backup of the original file
+            backup_path = self.current_source_file + '.backup'
+            if os.path.exists(self.current_source_file):
+                import shutil
+                shutil.copy2(self.current_source_file, backup_path)
+            
+            # Write the new content
+            with open(self.current_source_file, 'w', encoding='utf-8') as f:
+                f.write(content)
+            
+            # Mark as not modified
+            self.file_modified = False
+            self._update_save_button_state()
+            self._update_code_editor_title()
+            
+            # Show success message in status
+            if self.status_label:
+                self.status_label.configure(text=f"Saved: {os.path.basename(self.current_source_file)}", foreground="green")
+                # Reset status after 3 seconds
+                if self.root:
+                    self.root.after(3000, lambda: self.status_label.configure(text="Ready", foreground="green") if self.status_label else None)
+            
+            print(f"File saved successfully: {self.current_source_file}")
+            return True
+            
+        except Exception as e:
+            print(f"Error saving file {self.current_source_file}: {e}")
+            if self.status_label:
+                self.status_label.configure(text=f"Save error: {str(e)[:30]}", foreground="red")
+                # Reset status after 5 seconds
+                if self.root:
+                    self.root.after(5000, lambda: self.status_label.configure(text="Ready", foreground="green") if self.status_label else None)
+            return False
+    
+    def _on_ctrl_s(self, event=None):
+        """Handle Ctrl+S keyboard shortcut"""
+        if self.file_modified and self.current_source_file:
+            self._save_current_file()
+        return "break"  # Prevent default behavior
+
     def _update_display(self, session_id: int, call_index: int):
         """Update the display with data from the specified call"""
         self.current_session_id = session_id
@@ -426,6 +686,9 @@ class GameExplorer:
                 
         # Update variable info
         self._update_variables_display(call_data)
+        
+        # Update code editor
+        self._update_code_editor(call_data)
         
         # Update status
         if self.status_label:
@@ -667,6 +930,65 @@ class GameExplorer:
         tracked_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         tracked_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
+        # Code Editor frame
+        code_editor_frame = ttk.LabelFrame(right_paned, text="Code Editor", padding=10)
+        right_paned.add(code_editor_frame, weight=1)
+        
+        # Store reference to the frame
+        self.code_editor_frame = code_editor_frame
+        
+        # Create a frame for the save button
+        editor_controls_frame = ttk.Frame(code_editor_frame)
+        editor_controls_frame.pack(fill=tk.X, pady=(0, 5))
+        
+        # Add save button
+        self.save_button = ttk.Button(
+            editor_controls_frame, 
+            text="Save (Ctrl+S)", 
+            command=self._save_current_file,
+            state='disabled'
+        )
+        self.save_button.pack(side=tk.LEFT)
+        
+        # Initialize CodeView
+        if CHLOROPHYLL_AVAILABLE:
+            try:
+                # Import pygments for syntax highlighting
+                import pygments.lexers
+                self.code_editor = CodeView(
+                    code_editor_frame, 
+                    lexer=pygments.lexers.PythonLexer,
+                    color_scheme="ayu-light"
+                )
+                self.code_editor.pack(fill=tk.BOTH, expand=True)
+                
+                # Bind modification events - CodeView inherits from Text widget
+                self.code_editor.bind('<KeyPress>', self._on_code_modified)
+                self.code_editor.bind('<Button-1>', self._on_code_modified)
+                self.code_editor.bind('<Control-s>', self._on_ctrl_s)
+                
+            except Exception as e:
+                print(f"Error creating CodeView: {e}")
+                # Fall back to a regular Text widget
+                self.code_editor = tk.Text(code_editor_frame)
+                self.code_editor.pack(fill=tk.BOTH, expand=True)
+                
+                # Bind modification events
+                self.code_editor.bind('<KeyPress>', self._on_code_modified)
+                self.code_editor.bind('<Button-1>', self._on_code_modified)
+                self.code_editor.bind('<Control-s>', self._on_ctrl_s)
+        else:
+            # Use regular Text widget as fallback
+            self.code_editor = tk.Text(code_editor_frame)
+            self.code_editor.pack(fill=tk.BOTH, expand=True)
+            
+            # Bind modification events
+            self.code_editor.bind('<KeyPress>', self._on_code_modified)
+            self.code_editor.bind('<Button-1>', self._on_code_modified)
+            self.code_editor.bind('<Control-s>', self._on_ctrl_s)
+            
+            ttk.Label(code_editor_frame, text="Code editor: install chlorophyll for syntax highlighting").pack(pady=5)
+        
         # Bottom section - another vertical PanedWindow for sessions and controls
         bottom_paned = ttk.PanedWindow(main_paned, orient=tk.VERTICAL)
         main_paned.add(bottom_paned, weight=1)  # Less weight for bottom section
@@ -703,6 +1025,16 @@ class GameExplorer:
         ttk.Button(buttons_frame, text="Replay All", command=self._replay_all).pack(side=tk.LEFT, padx=(0, 5))
         ttk.Button(buttons_frame, text="Replay From Here", command=self._replay_from_here).pack(side=tk.LEFT, padx=(0, 5))
         ttk.Button(buttons_frame, text="Refresh DB", command=self._refresh_database).pack(side=tk.LEFT, padx=(0, 5))
+        
+        # Hidden pygame checkbox
+        self.hidden_pygame_var = tk.BooleanVar(value=HIDDEN_PYGAME)
+        hidden_pygame_cb = ttk.Checkbutton(
+            buttons_frame, 
+            text="Hidden Pygame", 
+            variable=self.hidden_pygame_var,
+            command=self._on_hidden_pygame_changed
+        )
+        hidden_pygame_cb.pack(side=tk.LEFT, padx=(20, 5))
         
         # Status label
         self.status_label = ttk.Label(buttons_frame, text="Ready", foreground="green")
@@ -968,6 +1300,12 @@ class GameExplorer:
             self.current_session_id is not None):
             self._update_display(self.current_session_id, self.current_call_index)
     
+    def _on_hidden_pygame_changed(self):
+        """Handle changes to the hidden pygame checkbox"""
+        global HIDDEN_PYGAME
+        HIDDEN_PYGAME = self.hidden_pygame_var.get()
+        print(f"Hidden pygame mode: {'ON' if HIDDEN_PYGAME else 'OFF'}")
+    
     def _update_variables_display(self, call_data: Dict[str, Any]):
         """Update the variables tree display"""
         if not hasattr(self, 'variables_tree') or not self.variables_tree:
@@ -1099,7 +1437,7 @@ class GameExplorer:
                 attrs = [k for k in value.__dict__.keys() if not k.startswith('_')]
                 return f'{type(value).__name__}({len(attrs)} attrs)'
             else:
-                return f'{type(value).__name__}: {str(value)[:50]}'
+                return f'{type(value).__name__} (display error)'
         except Exception:
             return f'{type(value).__name__} (display error)'
     
@@ -1272,8 +1610,8 @@ class GameExplorer:
         
         try:
             # Initialize monitoring for the replay
-            monitor = monitoringpy.init_monitoring(db_path=self.db_path, custom_picklers=["pygame"])
-            session_id = monitoringpy.start_session(f"Replay of {session_name}")
+            monitor = init_monitoring(db_path=self.db_path, custom_picklers=["pygame"])
+            session_id = start_session(f"Replay of {session_name}")
             
             if session_id:
                 print(f"Started new monitoring session: {session_id}")
@@ -1292,6 +1630,12 @@ class GameExplorer:
                         self.status_label.configure(text=f"Replay successful! Branch: {new_branch_id}", foreground="green")
                     # Close pygame screen after successful replay
                     try:
+                        # check if pygame is already imported
+                        if 'pygame' in sys.modules:
+                            print("Pygame is already imported")
+                        else:
+                            print("Pygame is not imported")
+                        print("importing pygame here")
                         import pygame
                         pygame.quit()
                         print("Pygame screen closed after replay")
@@ -1304,7 +1648,7 @@ class GameExplorer:
                     if self.status_label:
                         self.status_label.configure(text="Replay failed", foreground="red")
                     
-                monitoringpy.end_session()
+                end_session()
             else:
                 print("Failed to start monitoring session for replay")
                 if self.status_label:
@@ -1346,8 +1690,8 @@ class GameExplorer:
         
         try:
             # Initialize monitoring for the replay
-            monitor = monitoringpy.init_monitoring(db_path=self.db_path, custom_picklers=["pygame"])
-            session_id = monitoringpy.start_session(f"Replay from {session_name} Frame {self.current_call_index + 1}")
+            monitor = init_monitoring(db_path=self.db_path, custom_picklers=["pygame"])
+            session_id = start_session(f"Replay from {session_name} Frame {self.current_call_index + 1}")
             
             if session_id:
                 print(f"Started new monitoring session: {session_id}")
@@ -1366,6 +1710,12 @@ class GameExplorer:
                         self.status_label.configure(text=f"Replay successful! Branch: {new_branch_id}", foreground="green")
                     # Close pygame screen after successful replay
                     try:
+                        # check if pygame is already imported
+                        if 'pygame' in sys.modules:
+                            print("Pygame is already imported")
+                        else:
+                            print("Pygame is not imported")
+                        print("importing pygame here")
                         import pygame
                         pygame.quit()
                         print("Pygame screen closed after replay")
@@ -1378,7 +1728,7 @@ class GameExplorer:
                     if self.status_label:
                         self.status_label.configure(text="Replay failed", foreground="red")
                     
-                monitoringpy.end_session()
+                end_session()
             else:
                 print("Failed to start monitoring session for replay")
                 if self.status_label:
