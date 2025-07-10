@@ -31,9 +31,13 @@ from .core import (
     recording_context,
 )
 
-from .interface import (
-    WebExplorer,
-)
+# NOTE: WebExplorer is not imported by default to avoid loading heavy web dependencies
+# To use the web interface, import it explicitly:
+# from monitoringpy.interface import WebExplorer
+# 
+# Or use the convenience function:
+# from monitoringpy.interface import start_web_explorer
+# start_web_explorer('my_session.db')
 
 __version__ = '0.1.0'
 
@@ -56,8 +60,6 @@ __all__ = [
     'CodeDefinition',
     'CodeObjectLink',
     'MonitoringSession',
-    # Interfaces
-    'WebExplorer',
     # Monitoring
     'init_monitoring',
     'pymonitor',
@@ -78,6 +80,10 @@ __all__ = [
     'replay_session_from',
     # Wrapped modules - pygame is available but not imported by default
     # 'pygame',  # Use: from monitoringpy import pygame (when needed)
+    
+    # Web interface - import explicitly when needed
+    # 'WebExplorer',  # Use: from monitoringpy.interface import WebExplorer
+    # 'start_web_explorer',  # Use: from monitoringpy.interface import start_web_explorer
 ]
 
 

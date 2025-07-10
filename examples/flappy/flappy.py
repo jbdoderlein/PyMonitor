@@ -34,7 +34,7 @@ def create_pipe():
     # Random position for the gap between top and bottom pipes
     gap_y_pos = random.randint(200, SCREEN_HEIGHT - 200)
     
-    pipe_gap = 200
+    pipe_gap = 300
     # Bottom pipe starts at the gap position and extends to the bottom of the screen
     bottom_pipe = pygame.Rect(SCREEN_WIDTH, gap_y_pos + pipe_gap//2, 100, SCREEN_HEIGHT - gap_y_pos - pipe_gap//2)
     
