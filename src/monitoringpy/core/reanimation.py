@@ -1064,7 +1064,7 @@ def _load_mock_functions(session, function_execution_id, obj_manager, module, mo
                         except StopIteration:
                             print(f"Generator for {captured_func_name} is exhausted, returning original function")
                             # If the generator is exhausted, return the original function
-                            old_func = working_module.__dict__[f"_old_{captured_func_name}"]
+                            old_func = working_module.__dict__[f"_old_{captured_func_name.split('.')[-1]}"]
                             return old_func(*args, **kwargs)
                     return mock_func
                 
