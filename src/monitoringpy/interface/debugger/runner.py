@@ -8,7 +8,7 @@ Handles the main process of connecting to a database and executing commands.
 import logging
 import asyncio
 import json
-from typing import Dict, Any, Optional, List, Callable
+from typing import Dict, Any, Callable
 
 from ...core import (
     init_db,
