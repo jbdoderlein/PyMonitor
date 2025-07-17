@@ -1,7 +1,8 @@
+import time
+t1_global = time.time()
 import base64
 import io
 import random
-import time
 import pygame
 import monitoringpy
 
@@ -149,13 +150,21 @@ def display_game():
 
 
 if __name__ == "__main__":
+    t2_global = time.time()
     monitor = monitoringpy.init_monitoring(db_path=":memory:", custom_picklers=["pygame"])
+    t3_global = time.time()
     monitoringpy.start_session("Flappy Bird")
     t1 = time.time()
     for _ in range(500):
         display_game()
     t2 = time.time()
     print(f"Time taken: {t2 - t1} seconds")
+    print(f"FPS: {500 / (t2 - t1)}")
     monitoringpy.end_session()
-    monitor.export_db("flappy_full.db")
+    #monitor.export_db()
     pygame.quit()
+    t4_global = time.time()
+    print(f"Time taken total: {t4_global - t1_global} seconds")
+    print(f"Time to import: {t2_global - t1_global} seconds")
+    print(f"Time to start session: {t3_global - t2_global} seconds")
+    print(f"Time to run session: {t4_global - t3_global} seconds")

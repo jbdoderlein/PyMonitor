@@ -2,6 +2,7 @@ from sqlalchemy import String, DateTime, Integer, ForeignKey, create_engine, Lar
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship, Mapped, mapped_column
 from sqlalchemy.sql import func
+from sqlalchemy.orm import Session
 from typing import Optional, Dict, Any
 import datetime
 import os
@@ -149,7 +150,7 @@ class FunctionCall(Base):
     code_definition = relationship("CodeDefinition", back_populates="function_calls")
     parent_call = relationship("FunctionCall", foreign_keys=[parent_call_id], remote_side=[id], backref="child_calls")
     
-    def get_child_calls(self, session):
+    def get_child_calls(self, session : Session):
         """Get all child function calls ordered by their execution sequence
         
         Args:
@@ -328,11 +329,12 @@ class MonitoringSession(Base):
             FunctionCall.parent_call_id is None  # Only top-level calls
         ).order_by(FunctionCall.order_in_session).all()
 
-def init_db(db_path):
+def init_db(db_path, in_memory=True):
     """Initialize the database and return session factory
     
     Args:
         db_path: Path to the SQLite database file or ':memory:' for in-memory database
+        in_memory: Whether to use an in-memory database (default: True)
         
     Returns:
         SQLAlchemy Session factory configured for the database
@@ -342,35 +344,27 @@ def init_db(db_path):
     """
     try:
         # Handle file-based databases
-        if db_path != ":memory:":
-            # Ensure we have an absolute path
-            db_path = os.path.abspath(db_path)
-            
-            # Create directory if needed
-            db_dir = os.path.dirname(db_path)
-            if db_dir and not os.path.exists(db_dir):
-                os.makedirs(db_dir)
-            
-            # If database exists but appears corrupted, create a backup
-            if os.path.exists(db_path):
-                try:
-                    # Quick check if database is accessible
-                    sqlite3.connect(db_path).close()
-                except sqlite3.Error as e:
-                    # Create backup of corrupted database
-                    backup_path = f"{db_path}.backup.{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
-                    logger.warning(f"Database at {db_path} might be corrupted: {e}")
-                    logger.info(f"Creating backup at {backup_path}")
-                    shutil.copy2(db_path, backup_path)
-                    os.remove(db_path)
-        
-        # Create SQLAlchemy engine
-        connection_string = f'sqlite:///{db_path}' if db_path != ':memory:' else 'sqlite:///:memory:'
-        engine = create_engine(
-            connection_string, 
-            connect_args={'check_same_thread': False}
-        )
-        
+        if in_memory:
+            dest = sqlite3.connect(':memory:')
+            if db_path != ":memory:":
+                # Ensure we have an absolute path
+                db_path = os.path.abspath(db_path)
+                
+                # If database exists but appears corrupted, create a backup
+                if os.path.exists(db_path):
+                    source = sqlite3.connect(db_path)
+                    source.backup(dest)
+                    db_path = ':memory:'
+        else:
+            dest = sqlite3.connect(db_path)
+
+
+        def get_connection():
+            # just a debug print to verify that it's indeed getting called: 
+            return dest
+
+        engine = create_engine('sqlite://', creator = get_connection)
+
         # Create tables
         Base.metadata.create_all(engine)
         
@@ -380,3 +374,53 @@ def init_db(db_path):
     except Exception as e:
         logger.error(f"Database initialization failed: {e}")
         raise RuntimeError(f"Failed to initialize database: {e}") from e 
+    
+
+def export_db(session : "Session", db_path: str):
+    """Exports the current sessionto a specified file.
+
+    Args:
+        session: The session to export
+        db_path: The path to the file where the database should be saved.
+
+    """
+    source_engine = session.get_bind()
+
+    # Ensure any pending changes are committed to release potential locks
+    try:
+        session.commit()
+    except Exception as e:
+        logger.error(f"Error committing session before export: {e}. Attempting rollback.")
+        session.rollback()
+
+    source_conn = None
+    target_conn = None
+    try:
+        # Get the raw DBAPI connection from the engine
+        dbapi_connection = source_engine.raw_connection() # type: ignore
+        
+        # Extract the actual sqlite3 connection object
+        # This might be nested depending on SQLAlchemy version/setup
+        if hasattr(dbapi_connection, 'connection'): # Standard DBAPI connection wrapper
+            source_conn = dbapi_connection.connection # type: ignore
+        else: # Might be the raw connection itself
+            source_conn = dbapi_connection
+
+        # Verify it's an SQLite connection
+        if not isinstance(source_conn, sqlite3.Connection):
+                raise TypeError(f"Database connection is not a sqlite3 connection. Type is {type(source_conn)}")
+        
+        # Create a connection to the target file database
+        target_conn = sqlite3.connect(db_path)
+
+        # Perform the backup
+        with target_conn: # 'with target_conn' handles commit/rollback on the target
+            source_conn.backup(target_conn)
+
+
+        target_conn.close()
+        logger.info(f"Closed target database connection: {db_path}")
+        
+    except Exception as e:
+        logger.error(f"Error exporting database: {e}")
+        raise RuntimeError(f"Failed to export database: {e}") from e 

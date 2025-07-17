@@ -34,7 +34,7 @@ def create_pipe():
     # Random position for the gap between top and bottom pipes
     gap_y_pos = random.randint(200, SCREEN_HEIGHT - 200)
     
-    pipe_gap = 200
+    pipe_gap = 250
     # Bottom pipe starts at the gap position and extends to the bottom of the screen
     bottom_pipe = pygame.Rect(SCREEN_WIDTH, gap_y_pos + pipe_gap//2, 100, SCREEN_HEIGHT - gap_y_pos - pipe_gap//2)
     
@@ -114,7 +114,7 @@ def display_game():
     
     if GAME_ACTIVE:
         # Bird movement
-        BIRD_MOVEMENT += 0.35 # Gravity
+        BIRD_MOVEMENT += 0.55 # Gravity
         bird_rect.y = int(bird_rect.y + BIRD_MOVEMENT)
         
         # Draw bird
@@ -133,8 +133,6 @@ def display_game():
         if check_collision(pipes, bird_rect):
             GAME_ACTIVE = False
 
-        
-        
     else:
         # Game over screen
         game_over_text = FONT.render("Game Over!", True, (0, 0, 0))
@@ -148,10 +146,9 @@ def display_game():
 
 
 if __name__ == "__main__":
-    monitor = monitoringpy.init_monitoring(db_path=":memory:", custom_picklers=["pygame"])
+    monitor = monitoringpy.init_monitoring(db_path="flappy.db", custom_picklers=["pygame"])
     monitoringpy.start_session("Flappy Bird")
     while display_game():
         pass
     monitoringpy.end_session()
-    monitor.export_db("flappy.db")
     pygame.quit()

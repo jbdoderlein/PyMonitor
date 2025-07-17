@@ -1,3 +1,7 @@
+*.db
+*.json
+
+
 # Python
 __pycache__/
 *.py[cod]
@@ -51,3 +55,6 @@ htmlcov/
 # MCP Server
 *.log
 .cursor/mcp.json
+
+# Debugger # Todo later
+src/monitoringpy/interface/debugger/

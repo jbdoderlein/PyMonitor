@@ -665,7 +665,7 @@
                 <tr>
                     <td><strong>${name}</strong></td>
                     <td>${data.type}</td>
-                    <td>${formatValue(data.value, data.type)}</td>
+                    <td>${formatValue(data.value, data.type, data)}</td>
                 </tr>
             `;
         }
@@ -674,9 +674,26 @@
         container.innerHTML = html;
     }
     
-    function formatValue(value, type) {
+    function formatValue(value, type, valueData) {
         if (value === null || value === 'None') {
             return '<span class="text-muted">None</span>';
+        }
+        
+        // Check if it's an image
+        if (valueData && valueData.is_image && valueData.image) {
+            const uniqueId = Math.random().toString(36).substr(2, 9);
+            return `
+                <div class="image-container">
+                    <span class="badge bg-info">${type}</span>
+                    <span class="badge bg-success ms-1">Image</span>
+                    <button class="btn btn-sm btn-outline-primary ms-2" type="button" onclick="toggleImageView('image-${uniqueId}')">
+                        View Image
+                    </button>
+                    <div id="image-${uniqueId}" class="mt-2" style="display:none">
+                        <img src="data:image/png;base64,${valueData.image}" class="img-fluid" style="max-height: 400px; border: 1px solid #ddd; border-radius: 4px;" alt="${type} image" />
+                    </div>
+                </div>
+            `;
         }
         
         const isLongValue = value && value.length > 100;
@@ -1014,6 +1031,16 @@
     document.addEventListener('DOMContentLoaded', function() {
         setTimeout(recalculateConnections, 500);
     });
+
+    // Toggle image view for image values
+    function toggleImageView(imageId) {
+        const imageDiv = document.getElementById(imageId);
+        if (imageDiv.style.display === 'none') {
+            imageDiv.style.display = 'block';
+        } else {
+            imageDiv.style.display = 'none';
+        }
+    }
 </script>
 
 <style>

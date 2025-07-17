@@ -5,6 +5,7 @@ This module contains the core implementation of the monitoring system.
 
 from .models import (
     init_db,
+    export_db,
     StoredObject,
     ObjectIdentity,
     StackSnapshot,
@@ -17,6 +18,7 @@ from .monitoring import PyMonitoring, pymonitor, init_monitoring
 from .function_call import FunctionCallRepository
 from .code_manager import CodeManager
 from .representation import ObjectManager
+from .trace import TraceExporter
 from .reanimation import load_execution_data, reanimate_function, load_snapshot, load_snapshot_in_frame, run_with_state, replay_session_from
 from .session import start_session, end_session, session_context
 
@@ -91,6 +93,7 @@ def recording_context(enabled=False):
 __all__ = [
     # Database initialization
     'init_db',
+    'export_db',
     #decorators
     'pymonitor',
     'init_monitoring',
@@ -99,6 +102,7 @@ __all__ = [
     'FunctionCallRepository',
     'CodeManager',
     'ObjectManager',
+    'TraceExporter',
     # Models
     'StoredObject',
     'ObjectIdentity',

@@ -2,7 +2,7 @@
 """
 PyMonitor Database Explorer
 
-A Tkinter-based GUI tool to explore and replay game executions 
+A Tkinter-based GUI tool to explore and replay function executions 
 stored in a PyMonitor database.
 """
 
@@ -63,29 +63,33 @@ pygame_reuse_events_var = None  # Will be set if pygame flag is True
 run_in_background_var = None  # Will be set to tk.BooleanVar
 pygame_imitation_var = None  # Will be set by args
 
+# Add new global variable for the slider reexecute toggle
+slider_reexecute_var = None  # Will be set to tk.BooleanVar
+
 # --- Data Retrieval Functions (Adapted from example) ---
 def get_branch_roots(session: SQLASession) -> List[int]:
     if session is None: return []
     roots = []
-    main_session = session.query(MonitoringSession).first()
-    if main_session and main_session.entry_point_call_id:
-        roots.append(main_session.entry_point_call_id)
-    branch_starts = session.query(FunctionCall).\
-        filter(FunctionCall.parent_call_id != None).\
-        order_by(FunctionCall.start_time).all()
-    for call in branch_starts:
-        if call.id is not None and call.id not in roots:
-             roots.append(call.id)
-    if main_session and main_session.entry_point_call_id is not None and main_session.entry_point_call_id not in roots:
-         roots.append(main_session.entry_point_call_id)
+    
+    # Get all monitoring sessions 
+    all_sessions = session.query(MonitoringSession).all()
+    
+    for monitoring_session in all_sessions:
+        # Get the first call of each session - this represents a branch root
+        first_call = session.query(FunctionCall).filter(
+            FunctionCall.session_id == monitoring_session.id
+        ).order_by(FunctionCall.order_in_session).first()
+        
+        if first_call and first_call.id is not None:
+            roots.append(first_call.id)
+    
     int_roots = [r for r in roots if isinstance(r, int)]
     return sorted(list(set(int_roots)))
 
 def get_branch_sequence(session: SQLASession, root_call_id: int) -> List[int]:
     """
     Get a sequence of function call IDs that form a single branch.
-    This ensures that each branch sequence only contains calls belonging strictly to that branch,
-    stopping at points where child branches start.
+    For session-based branches, this returns all calls in the same session as the root call.
     
     Args:
         session: The database session
@@ -95,48 +99,40 @@ def get_branch_sequence(session: SQLASession, root_call_id: int) -> List[int]:
         A list of function call IDs in sequence order
     """
     if session is None: return []
-    sequence = []
-    current_call_id: Optional[int] = root_call_id
     
-    # First, identify all direct children of this branch to exclude them
-    children_branches = set()
-    all_direct_children = session.query(FunctionCall).filter(FunctionCall.parent_call_id == root_call_id).all()
-    for child in all_direct_children:
-        if child.id is not None:
-            children_branches.add(child.id)
+    # Get the root call to find which session it belongs to
+    root_call = session.get(FunctionCall, root_call_id)
+    if not root_call:
+        logger.warning(f"Root call {root_call_id} not found")
+        return []
     
-    # Now just follow the next_call_id chain but stop at child branch starts or cycles
-    visited = set()  # Avoid cycles
+    # Get the session ID
+    session_id = getattr(root_call, 'session_id', None)
+    if session_id is None:
+        logger.warning(f"Root call {root_call_id} has no session_id")
+        return [root_call_id]  # Return just the root call
     
-    while current_call_id is not None and current_call_id not in visited:
-        visited.add(current_call_id)
-        call = session.get(FunctionCall, current_call_id)
-        if call:
-            sequence.append(call.id)
-            # Get the next call in the sequence
-            next_id = getattr(call, 'next_call_id', None)
-            
-            # Stop if we reach a NULL next_id
-            if next_id is None:
-                break
-                
-            # Stop if the next call is the start of a child branch
-            if next_id in children_branches:
-                logger.info(f"Branch sequence for {root_call_id} stops at {next_id} (direct child)")
-                break
-            
-            # Check if next_id is any replay start (has a parent_call_id)
-            next_call = session.get(FunctionCall, next_id)
-            if next_call and next_call.parent_call_id is not None:
-                # If it's a replay start, stop the sequence
-                logger.info(f"Branch sequence for {root_call_id} stops at {next_id} (replay branch start)")
-                break
-            
-            current_call_id = int(next_id)
-        else:
-            break
+    # Get all function calls in this session, ordered by execution
+    calls_query = session.query(FunctionCall).filter(
+        FunctionCall.session_id == session_id
+    )
     
-    logger.info(f"Sequence for root {root_call_id}: {sequence}")
+    # Filter by target function name if specified
+    global TARGET_FUNCTION_NAME
+    if TARGET_FUNCTION_NAME:
+        calls_query = calls_query.filter(FunctionCall.function == TARGET_FUNCTION_NAME)
+        logger.info(f"Filtering sequence to only include '{TARGET_FUNCTION_NAME}' function calls")
+    
+    calls_in_session = calls_query.order_by(FunctionCall.order_in_session).all()
+    
+    # Extract the IDs
+    sequence = [getattr(call, 'id', None) for call in calls_in_session]
+    sequence = [id_val for id_val in sequence if id_val is not None]
+    
+    if TARGET_FUNCTION_NAME:
+        logger.info(f"Filtered branch sequence for function '{TARGET_FUNCTION_NAME}': {len(sequence)} calls")
+    else:
+        logger.info(f"Branch sequence for session {session_id}: {len(sequence)} calls")
     return sequence
 
 def get_branch_depth(session: SQLASession, call_id: int, max_depth=10) -> int:
@@ -183,6 +179,7 @@ def update_active_branch_slider(selected_call_id_str: str, branch_root_id: int):
         try:
             selected_call_id = int(selected_call_id_str)
             sequence = branch_widgets[branch_root_id]['sequence']
+            # Find the index of this call ID in the sequence
             current_index = sequence.index(selected_call_id)
             branch_widgets[branch_root_id]['position_var'].set(
                 f"Position: {current_index + 1}/{len(sequence)}"
@@ -222,9 +219,14 @@ def update_active_branch_slider(selected_call_id_str: str, branch_root_id: int):
                 
                 # Safely handle line number
                 line_num = None
-                if hasattr(call, 'line') and call.line is not None:
-                    # First convert to string to avoid type issues with Column objects
-                    line_num = int(str(call.line)) if call.line else None
+                if hasattr(call, 'line'):
+                    # Get the actual value from SQLAlchemy Column
+                    line_value = getattr(call, 'line', None)
+                    if line_value is not None:
+                        try:
+                            line_num = int(line_value)
+                        except (ValueError, TypeError):
+                            line_num = None
                 if line_num:
                     status_text += f" - Line: {line_num}"
                 
@@ -242,20 +244,27 @@ def update_active_branch_slider(selected_call_id_str: str, branch_root_id: int):
         except (ValueError, TypeError) as e:
             status_label.config(text=f"Error displaying call info: {e}")
     
-    # Ensure monitor recording is off for simple reanimation
-    if DB_PATH:
+    # Check if slider should trigger reexecution
+    should_reexecute = slider_reexecute_var and slider_reexecute_var.get()
+    
+    if should_reexecute and DB_PATH:
         if status_bar:
             status_bar.config(text=f"Reanimating function call {selected_call_id_str}...")
         
-        reanimate_function(
-            selected_call_id_str, DB_PATH, ignore_globals=unchecked_globals
-        )
-        
-        if status_bar:
-            status_bar.config(text=f"Reanimation complete for call {selected_call_id_str}")
+        try:
+            reanimate_function(
+                selected_call_id_str, DB_PATH, ignore_globals=unchecked_globals
+            )
+            if status_bar:
+                status_bar.config(text=f"Reanimation complete for call {selected_call_id_str}")
+        except Exception as e:
+            logger.error(f"Error during reanimation: {e}")
+            if status_bar:
+                status_bar.config(text=f"Reanimation error: {str(e)}")
     else:
-        logger.error("DB_PATH not set, cannot reanimate.")
-
+        # Just update status without reexecution
+        if status_bar:
+            status_bar.config(text=f"Ready - Viewing call {selected_call_id_str}")
 
 def set_active_branch(branch_root_id: int):
     """Sets the currently active branch for controls."""
@@ -319,28 +328,22 @@ def prev_step():
     if active_branch_root_id is None or active_branch_root_id not in branch_widgets:
         return
     slider = branch_widgets[active_branch_root_id]['slider']
-    current_value = slider.get()
+    current_index = int(slider.get())
     sequence = branch_widgets[active_branch_root_id]['sequence']
-    try:
-        current_index = sequence.index(int(current_value))
-        if current_index > 0:
-            set_slider_value(slider, sequence[current_index - 1]) 
-    except (ValueError, IndexError):
-        pass 
+    
+    if current_index > 0:
+        set_slider_value(slider, current_index - 1)
 
 def next_step():
     """Move active slider one step forward."""
     if active_branch_root_id is None or active_branch_root_id not in branch_widgets:
         return
     slider = branch_widgets[active_branch_root_id]['slider']
-    current_value = slider.get()
+    current_index = int(slider.get())
     sequence = branch_widgets[active_branch_root_id]['sequence']
-    try:
-        current_index = sequence.index(int(current_value))
-        if current_index < len(sequence) - 1:
-            set_slider_value(slider, sequence[current_index + 1])
-    except (ValueError, IndexError):
-        pass 
+    
+    if current_index < len(sequence) - 1:
+        set_slider_value(slider, current_index + 1)
 
 def play_step():
     """Increment slider if playing, and schedule next step."""
@@ -356,15 +359,13 @@ def play_step():
         
         slider = branch_widgets[active_branch_root_id]['slider']
         sequence = branch_widgets[active_branch_root_id]['sequence']
-        current_value = slider.get()
-        try:
-             current_index = sequence.index(int(current_value))
-             if current_index < len(sequence) - 1:
-                  play_timer_id = root.after(100, play_step) # Schedule next frame
-             else:
-                  toggle_play_pause() # Auto-pause at the end
-        except ValueError:
-             toggle_play_pause() # Stop if current value not in sequence
+        current_index = int(slider.get())
+        
+        # Check if we've reached the end of the sequence
+        if current_index < len(sequence) - 1:
+            play_timer_id = root.after(100, play_step) # Schedule next frame
+        else:
+            toggle_play_pause() # Auto-pause at the end
 
 def toggle_play_pause():
     """Toggle between playing and pausing the slider animation."""
@@ -475,10 +476,13 @@ def refresh_branch_ui():
     child_branches = {}
     for root_id in branch_roots:
         call = read_session.get(FunctionCall, root_id)
-        if call and call.parent_call_id:
-            if call.parent_call_id not in child_branches:
-                child_branches[call.parent_call_id] = []
-            child_branches[call.parent_call_id].append(root_id)
+        if call:
+            # Get the actual value from SQLAlchemy Column
+            parent_call_id = getattr(call, 'parent_call_id', None)
+            if parent_call_id is not None:
+                if parent_call_id not in child_branches:
+                    child_branches[parent_call_id] = []
+                child_branches[parent_call_id].append(root_id)
     
     # Draw connection lines between parent and child branches
     def draw_branch_connector(parent_id, child_id, parent_frame, indent):
@@ -498,14 +502,21 @@ def refresh_branch_ui():
         
         # Draw a line connecting parent to child
         connector_canvas.create_line(
-            5, 0,                     # Start at left edge, top
-            5, connector_height,      # Draw down
-            indent+5, connector_height,   # Draw right to child indent
-            width=1, fill="#666666"
+            5, 0,                         # x1, y1: Start at left edge, top
+            5, connector_height,          # x2, y2: Draw down
+            fill="#666666", width=1
+        )
+        connector_canvas.create_line(
+            5, connector_height,          # x1, y1: from bottom of vertical line
+            indent+5, connector_height,   # x2, y2: Draw right to child indent
+            fill="#666666", width=1
         )
 
     # Sort branch_roots by depth to draw parent branches before children
-    sorted_branch_roots = sorted(branch_roots, key=lambda r_id: get_branch_depth(read_session, r_id))
+    if read_session is not None:
+        sorted_branch_roots = sorted(branch_roots, key=lambda r_id: get_branch_depth(typing.cast(SQLASession, read_session), r_id))
+    else:
+        sorted_branch_roots = branch_roots
     
     for root_id in sorted_branch_roots:
         # Create UI for branch root: {root_id}
@@ -521,9 +532,13 @@ def refresh_branch_ui():
         
         # If this is a child branch, draw connector from parent
         parent_call = read_session.get(FunctionCall, root_id)
-        if parent_call and parent_call.parent_call_id and parent_call.parent_call_id in branch_widgets:
-            parent_frame = branch_widgets[parent_call.parent_call_id]['frame']
-            draw_branch_connector(parent_call.parent_call_id, root_id, parent_frame, indent_amount)
+        parent_call_id = None
+        if parent_call and hasattr(parent_call, 'parent_call_id'):
+            parent_call_id = getattr(parent_call, 'parent_call_id', None)
+        
+        if parent_call_id is not None and parent_call_id in branch_widgets:
+            parent_frame = branch_widgets[parent_call_id]['frame']
+            draw_branch_connector(parent_call_id, root_id, parent_frame, indent_amount)
         
         # Create frame with potential left padding for indentation
         branch_frame = tk.Frame(sliders_frame, bd=1, relief=tk.GROOVE, bg=bg_color)
@@ -532,15 +547,20 @@ def refresh_branch_ui():
         # Create a more informative label with branch type indicator
         prefix = ""
         parent_info = ""
-        if parent_call and parent_call.parent_call_id:
+        if parent_call_id is not None:
             # This is a replay branch - add visual indicator
             prefix = "🔄 "  # Replay symbol
             parent_func_name = ""
-            if parent_call.parent_call_id in function_names:
-                parent_func_name = f" ({function_names[parent_call.parent_call_id]})"
+            if parent_call_id in function_names:
+                parent_func_name = f" ({function_names[parent_call_id]})"
             
-            label_text = f"{prefix}Replay Branch {root_id}: {parent_call.function} [{len(branch_sequence)} steps]"
-            parent_info = f"From Branch {parent_call.parent_call_id}{parent_func_name} @ Call {parent_call.parent_call_id}"
+            # Get function name safely from parent_call
+            function_name = "Unknown"
+            if parent_call and hasattr(parent_call, 'function'):
+                function_name = getattr(parent_call, 'function', 'Unknown')
+            
+            label_text = f"{prefix}Replay Branch {root_id}: {function_name} [{len(branch_sequence)} steps]"
+            parent_info = f"From Branch {parent_call_id}{parent_func_name} @ Call {parent_call_id}"
         elif initial_entry_point_id is not None and root_id == initial_entry_point_id:
             prefix = "▶ "  # Main branch symbol
             label_text = f"{prefix}Main Branch: {parent_call.function if parent_call else 'Unknown'} [{len(branch_sequence)} steps]"
@@ -570,10 +590,23 @@ def refresh_branch_ui():
                                   bg=bg_color, font=("Arial", 9, "italic"))
             parent_label.pack(side=tk.TOP, anchor=tk.W)
 
-        slider_min = min(branch_sequence)
-        slider_max = max(branch_sequence)
+        # Use indices instead of direct call IDs for the slider
+        slider_min = 0
+        slider_max = len(branch_sequence) - 1 if branch_sequence else 0
         
-        slider_command = lambda val, rid=root_id: update_active_branch_slider(val, rid)
+        # Create a wrapper function that converts slider index to actual call ID
+        def slider_command_wrapper(index_str, rid=root_id):
+            try:
+                index = int(float(index_str))  # Handle float values from slider
+                if 0 <= index < len(branch_sequence):
+                    actual_call_id = branch_sequence[index]
+                    update_active_branch_slider(str(actual_call_id), rid)
+                else:
+                    logger.warning(f"Slider index {index} out of range for sequence length {len(branch_sequence)}")
+            except (ValueError, IndexError) as e:
+                logger.error(f"Error converting slider value {index_str}: {e}")
+        
+        slider_command = slider_command_wrapper
         
         # Add a frame for slider area
         slider_frame = tk.Frame(branch_frame, bg=bg_color)
@@ -597,8 +630,8 @@ def refresh_branch_ui():
         )
         branch_slider.pack(side=tk.TOP, fill=tk.X, expand=True)
         
-        # Set initial slider value to the first item in the sequence
-        branch_slider.set(slider_min) 
+        # Set initial slider value to the first index (0)
+        branch_slider.set(0) 
 
         # Configure click events
         branch_slider.bind("<Button-1>", lambda event, rid=root_id: set_active_branch(rid))
@@ -622,11 +655,13 @@ def refresh_branch_ui():
             
         branch_widgets[root_id] = branch_data
         
-        # Update position indicator
+        # Update position indicator for index-based slider
         try:
-            current_value = branch_slider.get()
-            current_index = branch_sequence.index(int(current_value))
-            position_var.set(f"Position: {current_index + 1}/{len(branch_sequence)}")
+            if branch_sequence:
+                current_slider_index = int(branch_slider.get())
+                position_var.set(f"Position: {current_slider_index + 1}/{len(branch_sequence)}")
+            else:
+                position_var.set("Position: 0/0")
         except (ValueError, IndexError):
             position_var.set(f"Position: ?/{len(branch_sequence)}")
         
@@ -692,7 +727,8 @@ def replay_from_start():
     
     try:
         new_branch_start_id = replay_session_from(
-            int(active_branch_root_id), DB_PATH, ignore_globals=unchecked_globals
+            int(active_branch_root_id), DB_PATH, ignore_globals=unchecked_globals,
+            target_function_name=TARGET_FUNCTION_NAME
         )
         
         if new_branch_start_id:
@@ -745,7 +781,8 @@ def replay_from_here():
     try:
         # The selected value IS the starting function ID for the new branch
         new_branch_start_id = replay_session_from(
-            int(current_value), DB_PATH, ignore_globals=unchecked_globals
+            int(current_value), DB_PATH, ignore_globals=unchecked_globals,
+            target_function_name=TARGET_FUNCTION_NAME
         )
         
         if new_branch_start_id:
@@ -795,9 +832,10 @@ def run_explorer(db_path: str, function_name: Optional[str] = None):
     global checkbox_vars, checkbox_labels, checkbox_widgets # Keep global declaration
     
     # Add new global variables for the toggles
-    global pygame_reuse_events_var, run_in_background_var
+    global pygame_reuse_events_var, run_in_background_var, slider_reexecute_var
     pygame_reuse_events_var = None  # Will be set if pygame flag is True
     run_in_background_var = None  # Will be set to tk.BooleanVar
+    slider_reexecute_var = None  # Will be set to tk.BooleanVar
 
     DB_PATH = db_path
     TARGET_FUNCTION_NAME = function_name
@@ -819,63 +857,29 @@ def run_explorer(db_path: str, function_name: Optional[str] = None):
     object_manager = ObjectManager(read_session)
     call_tracker = FunctionCallTracker(read_session)
     current_session_info = read_session.query(MonitoringSession).first()
+    call_sequence = []
+    if current_session_info is not None:
+        call_sequence = read_session.query(FunctionCall).filter(
+            FunctionCall.session_id == current_session_info.id,
+            FunctionCall.parent_call_id == None  # Only top-level calls
+        ).order_by(FunctionCall.order_in_session).all()
     if current_session_info is None:
         logger.error(f"No monitoring session found in database: {DB_PATH}")
         print(f"Error: Could not find monitoring session in {DB_PATH}")
         return # Exit if no session found
     
-    # Determine initial entry point
+    # Determine initial entry point - use the first top-level call
     initial_entry_point_id = None
-    if current_session_info.entry_point_call_id:
-        # Fix type issue: Cast Column[Integer] to Optional[int]
-        initial_entry_point_id = typing.cast(Optional[int], current_session_info.entry_point_call_id)
-        logger.info(f"Initial Session Entry Point Call ID: {initial_entry_point_id}")
-    elif TARGET_FUNCTION_NAME and TARGET_FUNCTION_NAME in current_session_info.function_calls_map:
-        # Fix type issue: Handle conversion from ColumnElement to list correctly
-        map_value = current_session_info.function_calls_map[TARGET_FUNCTION_NAME]
-        try:
-            # Handle different potential types safely
-            str_list = []
-            if hasattr(map_value, '__iter__') and not isinstance(map_value, str):
-                # This handles both lists and other iterables
-                str_list = [str(item) for item in map_value]
-            elif map_value is not None:
-                # If it's not iterable, convert single value to string
-                str_list = [str(map_value)]
-            
-            ids_list = list(map(int, str_list))
-            if ids_list:
-                initial_entry_point_id = min(ids_list)
-                logger.warning(f"Using fallback entry point ID (min call for {TARGET_FUNCTION_NAME}): {initial_entry_point_id}")
-            else:
-                logger.warning(f"No call IDs found for specified function '{TARGET_FUNCTION_NAME}' in the session map.")
-        except (TypeError, ValueError) as e:
-            logger.error(f"Error converting function calls map to integers: {e}")
-    else:
-        # Generic fallback: Find the earliest call ID across all functions in the first session
-        all_call_ids = []
-        if current_session_info.function_calls_map:
-            for fname, ids in current_session_info.function_calls_map.items():
-                # Ensure ids are cast to int before extending
-                try:
-                    str_ids = []
-                    if hasattr(ids, '__iter__') and not isinstance(ids, str):
-                        # This handles both lists and other iterables
-                        str_ids = [str(item) for item in ids]
-                    elif ids is not None:
-                        # If it's not iterable, convert single value to string
-                        str_ids = [str(ids)]
-                    
-                    all_call_ids.extend(map(int, str_ids))
-                except (TypeError, ValueError) as e:
-                    logger.error(f"Error converting {fname} calls to integers: {e}")
-        if all_call_ids:
-             initial_entry_point_id = min(all_call_ids)
-             logger.warning(f"Using generic fallback entry point ID (earliest call in session): {initial_entry_point_id}")
-        else:
-            logger.error("Cannot determine session entry point. No calls recorded?")
-            # Consider disabling buttons or exiting
-
+    if call_sequence:
+        # Get the actual ID value from the first call
+        first_call = call_sequence[0]
+        if hasattr(first_call, 'id'):
+            initial_entry_point_id = getattr(first_call, 'id', None)
+    
+    if initial_entry_point_id is None:
+        logger.error("Cannot determine session entry point. No calls recorded?")
+        return
+    
     active_branch_root_id = initial_entry_point_id 
     assert isinstance(active_branch_root_id, int), f"Expected active_branch_root_id to be an integer, got {type(active_branch_root_id)}"
     if TARGET_FUNCTION_NAME is None:
@@ -893,9 +897,7 @@ def run_explorer(db_path: str, function_name: Optional[str] = None):
     # Configure colors and styles
     bg_color = "#f5f5f5"  # Light gray background
     header_bg = "#e0e8f0"  # Light blue header
-    button_bg = "#4a86e8"  # Blue buttons
-    button_fg = "white"    # White text on buttons
-    
+
     # Configure ttk styles
     style = ttk.Style()
     style.configure("TButton", font=("Arial", 10), padding=5)
@@ -1018,6 +1020,15 @@ def run_explorer(db_path: str, function_name: Optional[str] = None):
     )
     run_bg_check.pack(side=tk.RIGHT, padx=5)
     
+    # Slider reexecute toggle
+    slider_reexecute_var = tk.BooleanVar(value=False)  # Default to False (safer)
+    slider_reexec_check = ttk.Checkbutton(
+        toggle_frame,
+        text="Slider reexecute",
+        variable=slider_reexecute_var
+    )
+    slider_reexec_check.pack(side=tk.RIGHT, padx=5)
+    
     # Pygame reuse events toggle - only show if pygame flag is set
     # Check if pygame is available
     pygame_available = False
@@ -1048,18 +1059,34 @@ def run_explorer(db_path: str, function_name: Optional[str] = None):
         if pygame_reuse_events_var:
             monitoringpy_pygame.set_screen_reuse(pygame_reuse_events_var.get())
     
-    # Retrieve Checkbox Labels (Use TARGET_FUNCTION_NAME if provided, else handle None)
+    # Retrieve Checkbox Labels - calculate common globals dynamically
     checkbox_labels = []
-    if current_session_info and hasattr(current_session_info, 'common_globals') and isinstance(current_session_info.common_globals, dict):
-        if TARGET_FUNCTION_NAME:
-            checkbox_labels = current_session_info.common_globals.get(TARGET_FUNCTION_NAME, [])
-            if not isinstance(checkbox_labels, list): checkbox_labels = []
-            if not checkbox_labels:
-                logger.warning(f"No common globals found for specified function: {TARGET_FUNCTION_NAME}")
+    if current_session_info and TARGET_FUNCTION_NAME:
+        # Get all function calls for this function in the session
+        function_calls = current_session_info.get_function_calls_by_name(read_session, TARGET_FUNCTION_NAME)
+        
+        if function_calls:
+            # Calculate common globals across all calls to this function
+            common_globals_set = None
+            for call in function_calls:
+                # Get the actual value from SQLAlchemy Column
+                globals_refs = getattr(call, 'globals_refs', None)
+                if globals_refs:
+                    call_globals = set(globals_refs.keys())
+                    if common_globals_set is None:
+                        common_globals_set = call_globals
+                    else:
+                        common_globals_set &= call_globals
+            
+            if common_globals_set:
+                checkbox_labels = sorted(list(common_globals_set))
+                logger.info(f"Found {len(checkbox_labels)} common globals for function {TARGET_FUNCTION_NAME}")
+            else:
+                logger.warning(f"No common globals found for function: {TARGET_FUNCTION_NAME}")
         else:
-            # Maybe show common globals for the entry point function? Or aggregate?
-            # For now, just indicate none were specified.
-            logger.info("No specific function name provided, not loading common globals checkboxes.")
+            logger.warning(f"No function calls found for function: {TARGET_FUNCTION_NAME}")
+    else:
+        logger.info("No specific function name provided, not loading common globals checkboxes.")
             
     # Create Checkbox Widgets
     checkbox_vars = []  # Initialize or reset the list
@@ -1106,6 +1133,7 @@ def run_explorer(db_path: str, function_name: Optional[str] = None):
     create_tooltip(replay_here_button, "Start a new branch from the current call")
     create_tooltip(refresh_button, "Refresh the UI with the latest data")
     create_tooltip(run_bg_check, "Run replays in background mode")
+    create_tooltip(slider_reexec_check, "Enable automatic code re-execution when moving the slider")
     
     # Initial UI Population
     refresh_branch_ui()
@@ -1136,7 +1164,6 @@ if __name__ == "__main__":
                         help="Optional: Specific function name to focus on for globals", 
                         default=None)
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging (INFO level)")
-    parser.add_argument("-pg", "--pygame", action="store_true", help="Activate pygame screen reuse")
     parser.add_argument("--background", action="store_true", help="Enable background mode for replays")
     args = parser.parse_args()
 
@@ -1149,12 +1176,9 @@ if __name__ == "__main__":
     else:
          logging.getLogger().setLevel(logging.WARNING) # Default to WARNING otherwise
 
-    if args.pygame:
-        from monitoringpy import pygame
-        pygame_imitation_var = True
-        pygame.set_screen_reuse(True)
-    else:
-        pygame_imitation_var = False
+    from monitoringpy import pygame
+    pygame_imitation_var = True
+    pygame.set_screen_reuse(True)
 
     # Here we just pass any processed flags to the explorer
     # The actual handling happens inside run_explorer
