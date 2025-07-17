@@ -19,6 +19,7 @@ classifiers = [
 ]
 dependencies = [
     "bytecode>=0.16.2",
+    "chlorophyll",
     "debugpy>=1.8.14",
     "fastapi>=0.115.12",
     "fastparquet>=2024.11.0",
@@ -40,6 +41,10 @@ dependencies = [
 [project.scripts]
 web-pymonitor = "monitoringpy.interface.web.explorer:main"
 game-explorer = "monitoringpy.interface.gameexplorer.gameexplorer:main"
+game-explorer2 = "monitoringpy.interface.gameexplorer.gameexplorer2:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/monitoringpy"] 
+
+[tool.uv.sources]
+chlorophyll = { git = "https://github.com/jbdoderlein/chlorophyll" }

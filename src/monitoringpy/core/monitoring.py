@@ -1,3 +1,4 @@
+from collections import defaultdict
 import inspect
 import atexit
 import time
@@ -17,7 +18,7 @@ from .representation import ObjectManager, PickleConfig
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-MONITOR_TOOL_ID = sys.monitoring.DEBUGGER_ID
+MONITOR_TOOL_ID = sys.monitoring.PROFILER_ID
 
 class PyMonitoring:
     _instance = None
@@ -41,7 +42,7 @@ class PyMonitoring:
         self.db_path = db_path
         self.call_stack : list[FunctionCall] = []  # Stack to keep track of FunctionCall objects instead of just IDs
         self.MONITOR_TOOL_ID = MONITOR_TOOL_ID
-        
+        self.in_memory = in_memory
         # Custom pickle configuration
         self.pickle_config = pickle_config
         
@@ -118,18 +119,20 @@ class PyMonitoring:
     def shutdown(self):
         """Gracefully shut down monitoring"""
         logger.info("Starting PyMonitoring shutdown")
-
+        print("Shutting down monitoring")
         if hasattr(self, 'session'):
             try:
                 logger.info("Committing final changes and closing session")
-                self.session.commit()
-                self.export_db()
-                self.session.close()
+                if self.in_memory:
+                    self.export_db()
+                    self.session.commit()
+                    self.session.close()
                 logger.info("Database session closed")
             except Exception as e:
                 logger.error(f"Error during monitoring shutdown: {e}")
                 logger.error(traceback.format_exc())
         logger.info("PyMonitoring shutdown completed")
+        print("PyMonitoring shutdown completed")
 
     def disable_recording(self):
         """Temporarily disable recording of function calls and line execution.
@@ -311,7 +314,7 @@ class PyMonitoring:
                 refs[name] = ref
             except Exception as e:
                 # Log warning but continue if we can't store a variable
-                logger.warning(f"Could not store variable {name}: {e}")
+                logger.info(f"Could not store variable {name}: {e}")
         return refs
 
     def _get_cached_code_definition(self, func_obj, code_name: str) -> Optional[str]:
@@ -473,7 +476,6 @@ class PyMonitoring:
 
     def monitor_callback_function_start(self, code: types.CodeType, offset):
         # Check if recording is enabled
-        t1_global = time.time()
         if not self.is_recording_enabled: 
             return
         if self.call_tracker is None: 
@@ -601,7 +603,7 @@ class PyMonitoring:
             current_session_id = None
             if self.current_session:
                 current_session_id = self.current_session.id
-            t1 = time.time()
+
             # Create function call record directly
             call = FunctionCall(
                 function=function_qualname,
@@ -1064,6 +1066,7 @@ def init_monitoring(*args, **kwargs):
 
 def _cleanup_monitoring():
     if PyMonitoring._instance is not None:
+        print("Shutting down monitoring")
         PyMonitoring._instance.shutdown()
 
 atexit.register(_cleanup_monitoring)

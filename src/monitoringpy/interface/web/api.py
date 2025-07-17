@@ -8,6 +8,8 @@ API endpoints for PyMonitor database access.
 import os
 import sys
 import logging
+import base64
+import io
 from typing import Dict, Any, Optional
 
 from fastapi import FastAPI, HTTPException, Query
@@ -68,7 +70,100 @@ def serialize_value(value: Any) -> str:
         return f"{{{', '.join(items)}{'...' if len(value) > 3 else ''}}}"
     else:
         return str(value)
+
+def convert_image_to_base64(image_obj) -> Optional[str]:
+    """Convert various image formats to base64 data URI"""
+    try:
+        # Handle PIL Image
+        try:
+            from PIL import Image
+            if isinstance(image_obj, Image.Image):
+                buffer = io.BytesIO()
+                # Convert to RGB if necessary (handles RGBA, P, etc.)
+                if image_obj.mode in ('RGBA', 'P'):
+                    image_obj = image_obj.convert('RGB')
+                image_obj.save(buffer, format='PNG')
+                image_data = buffer.getvalue()
+                return base64.b64encode(image_data).decode('utf-8')
+        except ImportError:
+            pass
         
+        # Handle numpy arrays that might be images
+        try:
+            import numpy as np
+            if isinstance(image_obj, np.ndarray):
+                # Check if it looks like an image (2D or 3D array with reasonable dimensions)
+                if len(image_obj.shape) in [2, 3] and all(dim > 0 and dim <= 5000 for dim in image_obj.shape):
+                    # Try to convert to PIL Image
+                    from PIL import Image
+                    
+                    # Handle different array formats
+                    if len(image_obj.shape) == 2:
+                        # Grayscale image
+                        if image_obj.dtype != np.uint8:
+                            # Normalize to 0-255 range
+                            image_obj = ((image_obj - image_obj.min()) / (image_obj.max() - image_obj.min()) * 255).astype(np.uint8)
+                        pil_image = Image.fromarray(image_obj, mode='L')
+                    elif len(image_obj.shape) == 3:
+                        # Color image
+                        if image_obj.shape[2] == 3:  # RGB
+                            if image_obj.dtype != np.uint8:
+                                # Normalize to 0-255 range
+                                image_obj = ((image_obj - image_obj.min()) / (image_obj.max() - image_obj.min()) * 255).astype(np.uint8)
+                            pil_image = Image.fromarray(image_obj, mode='RGB')
+                        elif image_obj.shape[2] == 4:  # RGBA
+                            if image_obj.dtype != np.uint8:
+                                # Normalize to 0-255 range
+                                image_obj = ((image_obj - image_obj.min()) / (image_obj.max() - image_obj.min()) * 255).astype(np.uint8)
+                            pil_image = Image.fromarray(image_obj, mode='RGBA')
+                        else:
+                            return None
+                    else:
+                        return None
+                    
+                    # Convert to base64
+                    buffer = io.BytesIO()
+                    if pil_image.mode == 'RGBA':
+                        pil_image = pil_image.convert('RGB')
+                    pil_image.save(buffer, format='PNG')
+                    image_data = buffer.getvalue()
+                    return base64.b64encode(image_data).decode('utf-8')
+        except (ImportError, Exception):
+            pass
+        
+        # Handle pygame Surface
+        try:
+            import pygame
+            if hasattr(image_obj, 'get_size') and hasattr(image_obj, 'get_at') and hasattr(image_obj, 'convert'):
+                # This looks like a pygame Surface
+                buffer = io.BytesIO()
+                pygame.image.save(image_obj, buffer, "PNG")  # type: ignore
+                image_data = buffer.getvalue()
+                return base64.b64encode(image_data).decode('utf-8')
+        except (ImportError, Exception):
+            pass
+        
+        return None
+    except Exception as e:
+        logger.debug(f"Error converting image to base64: {e}")
+        return None
+
+def detect_base64_image(value_str: str) -> Optional[str]:
+    """Detect if a string contains base64 encoded image data"""
+    try:
+        # Check if it's already a base64 string (without data URI prefix)
+        if isinstance(value_str, str) and len(value_str) > 100:
+            # Try to decode as base64
+            try:
+                decoded = base64.b64decode(value_str)
+                # Check if it starts with PNG or JPEG magic bytes
+                if decoded.startswith(b'\x89PNG\r\n\x1a\n') or decoded.startswith(b'\xff\xd8\xff'):
+                    return value_str
+            except Exception:
+                pass
+        return None
+    except Exception:
+        return None
 
 def serialize_stored_value(ref: Optional[str]) -> Dict[str, Any]:
     """Serialize a stored value, handling cases where the original class is not available"""
@@ -94,6 +189,27 @@ def serialize_stored_value(ref: Optional[str]) -> Dict[str, Any]:
             if value is None:
                 # If we couldn't get it, it's truly not found
                 return {"value": f"<not found: {ref}>", "type": "Error"}
+            
+            # Check if the value is an image
+            base64_image = convert_image_to_base64(value)
+            if base64_image:
+                return {
+                    "value": str(value),
+                    "type": type_name,
+                    "image": base64_image,
+                    "is_image": True
+                }
+            
+            # Check if it's a string that might contain base64 image data
+            if isinstance(value, str):
+                base64_image = detect_base64_image(value)
+                if base64_image:
+                    return {
+                        "value": str(value),
+                        "type": type_name,
+                        "image": base64_image,
+                        "is_image": True
+                    }
                 
             return {
                 "value": str(value),

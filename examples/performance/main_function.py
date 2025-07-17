@@ -13,7 +13,7 @@ def simple_function(n):
 
 
 if __name__ == "__main__":
-    monitor = monitoringpy.init_monitoring(db_path=":memory:")
+    monitor = monitoringpy.init_monitoring(db_path="perf_function.db")
     monitoringpy.start_session("Perf Function")
     times = []
     for i in range(100):
@@ -24,7 +24,7 @@ if __name__ == "__main__":
         times.append(t2 - t1)
     
     monitoringpy.end_session()
-    monitor.export_db("perf_function.db")
+    monitor.export_db()
     # Db size
     db_size = os.path.getsize("perf_function.db")
     # export as json

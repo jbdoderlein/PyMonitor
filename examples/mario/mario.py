@@ -67,7 +67,7 @@ def update_player():
         on_ground = False
         
     # Apply gravity
-    player_vel_y += 0.8  # Gravity
+    player_vel_y += 0.9  # Gravity
     
     # Update position
     player_x += player_vel_x

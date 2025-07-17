@@ -26,6 +26,7 @@ def collect_all_results():
             try:
                 with open(result_file, 'r') as f:
                     result = json.load(f)
+                    
                     all_results.append(result)
             except json.JSONDecodeError as e:
                 print(f"Error reading result_{i}.json: {e}")

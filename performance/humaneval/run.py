@@ -175,6 +175,13 @@ def run_python_file(file_path, working_dir, timeout=DEFAULT_TIMEOUT):
     user_time = end_resources.ru_utime - start_resources.ru_utime
     system_time = end_resources.ru_stime - start_resources.ru_stime
     max_memory = end_resources.ru_maxrss - start_resources.ru_maxrss
+
+    try:
+        internal_time = eval(stdout)
+    except Exception as e:
+        print("ERROR: ", e)
+        internal_time = None
+    
     
     result = {
         'wall_time': wall_time,
@@ -185,7 +192,8 @@ def run_python_file(file_path, working_dir, timeout=DEFAULT_TIMEOUT):
         'stdout': stdout,
         'stderr': stderr,
         'timeout': timed_out,
-        'timeout_limit': timeout
+        'timeout_limit': timeout,
+        'internal_time': internal_time
     }
     
     # Set success based on return code and timeout
@@ -222,25 +230,6 @@ def run_all_problems_parallel(num_processes=os.cpu_count(), timeout=DEFAULT_TIME
     if timeout_count > 0:
         print(f"Warning: {timeout_count} problems timed out!")
 
-def show_progress():
-    """Show current progress."""
-    completed = get_completed_problems()
-    remaining = get_remaining_problems()
-    timed_out = get_timed_out_problems()
-    
-    print(f"\n=== PROGRESS STATUS ===")
-    print(f"Completed: {len(completed)}/164 problems ({len(completed)/164*100:.1f}%)")
-    print(f"Remaining: {len(remaining)} problems")
-    print(f"Timed out: {len(timed_out)} problems")
-    
-    if len(completed) > 0:
-        print(f"Completed problems: {sorted(completed)[:10]}{'...' if len(completed) > 10 else ''}")
-    
-    if len(remaining) > 0:
-        print(f"Remaining problems: {sorted(remaining)[:10]}{'...' if len(remaining) > 10 else ''}")
-    
-    if len(timed_out) > 0:
-        print(f"Timed out problems: {sorted(timed_out)}")
 
 if __name__ == "__main__":
     import argparse
@@ -260,15 +249,10 @@ if __name__ == "__main__":
     print(f"Results path: {results_path}")
     print(f"Timeout: {args.timeout} seconds")
     
-    # Show current progress
-    show_progress()
-    
 
     print(f"\nRunning remaining problems in parallel (timeout: {args.timeout}s, processes: {args.processes})...")
     run_all_problems_parallel(num_processes=args.processes, timeout=args.timeout)
     
-    # Show final progress
-    show_progress()
     
     print("\nRun 'python combine_results.py' to combine all results into final JSON file.")
     print("Or use 'python utils.py combine' to combine results.")

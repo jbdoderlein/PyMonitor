@@ -111,6 +111,8 @@ class PickleConfig:
             pickler = self.create_pickler(f)
             pickler.dump(obj)
             return f.getvalue()
+        except pickle.PicklingError: # Ignore unpicklable objects
+            return None
         finally:
             # Restore original module paths
             for cls, original_module in original_modules.items():

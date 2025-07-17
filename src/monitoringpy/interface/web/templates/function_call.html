@@ -94,6 +94,23 @@ function createCollapsibleValue(value, maxLength = 500) {
         
         // Handle the specific object format from our backend
         if (typeof value === 'object' && value.type && value.hasOwnProperty('value')) {
+            // Check if it's an image first
+            if (value.is_image && value.image) {
+                const uniqueId = Math.random().toString(36).substr(2, 9);
+                return `
+                    <div class="image-container">
+                        <span class="badge bg-info">${value.type}</span>
+                        <span class="badge bg-success ms-1">Image</span>
+                        <button class="btn btn-sm btn-outline-primary ms-2" type="button" data-bs-toggle="collapse" data-bs-target="#image-${uniqueId}">
+                            View Image
+                        </button>
+                        <div class="collapse mt-2" id="image-${uniqueId}">
+                            <img src="data:image/png;base64,${value.image}" class="img-fluid" style="max-height: 400px; border: 1px solid #ddd; border-radius: 4px;" alt="${value.type} image" />
+                        </div>
+                    </div>
+                `;
+            }
+            
             // For primitive types, display in a more concise way
             const isPrimitive = ['int', 'float', 'bool', 'str', 'NoneType'].includes(value.type);
             
