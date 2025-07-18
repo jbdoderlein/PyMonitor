@@ -17,8 +17,14 @@ from sqlalchemy import (
     create_engine,
     desc,
 )
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import Mapped, Session, mapped_column, relationship, sessionmaker
+from sqlalchemy.orm import (
+    Mapped,
+    Session,
+    declarative_base,
+    mapped_column,
+    relationship,
+    sessionmaker,
+)
 from sqlalchemy.sql import func
 
 # Configure logging
