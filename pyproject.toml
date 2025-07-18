@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "setuptools>=65.0", "wheel"]
 build-backend = "hatchling.build"
 
 [project]
@@ -30,12 +30,12 @@ dependencies = [
     "networkx>=3.5",
     "pandas>=2.3.1",
     "pillow>=11.2.1",
+    "pipreqs>=0.5.0",
     "pyarrow>=20.0.0",
     "pygame>=2.6.1",
-    "seaborn>=0.13.2",
     "sqlalchemy>=2.0.0",
     "uvicorn>=0.34.2",
-    "yappi>=1.6.10",
+    "watchdog>=6.0.0",
 ]
 
 [project.scripts]
@@ -44,7 +44,11 @@ game-explorer = "monitoringpy.interface.gameexplorer.gameexplorer:main"
 game-explorer2 = "monitoringpy.interface.gameexplorer.gameexplorer2:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/monitoringpy"] 
+packages = ["src/monitoringpy"]
+include = [
+    "src/monitoringpy/codediff/download_gumtree.py",
+    "src/monitoringpy/codediff/gumtree_utils.py",
+] 
 
 [tool.uv.sources]
 chlorophyll = { git = "https://github.com/jbdoderlein/chlorophyll" }

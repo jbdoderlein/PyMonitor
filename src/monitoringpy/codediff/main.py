@@ -1,6 +1,7 @@
 import os
 import re
 import subprocess
+from .gumtree_utils import ensure_gumtree_available
 
 def get_line_number_from_index(text:str, index:int) -> int:
     """Get a text and a index position in the file, return the line number
@@ -14,7 +15,7 @@ def get_line_number_from_index(text:str, index:int) -> int:
     raise ValueError(f"Index {index} not found in text")
 
 def generate_line_mapping(code_path_1:str, code_path_2:str) -> tuple[dict, dict, list]:
-    gumtree_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "gumtree","bin","gumtree"))
+    gumtree_path = ensure_gumtree_available()
     diff_proc = subprocess.run(
         [gumtree_path, "textdiff", code_path_1, code_path_2],
         capture_output=True, text=True
