@@ -7,7 +7,6 @@ and reanimate them. It also demonstrates the new object versioning features.
 
 import os
 import sys
-import datetime
 from pprint import pprint
 from typing import Dict
 

@@ -5,7 +5,6 @@ This example shows how to use PyMonitor with custom picklers for Pygame objects.
 """
 
 import pygame
-import time
 import random
 from monitoringpy.core import init_monitoring, pymonitor
 

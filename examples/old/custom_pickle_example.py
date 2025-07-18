@@ -2,8 +2,6 @@ import pygame
 import io
 import pickle
 import copyreg
-import sys
-import time
 from monitoringpy import init_monitoring, pymonitor
 from monitoringpy.core.representation import PickleConfig
 

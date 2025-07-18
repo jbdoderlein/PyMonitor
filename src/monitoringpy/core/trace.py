@@ -1,34 +1,36 @@
-from collections import defaultdict
-from typing import Dict, Any, Optional, List, Union
-from sqlalchemy.orm import Session
-from .function_call import FunctionCallRepository
-from .representation import ObjectManager, PickleConfig
-from .models import FunctionCall, StackSnapshot, CodeDefinition
 import logging
+from collections import defaultdict
+from typing import Any
+
 import networkx as nx
+from sqlalchemy.orm import Session
+
+from .function_call import FunctionCallRepository
+from .models import CodeDefinition, FunctionCall, StackSnapshot
+from .representation import ObjectManager, PickleConfig
 
 logger = logging.getLogger(__name__)
 
 
 class TraceExporter:
     """Export traces to different formats with line-level granularity"""
-    
-    def __init__(self, session: Session, pickle_config: Optional[PickleConfig] = None):
+
+    def __init__(self, session: Session, pickle_config: PickleConfig | None = None):
         self.session = session
         self.function_call_repo = FunctionCallRepository(session, pickle_config)
         self.object_manager = ObjectManager(session, pickle_config)
-    
-    def export_function_trace(self, function_id: Union[str, int]) -> Optional[Dict[str, Any]]:
+
+    def export_function_trace(self, function_id: str | int) -> dict[str, Any] | None:
         """
         Export a function trace with line-level granularity.
-        
+
         Args:
             function_id: The ID of the function call to export
-            
+
         Returns:
             Dictionary containing:
             - function_info: metadata about the function
-            - code: the source code and file offset information  
+            - code: the source code and file offset information
             - trace: ordered list of stack snapshots with actual variable values
         """
         try:
@@ -39,29 +41,29 @@ class TraceExporter:
                 except ValueError:
                     logger.error(f"Invalid function ID: {function_id}")
                     return None
-            
+
             # Get the function call
             function_call = self.session.get(FunctionCall, function_id)
             if not function_call:
                 logger.error(f"Function call {function_id} not found")
                 return None
-            
+
             # Get all stack snapshots ordered by execution sequence
             snapshots = self.session.query(StackSnapshot).filter(
                 StackSnapshot.function_call_id == function_id
             ).order_by(StackSnapshot.order_in_call.asc()).all()
-            
+
             if not snapshots:
-                logger.warning(f"No stack snapshots found for function call {function_id}")
+                logger.warning(f"No stack snapshots found for {function_id}")
                 return None
-            
+
             # Get code information
             code_info = None
             if function_call.code_definition_id:
                 code_definition = self.session.query(CodeDefinition).filter(
                     CodeDefinition.id == function_call.code_definition_id
                 ).first()
-                
+
                 if code_definition:
                     code_info = {
                         'name': code_definition.name,
@@ -71,7 +73,7 @@ class TraceExporter:
                         'first_line_no': code_definition.first_line_no or 1,
                         'creation_time': code_definition.creation_time.isoformat() if code_definition.creation_time else None
                     }
-            
+
             # Build function metadata
             function_info = {
                 'id': function_call.id,
@@ -82,7 +84,7 @@ class TraceExporter:
                 'end_time': function_call.end_time.isoformat() if function_call.end_time else None,
                 'call_metadata': function_call.call_metadata
             }
-            
+
             # Export the trace with actual variable values
             trace_snapshots = []
             for snapshot in snapshots:
@@ -97,7 +99,7 @@ class TraceExporter:
                             except Exception as e:
                                 logger.warning(f"Could not rehydrate local variable '{var_name}': {e}")
                                 locals_values[var_name] = f"<Error rehydrating: {str(e)}>"
-                    
+
                     # Rehydrate global variables (filtered to exclude system variables)
                     globals_values = {}
                     if snapshot.globals_refs:
@@ -110,7 +112,7 @@ class TraceExporter:
                                 except Exception as e:
                                     logger.warning(f"Could not rehydrate global variable '{var_name}': {e}")
                                     globals_values[var_name] = f"<Error rehydrating: {str(e)}>"
-                    
+
                     # Create the snapshot entry
                     snapshot_data = {
                         'snapshot_id': snapshot.id,
@@ -122,9 +124,9 @@ class TraceExporter:
                         'is_first_in_call': snapshot.is_first_in_call,
                         'is_last_in_call': snapshot.is_last_in_call
                     }
-                    
+
                     trace_snapshots.append(snapshot_data)
-                    
+
                 except Exception as e:
                     logger.error(f"Error processing snapshot {snapshot.id}: {e}")
                     # Add a placeholder entry to maintain sequence
@@ -139,24 +141,24 @@ class TraceExporter:
                         'is_first_in_call': snapshot.is_first_in_call,
                         'is_last_in_call': snapshot.is_last_in_call
                     })
-            
+
             return {
                 'function_info': function_info,
                 'code': code_info,
                 'trace': trace_snapshots
             }
-            
+
         except Exception as e:
             logger.error(f"Error exporting function trace {function_id}: {e}")
             return None
-    
+
     def _serialize_value(self, value: Any) -> Any:
         """
         Serialize a value for JSON export, handling special cases.
-        
+
         Args:
             value: The value to serialize
-            
+
         Returns:
             A JSON-serializable representation of the value
         """
@@ -164,63 +166,62 @@ class TraceExporter:
             # Handle None
             if value is None:
                 return None
-            
+
             # Handle primitive types
-            if isinstance(value, (int, float, bool, str)):
+            if isinstance(value, int | float | bool | str):
                 return value
-            
+
             # Handle lists and tuples
-            if isinstance(value, (list, tuple)):
+            if isinstance(value, list | tuple):
                 try:
                     return [self._serialize_value(item) for item in value]
                 except Exception:
                     return f"<{type(value).__name__} with {len(value)} items>"
-            
+
             # Handle dictionaries
             if isinstance(value, dict):
                 try:
                     return {str(k): self._serialize_value(v) for k, v in value.items()}
                 except Exception:
                     return f"<dict with {len(value)} items>"
-            
+
             # Handle custom objects
             if hasattr(value, '__dict__'):
                 try:
                     # Try to get a meaningful representation
                     if hasattr(value, '__str__'):
                         str_repr = str(value)
-                        # Avoid very long string representations 
+                        # Avoid very long string representations
                         if len(str_repr) > 200:
                             str_repr = str_repr[:200] + "..."
                         return {
                             '_type': type(value).__name__,
                             '_module': getattr(type(value), '__module__', 'unknown'),
                             '_repr': str_repr,
-                            '_attributes': {k: self._serialize_value(v) for k, v in value.__dict__.items() 
+                            '_attributes': {k: self._serialize_value(v) for k, v in value.__dict__.items()
                                           if not k.startswith('_')}
                         }
-                    else:
-                        return f"<{type(value).__name__} object>"
+                    return f"<{type(value).__name__} object>"
                 except Exception:
                     return f"<{type(value).__name__} object (serialization failed)>"
-            
+
             # Fallback for other types
             try:
                 return str(value)
             except Exception:
                 return f"<{type(value).__name__} object (not serializable)>"
-                
+
         except Exception as e:
             logger.debug(f"Error serializing value: {e}")
             return f"<serialization error: {str(e)}>"
-    
-    def export_traces_to_json(self, function_ids: List[Union[str, int]]) -> List[Dict[str, Any]]:
+
+    def export_traces_to_json(self, function_ids: list[str | int]) -> list[dict[str, Any]]:
         """
         Export multiple function traces to JSON format.
-        
+
         Args:
             function_ids: List of function call IDs to export
-            
+
         Returns:
             List of exported trace dictionaries
         """
@@ -232,11 +233,11 @@ class TraceExporter:
             else:
                 logger.warning(f"Could not export trace for function {function_id}")
         return results
-    
-    def get_available_traces(self) -> List[Dict[str, Any]]:
+
+    def get_available_traces(self) -> list[dict[str, Any]]:
         """
         Get a list of all available function traces.
-        
+
         Returns:
             List of dictionaries with basic info about available traces
         """
@@ -245,7 +246,7 @@ class TraceExporter:
 
 def generate_graph_from_trace(trace):
     graph = nx.DiGraph()
-    
+
     previous_node = None
     for i, snapshot in enumerate(trace["trace"]):
         line = snapshot["line_number"]
@@ -278,7 +279,7 @@ def generate_edit_graph(g1, g2, mapping_v1_to_v2, modified_lines):
     # First make sure g1 and g2 have no common indices (i.e. shift g2 indices)
     g2_offset = max(g1.nodes) + 1
     g2 = nx.relabel_nodes(g2, {n: n + g2_offset for n in g2.nodes})
-    
+
     paths = list(nx.optimal_edit_paths(
         g1,
         g2,
@@ -338,20 +339,22 @@ def generate_edit_graph(g1, g2, mapping_v1_to_v2, modified_lines):
             u = inverse_node_map[u]
         if v in inverse_node_map:
             v = inverse_node_map[v]
-        
+
         edit_graph.add_edge(u, v, state='only2', diff=diff)
 
     # Mark unchanged edges/nodes as gray
     for u, v in edit_graph.edges():
         if 'state' not in edit_graph[u][v]:
             edit_graph[u][v]['state'] = 'common'
-            
+
 
     for n,v in edit_graph.nodes(data=True):
         if 'state' not in v:
             edit_graph.nodes[n]['state'] = 'common'
-        if 'line1' in v:
-            if v['line1'] in modified_lines and v['state'] != 'only1' and v['state'] != 'only2':
+        if 'line1' in v \
+            and v['line1'] in modified_lines \
+            and v['state'] != 'only1' \
+            and v['state'] != 'only2':
                 edit_graph.nodes[n]['state'] = 'modified'
 
     for u,v in node_map:

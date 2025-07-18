@@ -16,9 +16,8 @@ Example:
 """
 
 # Make sure we can import modules from this package
-from pathlib import Path
 import importlib
-import sys
+from pathlib import Path
 
 # List available pickler modules without importing them automatically
 pickler_modules = []
@@ -35,4 +34,4 @@ def get_pickler_module(name):
         print(f"Failed to import pickler module {name}: {e}")
         return None
 
-__all__ = pickler_modules + ['get_pickler_module'] 
+__all__ = pickler_modules + ['get_pickler_module']

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import time
 import json
-import os
 
 def simple_function(n):
     tmp = []

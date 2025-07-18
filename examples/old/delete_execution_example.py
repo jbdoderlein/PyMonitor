@@ -10,7 +10,6 @@ This example:
 """
 
 import os
-import sys
 from monitoringpy import init_monitoring, pymonitor, delete_function_execution
 
 # Define a function to monitor

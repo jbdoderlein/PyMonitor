@@ -1,5 +1,3 @@
-import base64
-import io
 import random
 import time
 import pygame

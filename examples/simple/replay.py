@@ -9,7 +9,6 @@ This script demonstrates:
 4. Replaying from the middle of a complex function sequence
 """
 
-import sys
 import monitoringpy
 from monitoringpy.core.reanimation import execute_function_call, replay_session_sequence
 
@@ -217,7 +216,7 @@ def demonstrate_replay_capabilities():
                 FunctionCall.order_in_session >= middle_call.order_in_session
             ).order_by(FunctionCall.order_in_session).all()
             
-            print(f"\n📋 Calls that would be replayed (starting from middle):")
+            print("\n📋 Calls that would be replayed (starting from middle):")
             print("-" * 50)
             for i, call in enumerate(remaining_calls[:8]):  # Show first 8
                 print(f"{i+1:2d}. {call.function} (ID: {call.id}, Order: {call.order_in_session})")

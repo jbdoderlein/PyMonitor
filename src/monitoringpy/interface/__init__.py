@@ -23,12 +23,11 @@ def _lazy_import_initialize_db():
 def __getattr__(name):
     if name == 'WebExplorer':
         return _lazy_import_web_explorer()
-    elif name == 'run_api':
+    if name == 'run_api':
         return _lazy_import_run_api()
-    elif name == 'initialize_db':
+    if name == 'initialize_db':
         return _lazy_import_initialize_db()
-    else:
-        raise AttributeError(f"module {__name__} has no attribute {name}")
+    raise AttributeError(f"module {__name__} has no attribute {name}")
 
 # Convenience function for quick web interface access
 def start_web_explorer(db_file: str, host: str = '127.0.0.1', port: int = 5000, debug: bool = False):
@@ -53,4 +52,4 @@ __all__ = [
     'run_api',
     'initialize_db',
     'start_web_explorer',
-] 
+]

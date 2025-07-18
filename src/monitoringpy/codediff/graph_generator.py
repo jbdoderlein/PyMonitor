@@ -1,17 +1,17 @@
-from collections import defaultdict
 import importlib.util
+import inspect
 import json
-import subprocess
 import os
 import re
-import inspect
-import types
+import subprocess
 import sys
 import time
-import networkx as nx
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
+import types
+from collections import defaultdict
 
+import networkx as nx
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
 
 MONITOR_TOOL_ID = sys.monitoring.PROFILER_ID
 
@@ -72,7 +72,7 @@ def generate_line_mapping(code_path_1:str, code_path_2:str) -> tuple[dict, dict,
             m2_line = get_line_number_from_index(foo2_code, m2)
             if m1_line == m2_line:
                 modified_lines.append(m1_line)
-            
+
         elif section.startswith('match'):
             data = section.split("---")[1].strip()
             matches = re.finditer(regex, data, re.MULTILINE)
@@ -95,9 +95,9 @@ def generate_line_mapping(code_path_1:str, code_path_2:str) -> tuple[dict, dict,
 def generate_trace(func):
     if sys.monitoring.get_tool(MONITOR_TOOL_ID) is None:
             sys.monitoring.use_tool_id(MONITOR_TOOL_ID, "py_monitoring")
-        
-    events = (sys.monitoring.events.LINE | 
-                     sys.monitoring.events.PY_START | 
+
+    events = (sys.monitoring.events.LINE |
+                     sys.monitoring.events.PY_START |
                      sys.monitoring.events.PY_RETURN)
     sys.monitoring.set_local_events(MONITOR_TOOL_ID, func.__code__, events)
     trace = []
@@ -151,7 +151,7 @@ def generate_edit_graph(g1, g2, mapping_v1_to_v2, modified_lines):
     # First make sure g1 and g2 have no common indices (i.e. shift g2 indices)
     g2_offset = max(g1.nodes) + 1
     g2 = nx.relabel_nodes(g2, {n: n + g2_offset for n in g2.nodes})
-    
+
     paths = list(nx.optimal_edit_paths(
         g1,
         g2,
@@ -211,14 +211,14 @@ def generate_edit_graph(g1, g2, mapping_v1_to_v2, modified_lines):
             u = inverse_node_map[u]
         if v in inverse_node_map:
             v = inverse_node_map[v]
-        
+
         edit_graph.add_edge(u, v, state='only2', diff=diff)
 
     # Mark unchanged edges/nodes as gray
     for u, v in edit_graph.edges():
         if 'state' not in edit_graph[u][v]:
             edit_graph[u][v]['state'] = 'common'
-            
+
 
     for n,v in edit_graph.nodes(data=True):
         if 'state' not in v:
@@ -273,13 +273,13 @@ class FileChangeHandler(FileSystemEventHandler):
         self.func_name = func_name
         self.callback = callback
         self.last_modified = {}
-        
+
     def on_modified(self, event):
         if event.is_directory:
             return
-            
+
         file_path = os.path.abspath(event.src_path) # type: ignore
-        
+
         # Check if it's one of our monitored files
         if file_path in [self.file1, self.file2]:
             # Debounce rapid file changes
@@ -287,9 +287,9 @@ class FileChangeHandler(FileSystemEventHandler):
             if file_path in self.last_modified:
                 if current_time - self.last_modified[file_path] < 1.0:  # 1 second debounce
                     return
-            
+
             self.last_modified[file_path] = current_time
-            
+
             # Call the callback with the specific file that changed
             self.callback(file_path)
 
@@ -299,47 +299,47 @@ def regenerate_graph_selective(file1, file2, func_name, changed_file, trace_cach
     try:
         # Generate line mapping (always needed as it compares both files)
         mapping_v1_to_v2, mapping_v2_to_v1, modified_lines = generate_line_mapping(file1, file2)
-        
+
         # Only regenerate trace for the changed file
         if changed_file == file1:
             trace_cache['trace_1'] = load_module_and_generate_trace(file1, func_name)
         elif changed_file == file2:
             trace_cache['trace_2'] = load_module_and_generate_trace(file2, func_name)
-        
+
         # Use cached traces
         trace_1 = trace_cache['trace_1']
         trace_2 = trace_cache['trace_2']
-        
+
         g1 = generate_graph(trace_1, merge_node_on_line=True)
         g2 = generate_graph(trace_2, merge_node_on_line=True)
-        
+
         edit_graph = generate_edit_graph(g1, g2, mapping_v1_to_v2, mapping_v2_to_v1, modified_lines)
-        
+
         # Export to dot
         output_json(export_graph(edit_graph))
-            
+
     except Exception as e:
         output_json({"type": "error", "message": f"Error regenerating graph: {e}"})
 
 
 def regenerate_graph_full(file1, file2, func_name, trace_cache):
     """Regenerate the graph completely (both traces)."""
-    try: 
+    try:
         # Generate line mapping
         mapping_v1_to_v2, mapping_v2_to_v1, modified_lines = generate_line_mapping(file1, file2)
-        
+
         # Generate both traces and cache them
         trace_cache['trace_1'] = load_module_and_generate_trace(file1, func_name)
         trace_cache['trace_2'] = load_module_and_generate_trace(file2, func_name)
-        
+
         g1 = generate_graph(trace_cache['trace_1'], merge_node_on_line=True)
         g2 = generate_graph(trace_cache['trace_2'], merge_node_on_line=True)
-        
+
         edit_graph = generate_edit_graph(g1, g2, mapping_v1_to_v2, mapping_v2_to_v1, modified_lines)
-        
+
         # Export to dot
         output_json(export_graph(edit_graph))
-            
+
     except Exception as e:
         raise e
         output_json({"type": "error", "message": f"Error generating graph: {e}"})
@@ -349,31 +349,31 @@ def watch_files(file1, file2, func_name, trace_cache):
     """Set up file watching and continuous monitoring."""
     def on_file_change(changed_file):
         regenerate_graph_selective(file1, file2, func_name, changed_file, trace_cache)
-    
+
     # Create event handler
     event_handler = FileChangeHandler(file1, file2, func_name, on_file_change)
-    
+
     # Set up observers for both file directories
     observer = Observer()
-    
+
     # Watch directory containing file1
     dir1 = os.path.dirname(file1)
     observer.schedule(event_handler, dir1, recursive=False)
-    
+
     # Watch directory containing file2 (if different)
     dir2 = os.path.dirname(file2)
     if dir2 != dir1:
         observer.schedule(event_handler, dir2, recursive=False)
-    
+
     # Start monitoring
     observer.start()
-    
+
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
         observer.stop()
-    
+
     observer.join()
 
 
@@ -387,12 +387,11 @@ if __name__ == "__main__":
     if len(sys.argv) != 4:
         print(json.dumps({"type": "error", "message": "Usage: python analysis_script.py <original_file> <alternative_file> <function_name>"}))
         sys.exit(1)
-    
+
     original_file = os.path.abspath(sys.argv[1])
-    alternative_file = os.path.abspath(sys.argv[2]) 
+    alternative_file = os.path.abspath(sys.argv[2])
     function_name = sys.argv[3]
-    
+
     trace_cache = {}
     regenerate_graph_full(original_file, alternative_file, function_name, trace_cache)
     watch_files(original_file, alternative_file, function_name, trace_cache)
-    

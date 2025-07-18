@@ -5,20 +5,25 @@ PyMonitor API
 API endpoints for PyMonitor database access.
 """
 
-import os
-import sys
-import logging
 import base64
 import io
-from typing import Dict, Any, Optional
+import logging
+import os
+import sys
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from monitoringpy.core import (
-    init_db, StoredObject, FunctionCall, StackSnapshot, 
-    CodeDefinition, FunctionCallRepository, ObjectManager,
-    MonitoringSession
+    CodeDefinition,
+    FunctionCall,
+    FunctionCallRepository,
+    MonitoringSession,
+    ObjectManager,
+    StackSnapshot,
+    StoredObject,
+    init_db,
 )
 
 # Configure logging
@@ -52,15 +57,15 @@ def serialize_value(value: Any) -> str:
     """Serialize a value to a string representation"""
     if value is None:
         return "None"
-    elif isinstance(value, (int, float, bool, str)):
+    if isinstance(value, int | float | bool | str):
         return str(value)
-    elif isinstance(value, (list, tuple)):
+    if isinstance(value, list | tuple):
         # Limit array size and handle non-serializable items
         items = []
         for item in value[:3]:  # Only show first 3 items
             items.append(serialize_value(item))
         return f"[{', '.join(items)}{'...' if len(value) > 3 else ''}]"
-    elif isinstance(value, dict):
+    if isinstance(value, dict):
         # Limit dict size and handle non-serializable items
         items = []
         for k, v in list(value.items())[:3]:  # Only show first 3 items
@@ -68,10 +73,9 @@ def serialize_value(value: Any) -> str:
             val_str = serialize_value(v)
             items.append(f"{key_str}: {val_str}")
         return f"{{{', '.join(items)}{'...' if len(value) > 3 else ''}}}"
-    else:
-        return str(value)
+    return str(value)
 
-def convert_image_to_base64(image_obj) -> Optional[str]:
+def convert_image_to_base64(image_obj) -> str | None:
     """Convert various image formats to base64 data URI"""
     try:
         # Handle PIL Image
@@ -87,50 +91,46 @@ def convert_image_to_base64(image_obj) -> Optional[str]:
                 return base64.b64encode(image_data).decode('utf-8')
         except ImportError:
             pass
-        
+
         # Handle numpy arrays that might be images
         try:
             import numpy as np
-            if isinstance(image_obj, np.ndarray):
-                # Check if it looks like an image (2D or 3D array with reasonable dimensions)
-                if len(image_obj.shape) in [2, 3] and all(dim > 0 and dim <= 5000 for dim in image_obj.shape):
-                    # Try to convert to PIL Image
-                    from PIL import Image
-                    
-                    # Handle different array formats
-                    if len(image_obj.shape) == 2:
-                        # Grayscale image
+            if isinstance(image_obj, np.ndarray) and len(image_obj.shape) in [2, 3] and all(dim > 0 and dim <= 5000 for dim in image_obj.shape):
+                from PIL import Image
+
+                if len(image_obj.shape) == 2:
+                    # Grayscale image
+                    if image_obj.dtype != np.uint8:
+                        # Normalize to 0-255 range
+                        image_obj = ((image_obj - image_obj.min()) / (image_obj.max() - image_obj.min()) * 255).astype(np.uint8)
+                    pil_image = Image.fromarray(image_obj, mode='L')
+                elif len(image_obj.shape) == 3:
+                    # Color image
+                    if image_obj.shape[2] == 3:  # RGB
                         if image_obj.dtype != np.uint8:
                             # Normalize to 0-255 range
                             image_obj = ((image_obj - image_obj.min()) / (image_obj.max() - image_obj.min()) * 255).astype(np.uint8)
-                        pil_image = Image.fromarray(image_obj, mode='L')
-                    elif len(image_obj.shape) == 3:
-                        # Color image
-                        if image_obj.shape[2] == 3:  # RGB
-                            if image_obj.dtype != np.uint8:
-                                # Normalize to 0-255 range
-                                image_obj = ((image_obj - image_obj.min()) / (image_obj.max() - image_obj.min()) * 255).astype(np.uint8)
-                            pil_image = Image.fromarray(image_obj, mode='RGB')
-                        elif image_obj.shape[2] == 4:  # RGBA
-                            if image_obj.dtype != np.uint8:
-                                # Normalize to 0-255 range
-                                image_obj = ((image_obj - image_obj.min()) / (image_obj.max() - image_obj.min()) * 255).astype(np.uint8)
-                            pil_image = Image.fromarray(image_obj, mode='RGBA')
-                        else:
-                            return None
+                        pil_image = Image.fromarray(image_obj, mode='RGB')
+                    elif image_obj.shape[2] == 4:  # RGBA
+                        if image_obj.dtype != np.uint8:
+                            # Normalize to 0-255 range
+                            image_obj = ((image_obj - image_obj.min()) / (image_obj.max() - image_obj.min()) * 255).astype(np.uint8)
+                        pil_image = Image.fromarray(image_obj, mode='RGBA')
                     else:
                         return None
-                    
-                    # Convert to base64
-                    buffer = io.BytesIO()
-                    if pil_image.mode == 'RGBA':
-                        pil_image = pil_image.convert('RGB')
-                    pil_image.save(buffer, format='PNG')
-                    image_data = buffer.getvalue()
-                    return base64.b64encode(image_data).decode('utf-8')
+                else:
+                    return None
+
+                # Convert to base64
+                buffer = io.BytesIO()
+                if pil_image.mode == 'RGBA':
+                    pil_image = pil_image.convert('RGB')
+                pil_image.save(buffer, format='PNG')
+                image_data = buffer.getvalue()
+                return base64.b64encode(image_data).decode('utf-8')
         except (ImportError, Exception):
             pass
-        
+
         # Handle pygame Surface
         try:
             import pygame
@@ -142,13 +142,13 @@ def convert_image_to_base64(image_obj) -> Optional[str]:
                 return base64.b64encode(image_data).decode('utf-8')
         except (ImportError, Exception):
             pass
-        
+
         return None
     except Exception as e:
         logger.debug(f"Error converting image to base64: {e}")
         return None
 
-def detect_base64_image(value_str: str) -> Optional[str]:
+def detect_base64_image(value_str: str) -> str | None:
     """Detect if a string contains base64 encoded image data"""
     try:
         # Check if it's already a base64 string (without data URI prefix)
@@ -165,31 +165,31 @@ def detect_base64_image(value_str: str) -> Optional[str]:
     except Exception:
         return None
 
-def serialize_stored_value(ref: Optional[str]) -> Dict[str, Any]:
+def serialize_stored_value(ref: str | None) -> dict[str, Any]:
     """Serialize a stored value, handling cases where the original class is not available"""
     global object_manager
     assert object_manager is not None
     if ref is None:
         return {"value": "None", "type": "NoneType"}
-        
+
     try:
         # Try to get the value using ObjectManager
         try:
             result = object_manager.get(ref)
         except Exception:
             result = object_manager.get_without_pickle(ref)
-        
+
         # Handle case where result is None
         if result is None:
             return {"value": f"<not found: {ref}>", "type": "Error"}
-            
+
         # Handle case where result is a tuple as expected
         if isinstance(result, tuple) and len(result) == 2:
             value, type_name = result
             if value is None:
                 # If we couldn't get it, it's truly not found
                 return {"value": f"<not found: {ref}>", "type": "Error"}
-            
+
             # Check if the value is an image
             base64_image = convert_image_to_base64(value)
             if base64_image:
@@ -199,7 +199,7 @@ def serialize_stored_value(ref: Optional[str]) -> Dict[str, Any]:
                     "image": base64_image,
                     "is_image": True
                 }
-            
+
             # Check if it's a string that might contain base64 image data
             if isinstance(value, str):
                 base64_image = detect_base64_image(value)
@@ -210,25 +210,25 @@ def serialize_stored_value(ref: Optional[str]) -> Dict[str, Any]:
                         "image": base64_image,
                         "is_image": True
                     }
-                
+
             return {
                 "value": str(value),
                 "type": type_name,
             }
-            
+
         # Handle unexpected result type
         return {"value": "<error: unexpected result type>", "type": "Error"}
-            
+
     except Exception as e:
         logger.error(f"Error serializing value for ref {ref}: {e}")
         return {"value": f"<error: {str(e)}>", "type": "Error"}
 
-def serialize_call_info(call_info: Dict[str, Any]) -> Dict[str, Any]:
+def serialize_call_info(call_info: dict[str, Any]) -> dict[str, Any]:
     """Serialize a function call info object to a JSON-compatible dict"""
-    
-    result = {k: v for k, v in call_info.items()}
-    
-        
+
+    result = dict(call_info.items())
+
+
     # Process locals
     if "locals_refs" in call_info and call_info["locals_refs"]:
         locals_dict = {}
@@ -237,7 +237,7 @@ def serialize_call_info(call_info: Dict[str, Any]) -> Dict[str, Any]:
         result["locals"] = locals_dict
     else:
         result["locals"] = {}
-    
+
     # Process globals
     if "globals_refs" in call_info and call_info["globals_refs"]:
         globals_dict = {}
@@ -247,11 +247,11 @@ def serialize_call_info(call_info: Dict[str, Any]) -> Dict[str, Any]:
         result["globals"] = globals_dict
     else:
         result["globals"] = {}
-    
+
     # Process return value
     if "return_ref" in call_info:
         result["return_value"] = serialize_stored_value(call_info["return_ref"])
-        
+
     return result
 
 # Define routes with actual implementation
@@ -260,15 +260,15 @@ def serialize_call_info(call_info: Dict[str, Any]) -> Dict[str, Any]:
 async def get_stack_recording(function_id: str):
     """Get the stack snapshot information for a function call"""
     global session, object_manager
-    
+
     try:
         if session is None:
             raise ValueError("Session is not initialized")
-                
+
         function_call = session.query(FunctionCall).filter(FunctionCall.id == function_id).first()
         if not function_call:
             raise ValueError(f"Function call {function_id} not found")
-        
+
         # Get all snapshots for this function call
         snapshots = session.query(StackSnapshot).filter(
             StackSnapshot.function_call_id == function_id
@@ -283,7 +283,7 @@ async def get_stack_recording(function_id: str):
                 },
                 "frames": []
             }
-        
+
         # Get code information if available
         code = None
         if function_call.code_definition_id:
@@ -291,7 +291,7 @@ async def get_stack_recording(function_id: str):
                 code_definition = session.query(CodeDefinition).filter(
                     CodeDefinition.id == function_call.code_definition_id
                 ).first()
-                
+
                 if code_definition:
                     first_line_no = code_definition.first_line_no if code_definition.first_line_no is not None else function_call.line
                     code = {
@@ -303,7 +303,7 @@ async def get_stack_recording(function_id: str):
                     }
             except Exception as e:
                 logger.error(f"Error retrieving code definition: {e}")
-        
+
         # Build a snapshots of function state for all recorded frames
         frames = []
         try:
@@ -322,22 +322,22 @@ async def get_stack_recording(function_id: str):
 
                 if stack_snapshot.next_snapshot_id:
                     frame_info["next_snapshot_id"] = str(stack_snapshot.next_snapshot_id)
-                
+
                 # Add code information if available
                 if code:
                     frame_info["code"] = code
-                
+
                 # Add call metadata if available
                 if function_call.call_metadata:
                     frame_info["call_metadata"] = function_call.call_metadata
-                
+
                 # Process locals from the snapshot's locals_refs
                 if stack_snapshot.locals_refs:
                     frame_info["locals"] = {}
                     for name, value in stack_snapshot.locals_refs.items():
                         frame_info["locals"][name] = serialize_stored_value(value)
 
-                
+
                 # Process globals from the snapshot's globals_refs
                 if stack_snapshot.globals_refs:
                     frame_info["globals"] = {}
@@ -346,12 +346,12 @@ async def get_stack_recording(function_id: str):
                         if not name.startswith("__") and not name.endswith("__"):
                             frame_info["globals"][name] = serialize_stored_value(value)
 
-                
+
                 frames.append(frame_info)
         except Exception as e:
             logger.error(f"Error processing stack data: {e}")
             frames = []
-        
+
         # Return the stack trace data
         function_dict = {
             "id": function_id,
@@ -379,24 +379,24 @@ async def get_stack_recording(function_id: str):
 async def get_snapshot(snapshot_id: str):
     """Get details of a specific stack snapshot"""
     global session, object_manager
-    
+
     try:
         if session is None:
             raise ValueError("Session is not initialized")
-                
+
         snapshot = session.query(StackSnapshot).filter(StackSnapshot.id == snapshot_id).first()
         if not snapshot:
             raise ValueError(f"Snapshot {snapshot_id} not found")
-        
+
         # Get the function call
         function_call = session.query(FunctionCall).filter(
             FunctionCall.id == snapshot.function_call_id
         ).first()
-        
+
         # Build the response with locals and globals data
         locals_data = {}
         globals_data = {}
-        
+
         # Process locals_refs
         if snapshot.locals_refs:
             for name, value in snapshot.locals_refs.items():
@@ -405,7 +405,7 @@ async def get_snapshot(snapshot_id: str):
                 except Exception as e:
                     logger.error(f"Error serializing local {name}: {e}")
                     locals_data[name] = {"value": f"<error: {str(e)}>", "type": "Error"}
-        
+
         # Process globals_refs
         if snapshot.globals_refs:
             for name, value in snapshot.globals_refs.items():
@@ -415,10 +415,10 @@ async def get_snapshot(snapshot_id: str):
                     except Exception as e:
                         logger.error(f"Error serializing global {name}: {e}")
                         globals_data[name] = {"value": f"<error: {str(e)}>", "type": "Error"}
-        
+
         # Get previous snapshot using the model method
         previous_snapshot = snapshot.get_previous_snapshot(session)
-        
+
         return {
             "id": snapshot.id,
             "function_call_id": snapshot.function_call_id,
@@ -440,32 +440,32 @@ async def get_snapshot(snapshot_id: str):
 @app.get("/api/object-graph")
 async def get_object_graph(show_isolated: bool = False):
     """Get the object graph for visualization
-    
+
     Args:
         show_isolated: Whether to include isolated object nodes with no connections
     """
     global object_manager, session, call_tracker
-    
+
     try:
         if session is None or object_manager is None:
             raise ValueError("Session or object manager is not initialized")
-                
+
         # Get all stored objects
         objects = session.query(StoredObject).all()
-        
+
         # Get all function calls
         function_calls = session.query(FunctionCall).all()
-        
+
         # Get all code definitions
         code_definitions = session.query(CodeDefinition).all()
-        
+
         # Build graph data structures for Cytoscape
         nodes = []
         edges = []
-        
+
         # Map to keep track of nodes we've already processed
         processed_ids = set()
-        
+
         # First add function call nodes
         for fc in function_calls:
             try:
@@ -487,7 +487,7 @@ async def get_object_graph(show_isolated: bool = False):
                 }
                 nodes.append(node_data)
                 processed_ids.add(func_id)
-                
+
                 # Add connection to parent function call if available
                 if fc.parent_call_id:
                     try:
@@ -505,7 +505,7 @@ async def get_object_graph(show_isolated: bool = False):
                         logger.debug(f"Added parent-child edge: {edge_id} from {parent_id} to {func_id}")
                     except Exception as e:
                         logger.error(f"Error adding parent-child edge for {func_id}: {e}")
-                
+
                 # Add connection to return value if available
                 if fc.return_ref:
                     try:
@@ -523,7 +523,7 @@ async def get_object_graph(show_isolated: bool = False):
                         logger.debug(f"Added return edge: {edge_id} from {func_id} to {return_id}")
                     except Exception as e:
                         logger.error(f"Error adding return edge for {func_id}: {e}")
-                
+
                 # Add connections to code definition if available
                 if fc.code_definition_id:
                     try:
@@ -543,7 +543,7 @@ async def get_object_graph(show_isolated: bool = False):
                         logger.error(f"Error adding code definition edge for {func_id}: {e}")
             except Exception as e:
                 logger.error(f"Error processing function call {fc.id}: {e}")
-                
+
         # Add code definition nodes
         for cd in code_definitions:
             try:
@@ -566,21 +566,21 @@ async def get_object_graph(show_isolated: bool = False):
                 processed_ids.add(code_id)
             except Exception as e:
                 logger.error(f"Error processing code definition {cd.id}: {e}")
-        
+
         # Process other stored objects
         for obj in objects:
             try:
                 # Create prefixed object ID
                 obj_id = f"obj_{obj.id}"  # Add prefix to make ID unique
-                
+
                 # Skip if we've already processed this object as a function or code def
                 if obj_id in processed_ids:
                     continue
-                
+
                 # Skip if object manager is missing
                 if object_manager is None:
                     continue
-                
+
                 # Try to get the object value
                 obj_value = None
                 obj_type = "Unknown"
@@ -591,22 +591,19 @@ async def get_object_graph(show_isolated: bool = False):
                 except Exception as e:
                     logger.warning(f"Couldn't get object value for {obj.id}: {e}")
                     # Still include the node, just with limited info
-                
+
                 # Determine if it's a primitive type
                 is_primitive = False
                 if obj_type in ['int', 'float', 'bool', 'str', 'NoneType']:
                     is_primitive = True
-                
+
                 # Format label based on type and value
                 label = obj_type
                 if obj_value is not None:
                     if is_primitive:
                         # For primitives, show the value
                         str_val = str(obj_value)
-                        if len(str_val) > 20:
-                            label = f"{str_val[:20]}..."
-                        else:
-                            label = str_val
+                        label = f"{str_val[:20]}..." if len(str_val) > 20 else str_val
                     else:
                         # For containers, show size or just type
                         container_size = None
@@ -616,10 +613,10 @@ async def get_object_graph(show_isolated: bool = False):
                         except Exception as e:
                             logger.debug(f"Error getting container size for {obj.id}: {e}")
                             pass
-                        
+
                         if container_size is not None:
                             label = f"{obj_type}({container_size})"
-                
+
                 # Create a node for the object
                 node_data = {
                     "data": {
@@ -633,11 +630,11 @@ async def get_object_graph(show_isolated: bool = False):
                 }
                 nodes.append(node_data)
                 processed_ids.add(obj_id)
-                
+
                 # For container objects, create edges to their contents
                 if obj_value is not None:
                     try:
-                        if isinstance(obj_value, (list, tuple)):
+                        if isinstance(obj_value, list | tuple):
                             for i, item in enumerate(obj_value[:30]):  # Limit to first 30 items
                                 if isinstance(item, str) and len(item) == 32 and all(c in '0123456789abcdef' for c in item.lower()):
                                     # This looks like a reference ID
@@ -674,35 +671,35 @@ async def get_object_graph(show_isolated: bool = False):
                         logger.error(f"Error creating edges for container object {obj_id}: {e}")
             except Exception as e:
                 logger.error(f"Error processing object {obj.id}: {e}")
-        
+
         # Filter out edges that point to non-existent nodes
         valid_node_ids = {node["data"]["id"] for node in nodes}
         valid_edges = []
-        
+
         for edge in edges:
             try:
-                if (edge["data"]["source"] in valid_node_ids and 
+                if (edge["data"]["source"] in valid_node_ids and
                     edge["data"]["target"] in valid_node_ids):
                     valid_edges.append(edge)
             except Exception as e:
                 logger.error(f"Error processing edge: {e}, edge data: {edge}")
-        
+
         # Find connected nodes - any node that appears in an edge
         connected_nodes = set()
         for edge in valid_edges:
             connected_nodes.add(edge["data"]["source"])
             connected_nodes.add(edge["data"]["target"])
-        
+
         # Filter nodes based on show_isolated parameter
         filtered_nodes = []
         isolated_count = 0
-        
+
         for node in nodes:
             node_id = node["data"]["id"]
             node_type = node["data"]["nodeType"]
-            
+
             is_connected = node_id in connected_nodes
-            
+
             # Determine if we should include this node
             include_node = (
                 # Always include function and code nodes
@@ -712,17 +709,17 @@ async def get_object_graph(show_isolated: bool = False):
                 # Include isolated object nodes if requested
                 (node_type == "object" and not is_connected and show_isolated)
             )
-            
+
             if include_node:
                 filtered_nodes.append(node)
             elif node_type == "object" and not is_connected:
                 isolated_count += 1
-        
+
         if show_isolated:
             logger.info(f"Generated graph with all {len(filtered_nodes)} nodes and {len(valid_edges)} edges")
         else:
             logger.info(f"Generated graph with {len(filtered_nodes)} nodes (filtered out {isolated_count} isolated objects) and {len(valid_edges)} edges")
-            
+
         return {"nodes": filtered_nodes, "edges": valid_edges}
     except ValueError as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -734,11 +731,11 @@ async def get_object_graph(show_isolated: bool = False):
 async def get_db_info():
     """Get database path information"""
     global db_path
-    
+
     try:
         if db_path is None:
             raise ValueError("DB path is not initialized")
-            
+
         return {"db_path": db_path}
     except Exception as e:
         logger.error(f"Error getting DB info: {e}")
@@ -752,11 +749,11 @@ async def get_function_calls(
 ):
     """Get a list of function calls with optional filtering"""
     global session
-    
+
     try:
         if session is None:
             raise ValueError("Session is not initialized")
-                
+
         query = session.query(FunctionCall)
         if search:
             search_lower = f"%{search.lower()}%"
@@ -771,39 +768,39 @@ async def get_function_calls(
             function_lower = f"%{function.lower()}%"
             query = query.filter(FunctionCall.function.ilike(function_lower))
         function_calls = query.limit(100).all()
-        
+
         # Convert to a serializable format using the model's to_dict method
         result = []
         for fc in function_calls:
             # Use the model's to_dict method as base
             call_data = fc.to_dict()
-            
+
             # Add additional fields for API
             call_data["duration"] = (fc.end_time - fc.start_time).total_seconds() if fc.end_time and fc.start_time else None
             call_data["has_stack_recording"] = session.query(StackSnapshot).filter(StackSnapshot.function_call_id == fc.id).count() > 0
-            
+
             # Add serialized locals
             locals_data = {}
             if fc.locals_refs:
                 for name, value in fc.locals_refs.items():
                     locals_data[name] = serialize_stored_value(value)
             call_data["locals"] = locals_data
-            
+
             # Add serialized globals
             globals_data = {}
             if fc.globals_refs:
                 for name, value in fc.globals_refs.items():
                     globals_data[name] = serialize_stored_value(value)
             call_data["globals"] = globals_data
-            
+
             # Add serialized return value
             call_data["return_value"] = serialize_stored_value(fc.return_ref)
-            
+
             result.append(call_data)
-        
+
         # Sort by time
         result.sort(key=lambda x: x["start_time"] if x["start_time"] else "", reverse=True)
-        
+
         # Return as dict with function_calls key to match UI expectations
         return {"function_calls": result}
     except ValueError as e:
@@ -816,38 +813,38 @@ async def get_function_calls(
 async def get_function_call(call_id: str):
     """Get details of a specific function call"""
     global call_tracker, session
-    
+
     try:
         if call_tracker is None or session is None:
             raise ValueError("Session is not initialized")
-                
+
         call_info = call_tracker.get_call_with_code(call_id)
         if call_info is None:
             raise ValueError(f"Function call {call_id} not found")
-        
+
         # Serialize the call info
         raw_call_info = serialize_call_info(call_info)
-        
+
         # Check if there are any stack recordings for this function call
         has_recordings = session.query(StackSnapshot).filter(
             StackSnapshot.function_call_id == call_id
         ).count() > 0
         raw_call_info["has_stack_recording"] = has_recordings
-        
+
         # Get stack traces for this function call
         stack_trace = []
         if has_recordings:
             stack_snapshots = session.query(StackSnapshot).filter(
                 StackSnapshot.function_call_id == call_id
             ).order_by(StackSnapshot.order_in_call.asc()).all()
-            
+
             for snapshot in stack_snapshots:
                 # Process locals from the snapshot's locals_refs
                 locals_data = {}
                 if hasattr(snapshot, 'locals_refs') and snapshot.locals_refs is not None:
                     for name, value in snapshot.locals_refs.items():
                         locals_data[name] = serialize_stored_value(value)
-                
+
                 # Process globals from the snapshot's globals_refs
                 globals_data = {}
                 if hasattr(snapshot, 'globals_refs') and snapshot.globals_refs is not None:
@@ -855,12 +852,12 @@ async def get_function_call(call_id: str):
                         # Filter out module-level imports and other large objects
                         if not name.startswith("__") and not name.endswith("__"):
                             globals_data[name] = serialize_stored_value(value)
-                
+
                 # Format timestamp if it exists
                 timestamp_str = None
                 if hasattr(snapshot, 'timestamp') and snapshot.timestamp is not None:
                     timestamp_str = snapshot.timestamp.isoformat()
-                
+
                 trace_data = {
                     "id": str(snapshot.id),
                     "line": snapshot.line_number,
@@ -869,9 +866,9 @@ async def get_function_call(call_id: str):
                     "globals": globals_data
                 }
                 stack_trace.append(trace_data)
-        
+
         raw_call_info["stack_trace"] = stack_trace
-        
+
         # Wrap the call info in a function_call object to match the template's expectation
         return {"function_call": raw_call_info}
     except ValueError as e:
@@ -884,14 +881,14 @@ async def get_function_call(call_id: str):
 async def get_monitoring_sessions():
     """Get all monitoring sessions"""
     global session
-    
+
     try:
         if session is None:
             raise ValueError("Session is not initialized")
-                
+
         # Query all monitoring sessions
         monitoring_sessions = session.query(MonitoringSession).all()
-        
+
         # Convert sessions to a serializable format
         result = []
         for ms in monitoring_sessions:
@@ -908,10 +905,10 @@ async def get_monitoring_sessions():
                 "metadata": ms.session_metadata
             }
             result.append(session_data)
-        
+
         # Sort sessions by start_time in descending order (newest first)
         result.sort(key=lambda x: x["start_time"] if x["start_time"] else "", reverse=True)
-        
+
         return {"sessions": result}
     except ValueError as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -923,40 +920,40 @@ async def get_monitoring_sessions():
 async def get_session_details(session_id: str):
     """Get detailed information about a specific monitoring session"""
     global session
-    
+
     try:
         if session is None:
             raise ValueError("Session is not initialized")
-        
+
         # Convert session_id to integer
         try:
             session_id_int = int(session_id)
         except ValueError:
             raise ValueError(f"Invalid session ID: {session_id}")
-            
+
         # Query the monitoring session
         monitoring_session = session.query(MonitoringSession).filter(
             MonitoringSession.id == session_id_int
         ).first()
-        
+
         if not monitoring_session:
             raise ValueError(f"Session {session_id} not found")
-        
+
         # Get function calls in this session
         call_sequence = monitoring_session.get_call_sequence(session)
-        
+
         # Process function calls
         function_calls = []
         function_calls_map = {}
         common_variables = {}
-        
+
         # Track variables that appear in all calls for a given function
         function_variables = {}
-        
+
         for function_call in call_sequence:
             # Store function call ID
             function_calls.append(function_call.id)
-            
+
             # Group by function name
             if function_call.function not in function_calls_map:
                 function_calls_map[function_call.function] = []
@@ -965,9 +962,9 @@ async def get_session_details(session_id: str):
                     'locals': None,
                     'globals': None
                 }
-            
+
             function_calls_map[function_call.function].append(function_call.id)
-            
+
             # Track common variables across calls to the same function
             if function_variables[function_call.function]['first_call']:
                 # First call, initialize sets
@@ -978,10 +975,10 @@ async def get_session_details(session_id: str):
                 # Subsequent calls, intersect with existing sets
                 locals_keys = set(function_call.locals_refs.keys()) if function_call.locals_refs else set()
                 globals_keys = set(function_call.globals_refs.keys()) if function_call.globals_refs else set()
-                
+
                 function_variables[function_call.function]['locals'] &= locals_keys
                 function_variables[function_call.function]['globals'] &= globals_keys
-        
+
         # Convert function_variables to common_variables format
         for func_name, vars_data in function_variables.items():
             if not vars_data['first_call']:  # Only include functions that were called at least once
@@ -989,9 +986,9 @@ async def get_session_details(session_id: str):
                     'locals': list(vars_data['locals']),
                     'globals': list(vars_data['globals']),
                 }
-        
+
         # Build the response
-        session_data = {
+        return {
             "id": monitoring_session.id,
             "name": monitoring_session.name,
             "description": monitoring_session.description,
@@ -1004,8 +1001,8 @@ async def get_session_details(session_id: str):
             "metadata": monitoring_session.session_metadata,
             "common_variables": common_variables
         }
-        
-        return session_data
+
+
     except ValueError as e:
         raise HTTPException(status_code=404 if "not found" in str(e) else 400, detail=str(e))
     except Exception as e:
@@ -1016,19 +1013,19 @@ async def get_session_details(session_id: str):
 async def get_execution_tree(call_id: str, max_depth: int = Query(5, description="Maximum depth of execution tree")):
     """Get the hierarchical execution tree for a function call"""
     global session
-    
+
     try:
         if session is None:
             raise ValueError("Session is not initialized")
-        
+
         # Get the function call
         function_call = session.query(FunctionCall).filter(FunctionCall.id == call_id).first()
         if not function_call:
             raise ValueError(f"Function call {call_id} not found")
-        
+
         # Get the execution tree using the model method
         execution_tree = function_call.get_execution_tree(session, max_depth=max_depth)
-        
+
         return {"execution_tree": execution_tree}
     except ValueError as e:
         raise HTTPException(status_code=404 if "not found" in str(e) else 400, detail=str(e))
@@ -1039,20 +1036,20 @@ async def get_execution_tree(call_id: str, max_depth: int = Query(5, description
 def initialize_db(db_file: str):
     """Initialize the database with the given file path"""
     global session, call_tracker, db_path, object_manager
-    
+
     print(f"Initializing database: {db_file}")
-    
+
     if not os.path.exists(db_file):
         logger.error(f"Database file not found: {db_file}")
         sys.exit(1)
-    
+
     # Initialize the database and tracker
     Session = init_db(db_file)
     session = Session()
     object_manager = ObjectManager(session)
     call_tracker = FunctionCallRepository(session)
     db_path = db_file
-    
+
     logger.info(f"Database initialized: {db_file}")
     print(id(session), id(call_tracker))
     return session
@@ -1060,7 +1057,7 @@ def initialize_db(db_file: str):
 def close_db():
     """Close the database connection"""
     global session
-    
+
     if session:
         session.close()
         session = None
@@ -1069,7 +1066,7 @@ def close_db():
 def run_api(db_file: str, host: str = '127.0.0.1', port: int = 8000):
     """Run the API server"""
     import uvicorn
-    
+
     try:
         # Initialize the database BEFORE starting the server
         initialize_db(db_file)
@@ -1081,4 +1078,4 @@ def run_api(db_file: str, host: str = '127.0.0.1', port: int = 8000):
         logger.info("API server stopped.")
     finally:
         # Clean up database connections on exit
-        close_db() 
+        close_db()

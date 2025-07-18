@@ -5,21 +5,22 @@ This module provides functionality to load and replay function executions
 that were previously monitored and stored by PyMonitor.
 """
 
-from collections import defaultdict
 import importlib
+import logging  # Add logging import
 import os
 import re
 import sys
-from typing import Any, Dict, List, Optional, Tuple, Callable, Union
-from contextlib import contextmanager
 import traceback
-import logging  # Add logging import
+from collections import defaultdict
+from collections.abc import Callable
+from contextlib import contextmanager
+from typing import Any
 
-from .models import init_db
-from .function_call import FunctionCallRepository
-from .representation import ObjectManager
-from .monitoring import PyMonitoring
 from . import models
+from .function_call import FunctionCallRepository
+from .models import init_db
+from .monitoring import PyMonitoring
+from .representation import ObjectManager
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -32,7 +33,7 @@ if src_dir not in sys.path:
 
 
 @contextmanager
-def get_db_session(db_path_or_session: Union[str, Any]):
+def get_db_session(db_path_or_session: str | Any):
     """
     Context manager that yields a database session.
 
@@ -71,8 +72,8 @@ def get_db_session(db_path_or_session: Union[str, Any]):
 
 
 def load_execution_data(
-    function_execution_id: str, db_path_or_session: Union[str, Any]
-) -> Tuple[List[Any], Dict[str, Any]]:
+    function_execution_id: str, db_path_or_session: str | Any
+) -> tuple[list[Any], dict[str, Any]]:
     """
     Load the function execution data for a given function execution ID.
 
@@ -121,10 +122,10 @@ def load_execution_data(
 
 def execute_function_call(
     function_execution_id: str,
-    db_path_or_session: Union[str, Any],
-    import_path: Optional[str] = None,
-    ignore_globals: Optional[List[str]] = None,
-    mock_function: List[str] = [],
+    db_path_or_session: str | Any,
+    import_path: str | None = None,
+    ignore_globals: list[str] | None = None,
+    mock_function: list[str] = [],
     enable_monitoring: bool = False,
     reload_module: bool = True,
 ) -> Any:
@@ -182,21 +183,20 @@ def execute_function_call(
             # Get function name and file path
             function_name = call_info["function"]
             file_path = call_info["file"]
-            
+
             logger.info(f"Replaying function {function_name} from {file_path}")
-            
+
             if not file_path:
                 raise ValueError(
                     f"Could not determine file path for function {function_name}"
                 )
 
             # Add the import path to sys.path if provided
-            if import_path:
-                if import_path not in sys.path:
+            if import_path and import_path not in sys.path:
                     sys.path.insert(0, import_path)
 
             # Load the function and module using the helper
-            loaded_modules_cache: Dict[str, Any] = {}
+            loaded_modules_cache: dict[str, Any] = {}
             function_obj, module = _load_or_reload_function_and_module(
                 call_info, loaded_modules_cache, reload_module=reload_module
             )
@@ -235,8 +235,8 @@ def execute_function_call(
 
 
 def load_snapshot(
-    snapshot_id: str, db_path_or_session: Union[str, Any]
-) -> Dict[str, Any]:
+    snapshot_id: str, db_path_or_session: str | Any
+) -> dict[str, Any]:
     """
     Load the snapshot data for a given snapshot ID.
 
@@ -285,7 +285,7 @@ def load_snapshot(
 
 
 def load_snapshot_in_frame(
-    snapshot_id: str, db_path_or_session: Union[str, Any], frame=None
+    snapshot_id: str, db_path_or_session: str | Any, frame=None
 ) -> None:
     """
     Load a snapshot directly into the provided frame's locals and globals dictionaries.
@@ -356,9 +356,9 @@ def load_snapshot_in_frame(
 
 def run_with_state(
     function_execution_id: str,
-    db_path_or_session: Union[str, Any],
-    module_name: Optional[str] = None,
-    ignore_globals: Optional[List[str]] = None,
+    db_path_or_session: str | Any,
+    module_name: str | None = None,
+    ignore_globals: list[str] | None = None,
 ) -> Any:
     """
     Load global state from a specific function execution and run the script
@@ -439,10 +439,7 @@ def run_with_state(
             else:
                 # Fallback to deriving from script path
                 basename = os.path.basename(script_path)
-                if basename.endswith(".py"):
-                    module_name = basename[:-3]  # Remove .py extension
-                else:
-                    module_name = basename  # Use basename as is if no .py extension
+                module_name = basename[:-3] if basename.endswith(".py") else basename
 
         # Ensure module_name is a valid string
         if not module_name:
@@ -483,10 +480,10 @@ def run_with_state(
 def replay_session_sequence(
     starting_function_id: int,
     db_path: str,
-    ignore_globals: Optional[List[str]] = None,
+    ignore_globals: list[str] | None = None,
     enable_monitoring: bool = True,
-    mock_functions: Optional[List[str]] = None,
-) -> Optional[int]:
+    mock_functions: list[str] | None = None,
+) -> int | None:
     """
     Replays a sequence of function calls from a monitoring session.
 
@@ -523,8 +520,8 @@ def replay_session_sequence(
         read_session = ReadSession()
 
     # Cache for loaded modules during replay
-    loaded_modules_cache: Dict[str, Any] = {}
-    first_replayed_call_id: Optional[int] = None
+    loaded_modules_cache: dict[str, Any] = {}
+    first_replayed_call_id: int | None = None
     # We need ObjectManager associated with the read session
     read_obj_manager = ObjectManager(read_session)
     # We need FunctionCallRepository associated with the read session
@@ -603,7 +600,7 @@ def replay_session_sequence(
 
         # 6. Loop through subsequent original calls - use session ordering instead of next_call_id
         # Note: UI filtering is separate from replay execution
-        original_current_call_id: Optional[int] = starting_function_id
+        original_current_call_id: int | None = starting_function_id
         while original_current_call_id is not None:
             # Get the current call from the *original* sequence (using read_session)
             original_call = read_session.get(
@@ -614,7 +611,7 @@ def replay_session_sequence(
                     f"Warning: Could not find original call {original_current_call_id} in read session."
                 )
                 break
-            
+
             # Find the next call in the session sequence using order_in_session
             original_next_call_id = None
             if original_call.session_id is not None and original_call.order_in_session is not None:
@@ -624,10 +621,10 @@ def replay_session_sequence(
                     models.FunctionCall.function == original_call.function,
                     models.FunctionCall.order_in_session > original_call.order_in_session
                 ).first()
-                
+
                 if next_call:
                     original_next_call_id = next_call.id
-            
+
             if not original_next_call_id:
                 logger.info("Reached end of original sequence.")
                 break  # End of original chain
@@ -730,10 +727,10 @@ def replay_session_sequence(
 
 # Helper function (can be moved elsewhere if preferred)
 def _load_or_reload_function_and_module(
-    call_info: Dict[str, Any],
-    loaded_modules_cache: Dict[str, Any],
+    call_info: dict[str, Any],
+    loaded_modules_cache: dict[str, Any],
     reload_module: bool = True,
-) -> Tuple[Callable, Any]:
+) -> tuple[Callable, Any]:
     """Loads/reloads module and gets function object based on call_info."""
     function_name = call_info["function"]
     file_path = call_info["file"]
@@ -768,7 +765,7 @@ def _load_or_reload_function_and_module(
 
             if module:
                 loaded_modules_cache[module_key] = module
-                
+
                 # FIX: Handle __main__ vs module name mapping for pickle compatibility
                 _setup_module_name_mapping(module, module_name_from_path)
 
@@ -787,7 +784,7 @@ def _load_or_reload_function_and_module(
 
             if module:
                 loaded_modules_cache[module_key] = module
-                
+
                 # FIX: Handle __main__ vs module name mapping for pickle compatibility
                 _setup_module_name_mapping(module, module_path_from_info)
 
@@ -819,14 +816,14 @@ def _load_or_reload_function_and_module(
 def _setup_module_name_mapping(module: Any, module_name: str):
     """
     Set up module name mapping to handle __main__ vs module name mismatch during pickle.
-    
+
     This function ensures that classes defined in a script are available under both
     the __main__ namespace (when run as script) and the module namespace (when imported).
     """
     try:
         # Enhanced approach: Use metadata-driven normalization instead of simple mapping
         logger.info(f"Setting up module mapping for {module_name}")
-        
+
         # Ensure the module is available under both names in sys.modules
         if '__main__' in sys.modules and module_name not in sys.modules:
             sys.modules[module_name] = module
@@ -834,7 +831,7 @@ def _setup_module_name_mapping(module: Any, module_name: str):
         elif module_name in sys.modules and '__main__' not in sys.modules:
             sys.modules['__main__'] = module
             logger.info("Made module available as __main__")
-        
+
         # For all classes in the module, ensure they can be found under the correct module path
         for name in dir(module):
             attr = getattr(module, name)
@@ -842,7 +839,7 @@ def _setup_module_name_mapping(module: Any, module_name: str):
                 # The PickleConfig will handle the module path normalization during pickle/unpickle
                 # We just need to ensure the class is accessible
                 logger.debug(f"Found class {name} in module {module_name}")
-                    
+
     except Exception as e:
         logger.warning(f"Error setting up module name mapping for {module_name}: {e}")
 
@@ -850,35 +847,35 @@ def _setup_module_name_mapping(module: Any, module_name: str):
 def _ensure_class_availability_for_unpickling(obj_manager: ObjectManager, module: Any):
     """
     Ensure that classes are available in the correct namespace before unpickling objects.
-    
+
     This function inspects the stored objects and tries to make their classes available
     in the current execution context using the metadata-driven approach.
     """
     try:
         # The ObjectManager now handles module path normalization automatically
         # using stored metadata, so we just need to ensure basic module availability
-        
+
         logger.info(f"Ensuring class availability for module {module.__name__}")
-        
+
         # Make sure the module is available under common names
         if module.__name__ not in sys.modules:
             sys.modules[module.__name__] = module
-            
+
         # If this is a main script, also make it available as __main__
         if module.__name__ == "main" and '__main__' not in sys.modules:
             sys.modules['__main__'] = module
             logger.info("Made main module available as __main__")
-                            
+
     except Exception as e:
         logger.warning(f"Error ensuring class availability for unpickling: {e}")
 
 
 # Helper function
 def _load_execution_data_from_call_info(
-    call_info: Dict[str, Any],
+    call_info: dict[str, Any],
     obj_manager: ObjectManager,
     use_signature_parsing: bool = False,
-) -> Tuple[List[Any], Dict[str, Any]]:
+) -> tuple[list[Any], dict[str, Any]]:
     """Rehydrates args and kwargs from call_info locals."""
     if not call_info:
         raise ValueError("call_info cannot be None")
@@ -886,8 +883,8 @@ def _load_execution_data_from_call_info(
     locals_refs = call_info.get("locals_refs", {})
     locals_dict = obj_manager.rehydrate_dict(locals_refs)
 
-    args: List[Any] = []
-    kwargs: Dict[str, Any] = {}
+    args: list[Any] = []
+    kwargs: dict[str, Any] = {}
 
     if use_signature_parsing:
         # Try to get function code information to separate args from kwargs
@@ -942,27 +939,26 @@ def _load_execution_data_from_call_info(
 
 # Helper function
 def _load_globals_from_call_info(
-    call_info: Dict[str, Any],
+    call_info: dict[str, Any],
     obj_manager: ObjectManager,
-    ignore_globals: Optional[List[str]],
-) -> Dict[str, Any]:
+    ignore_globals: list[str] | None,
+) -> dict[str, Any]:
     """Rehydrates and filters globals from call_info."""
     if not call_info:
         raise ValueError("call_info cannot be None")
 
     globals_refs = call_info.get("globals_refs", {})
     globals_dict = obj_manager.rehydrate_dict(globals_refs)
-    filtered_globals = {
+    return {
         k: v
         for k, v in globals_dict.items()
         if not (k.startswith("__") and k.endswith("__"))
         and not (ignore_globals and k in ignore_globals)
     }
-    return filtered_globals
 
 
 # Helper function
-def _inject_globals(module: Any, function: Callable, globals_dict: Dict[str, Any]):
+def _inject_globals(module: Any, function: Callable, globals_dict: dict[str, Any]):
     """Injects globals into module and function context."""
     if module:
         module.__dict__.update(globals_dict)
@@ -1011,14 +1007,14 @@ def replay_session_from(*args, **kwargs):
 def _load_mock_functions(session, function_execution_id, obj_manager, module, mock_function):
     """
     Loads mock functions for a given function execution.
-    
+
     Args:
         session: The database session.
         function_execution_id: The ID of the function execution.
         obj_manager: The ObjectManager instance.
         module: The module to inject mock functions into.
         mock_function: List of function names to mock.
-    
+
     Returns:
         None
     """
@@ -1032,7 +1028,7 @@ def _load_mock_functions(session, function_execution_id, obj_manager, module, mo
     if not subcalls:
         return
 
-    possible_names = set(map(lambda x: x.function, subcalls))
+    possible_names = {x.function for x in subcalls}
     return_values_dict = defaultdict(list)
     for subcall in subcalls:
         return_values_dict[subcall.function].append(subcall.return_ref)
@@ -1052,10 +1048,10 @@ def _load_mock_functions(session, function_execution_id, obj_manager, module, mo
                     else:
                         break
                 func_name = func_name_parts[-1]
-              
+
             if func_name in working_module.__dict__:
                 working_module.__dict__[f"_old_{func_name}"] = working_module.__dict__[func_name]
-                
+
                 # Create a closure that captures the current func_name value
                 def create_mock_func(captured_func_name):
                     def mock_func(*args, **kwargs):
@@ -1067,7 +1063,7 @@ def _load_mock_functions(session, function_execution_id, obj_manager, module, mo
                             old_func = working_module.__dict__[f"_old_{captured_func_name.split('.')[-1]}"]
                             return old_func(*args, **kwargs)
                     return mock_func
-                
+
                 working_module.__dict__[func_name] = create_mock_func(db_func_name)
         else:
-            pass  # TODO: Handle case when func_name is not in module.__dict__
+            pass  # TODO(jb): Handle case when func_name is not in module.__dict__

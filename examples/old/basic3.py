@@ -4,7 +4,6 @@ Basic example demonstrating custom object handling in PyMonitor.
 """
 
 import monitoringpy
-import random
 import time
 
 @monitoringpy.pymonitor_line

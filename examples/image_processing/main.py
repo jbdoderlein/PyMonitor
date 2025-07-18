@@ -9,7 +9,6 @@ from monitoringpy.core.monitoring import init_monitoring
 import numpy as np
 from PIL import Image, ImageFilter, ImageEnhance, ImageOps
 import math
-import os
 
 def create_sample_image(width=400, height=300):
     """Create a sample image with gradient and patterns if no image is provided."""

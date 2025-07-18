@@ -7,4 +7,4 @@ A reexecutionner tool for reexecuting function calls recorded in a PyMonitor dat
 from .client import ReexecutionnerClient
 from .runner import Runner
 
-__all__ = ["ReexecutionnerClient", "Runner"] 
+__all__ = ["ReexecutionnerClient", "Runner"]

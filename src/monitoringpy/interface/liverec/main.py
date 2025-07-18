@@ -5,24 +5,18 @@ LiveRunner module for the PyMonitor Reexecutionner.
 Handles the main process of connecting to a database and executing commands.
 """
 
-import logging
 import asyncio
-import json
-import os
 import importlib.util
+import json
+import logging
+import os
 import sys
-from typing import Dict, Any, Callable
+from collections.abc import Callable
+from typing import Any
 
-from ...core import (
-    init_db,
-    init_monitoring, 
-    ObjectManager,
-    FunctionCallTracker,
-    replay_session_from,
-    FunctionCall, 
-    MonitoringSession,
-    pymonitor
-)
+from monitoringpy.core.function_call import FunctionCallRepository
+
+from ...core import ObjectManager, init_db, init_monitoring, pymonitor
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +27,8 @@ class Runner:
     Connects to a PyMonitor database and provides an interface for 
     reexecuting stored function calls.
     """
-    
-    def __init__(self, db_path: str, host: str = "localhost", port: int = 8765, 
+
+    def __init__(self, db_path: str, host: str = "localhost", port: int = 8765,
                  background_mode: bool = False):
         """
         Initialize the runner.
@@ -51,59 +45,59 @@ class Runner:
         self.background_mode = background_mode
         self.server = None
         self.running = False
-        
+
         # Initialize database connection
         logger.info(f"Initializing database connection to {db_path}")
         self.db_session = init_db(db_path)()
-        
+
         # Initialize monitoring for new recordings
         self.monitor = init_monitoring(db_path=db_path)
 
         self.obj_manager = ObjectManager(self.db_session)
-        self.call_tracker = FunctionCallTracker(self.db_session)
-        
+        self.call_tracker = FunctionCallRepository(self.db_session)
+
         # Map of command name to handler function
-        self.command_handlers: Dict[str, Callable] = {
+        self.command_handlers: dict[str, Callable] = {
             "set_example": self.handle_set_example,
             "change": self.handle_change,
             "status": self.handle_status
         }
-        
+
     async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         """Handle a client connection."""
         addr = writer.get_extra_info('peername')
         logger.info(f"New connection from {addr}")
-        
+
         while self.running:
             try:
                 # Read command from client
                 data = await reader.readline()
                 if not data:
                     break
-                    
+
                 message = data.decode().strip()
                 logger.debug(f"Received: {message}")
-                
+
                 # Parse JSON command
                 try:
                     command = json.loads(message)
                     response = await self.process_command(command)
                 except json.JSONDecodeError:
                     response = {"status": "error", "message": "Invalid JSON command"}
-                
+
                 # Send response to client
                 writer.write(json.dumps(response).encode() + b'\n')
                 await writer.drain()
-                
+
             except Exception as e:
                 logger.error(f"Error handling client: {e}")
                 break
-                
+
         writer.close()
         await writer.wait_closed()
         logger.info(f"Connection from {addr} closed")
-        
-    async def process_command(self, command: Dict[str, Any]) -> Dict[str, Any]:
+
+    async def process_command(self, command: dict[str, Any]) -> dict[str, Any]:
         """
         Process a command received from a client.
         
@@ -116,29 +110,30 @@ class Runner:
         cmd_type = command.get("command")
         if not cmd_type:
             return {"status": "error", "message": "No command specified"}
-            
+
         # Get the appropriate handler for this command
         handler = self.command_handlers.get(cmd_type)
         if not handler:
             return {"status": "error", "message": f"Unknown command: {cmd_type}"}
-            
+
         # Call the handler with the command arguments
         try:
             return await handler(command)
         except Exception as e:
             logger.error(f"Error processing command {cmd_type}: {e}")
             return {"status": "error", "message": str(e)}
-        
+
     async def setup_example(self) -> None:
         """
         Setup the example execution.
         """
         if not self.call_id:
             raise ValueError("No call_id specified")
-        
-        
-        call_info = self.call_tracker.get_call(self.call_id)
 
+
+        call_info = self.call_tracker.get_call(self.call_id)
+        if call_info is None:
+            raise ValueError(f"Call info not found for call_id {self.call_id}")
         script_path = call_info['file']
         assert script_path is not None
         # Determine module name if not provided
@@ -153,7 +148,7 @@ class Runner:
                 module_name = basename[:-3] # Remove .py extension
             else:
                 module_name = basename # Use basename as is if no .py extension
-        
+
         # Ensure module_name is a valid string
         if not module_name:
              raise ValueError(f"Could not determine a valid module name for script {script_path}")
@@ -167,7 +162,7 @@ class Runner:
         spec = importlib.util.spec_from_file_location(module_name, script_path)
         if spec is None or spec.loader is None:
             raise ImportError(f"Could not load script from {script_path}")
-            
+
         module = importlib.util.module_from_spec(spec)
         # Add the module to sys.modules to handle imports correctly
         sys.modules[module_name] = module
@@ -181,17 +176,20 @@ class Runner:
 
         # Rehydrate the locals dictionary
         globals_dict = self.obj_manager.rehydrate_dict(call_info['globals'])
-        
+
         filtered_globals = {k: v for k, v in globals_dict.items() if not (k.startswith('__') and k.endswith('__'))}
         module.__dict__.update(filtered_globals)
-        
-    async def execute_example(self) -> Dict[str, Any]:
+
+    async def execute_example(self) -> dict[str, Any]:
         """
         Execute the example.
         """
         assert self.call_id is not None
         call_info = self.call_tracker.get_call(self.call_id)
-        
+
+        if call_info is None:
+            raise ValueError(f"Call info not found for call_id {self.call_id}")
+
         try:
             # reload the module
             self.module = importlib.reload(self.module)
@@ -217,8 +215,8 @@ class Runner:
         stackrecording = self.call_tracker.get_function_traces(new_call_id)
         print(stackrecording)
         return {"status": "success", "result": result, "stackrecording": stackrecording}
-    
-    async def handle_set_example(self, command: Dict[str, Any]) -> Dict[str, Any]:
+
+    async def handle_set_example(self, command: dict[str, Any]) -> dict[str, Any]:
         """
         Handle a set_example command.
         
@@ -234,8 +232,8 @@ class Runner:
 
         await self.setup_example()
         return await self.execute_example()
-            
-    async def handle_change(self, command: Dict[str, Any]) -> Dict[str, Any]:
+
+    async def handle_change(self, command: dict[str, Any]) -> dict[str, Any]:
         """
         Handle a change command.
         
@@ -247,7 +245,7 @@ class Runner:
         """
         return await self.execute_example()
 
-    async def handle_status(self, command: Dict[str, Any]) -> Dict[str, Any]:
+    async def handle_status(self, command: dict[str, Any]) -> dict[str, Any]:
         """Return the current status of the runner."""
         return {
             "status": "success",
@@ -255,24 +253,24 @@ class Runner:
             "background_mode": self.background_mode,
             "running": self.running
         }
-        
+
     async def start_server(self):
         """Start the command server."""
         self.server = await asyncio.start_server(
             self.handle_client, self.host, self.port
         )
-        
+
         addr = self.server.sockets[0].getsockname()
         logger.info(f'Serving on {addr}')
-        
+
         async with self.server:
             await self.server.serve_forever()
-            
+
     def start(self):
         """Start the runner."""
         logger.info(f"Starting reexecutionner on {self.host}:{self.port}")
         self.running = True
-        
+
         # Run the server in the event loop
         try:
             asyncio.run(self.start_server())
@@ -280,18 +278,18 @@ class Runner:
             pass
         finally:
             self.stop()
-            
+
     def stop(self):
         """Stop the runner."""
         logger.info("Stopping reexecutionner")
         self.running = False
-        
+
         if self.server:
             self.server.close()
-            
+
         # Clean up database connections
         if self.db_session:
-            self.db_session.close() 
+            self.db_session.close()
 
 if __name__ == "__main__":
     # Take args (=db_path)

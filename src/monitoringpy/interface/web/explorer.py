@@ -5,27 +5,25 @@ PyMonitor Web Explorer
 A web-based interface for exploring PyMonitor databases.
 """
 
-import os
-import sys
 import argparse
 import logging
-from typing import Tuple
+import os
+import sys
 
 from sqlalchemy.orm import Session
-from monitoringpy.core import (
-    init_db, FunctionCallRepository, ObjectManager
-)
+
+from monitoringpy.core import FunctionCallRepository, ObjectManager, init_db
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-def init_explorer(db_file: str) -> Tuple[Session, FunctionCallRepository, ObjectManager]:
+def init_explorer(db_file: str) -> tuple[Session, FunctionCallRepository, ObjectManager]:
     """Initialize the database and tracker
-    
+
     Args:
         db_file: Path to the SQLite database file
-        
+
     Returns:
         Tuple of (session, call_tracker, object_manager)
     """
@@ -33,13 +31,13 @@ def init_explorer(db_file: str) -> Tuple[Session, FunctionCallRepository, Object
     if not os.path.exists(db_file):
         logger.error(f"Database file not found: {db_file}")
         sys.exit(1)
-    
+
     # Initialize the database and tracker
     Session = init_db(db_file)
     session = Session()
     object_manager = ObjectManager(session)
     call_tracker = FunctionCallRepository(session)
-    
+
     return session, call_tracker, object_manager
 
 def run_explorer(
@@ -52,7 +50,7 @@ def run_explorer(
     debug: bool = False
 ) -> None:
     """Run the web explorer.
-    
+
     Args:
         db_file: Path to the SQLite database file
         mode: Mode to run the explorer in ('ui', 'api', or 'both')
@@ -65,12 +63,12 @@ def run_explorer(
     if mode not in ['ui', 'api', 'both']:
         logger.error(f"Invalid mode: {mode}. Must be one of: ui, api, both")
         sys.exit(1)
-    
+
     # Run the API server if needed
     api_process = None
     if mode in ['api', 'both']:
         from monitoringpy.interface.web.api import run_api
-        
+
         if mode == 'both':
             # Run the API server in a separate process if we're in 'both' mode
             import multiprocessing
@@ -83,17 +81,17 @@ def run_explorer(
         else:
             # Run the API server in the main process if we're in 'api' mode
             run_api(db_file, api_host, api_port)
-    
+
     # Run the UI server if needed
     if mode in ['ui', 'both']:
         from monitoringpy.interface.web.ui import run_ui
-        
+
         # In 'both' mode, pass the API host and port to the UI server
         if mode == 'both':
             run_ui(db_file, ui_host, ui_port, debug, api_host, api_port)
         else:
             run_ui(db_file, ui_host, ui_port, debug)
-    
+
     # Stop the API server if it's running
     if api_process and api_process.is_alive():
         api_process.terminate()
@@ -111,9 +109,9 @@ def main():
     parser.add_argument('--api-host', default='127.0.0.1', help='Host to run the API server on')
     parser.add_argument('--api-port', type=int, default=8000, help='Port to run the API server on')
     parser.add_argument('--debug', action='store_true', help='Run in debug mode')
-    
+
     args = parser.parse_args()
-    
+
     run_explorer(
         args.db_file,
         args.mode,

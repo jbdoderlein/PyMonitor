@@ -24,7 +24,7 @@ def main():
     parser.add_argument("--host", default="localhost", help="Host to bind the server")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
     parser.add_argument("--background", action="store_true", help="Run executions in background mode")
-    
+
     args = parser.parse_args()
 
     if not os.path.exists(args.db_path):
@@ -33,7 +33,7 @@ def main():
 
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
-    
+
     # Start the runner
     runner = Runner(
         db_path=args.db_path,
@@ -41,7 +41,7 @@ def main():
         port=args.port,
         background_mode=args.background
     )
-    
+
     try:
         runner.start()
     except KeyboardInterrupt:

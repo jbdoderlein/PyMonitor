@@ -5,15 +5,13 @@ This module provides utility functions for managing the GumTree executable,
 including automatic download when needed.
 """
 
-import os
-import sys
-import subprocess
 import platform
+import subprocess
+import sys
 from pathlib import Path
-from typing import Optional
 
 
-def get_gumtree_path() -> Optional[str]:
+def get_gumtree_path() -> str | None:
     """
     Get the path to the GumTree executable.
     
@@ -22,26 +20,26 @@ def get_gumtree_path() -> Optional[str]:
     """
     # Path to the GumTree installation directory
     gumtree_dir = Path(__file__).parent / "gumtree"
-    
+
     # Determine the executable name based on platform
     if platform.system() == "Windows":
         executable_name = "gumtree.bat"
     else:
         executable_name = "gumtree"
-    
+
     gumtree_executable = gumtree_dir / "bin" / executable_name
-    
+
     # Check if GumTree is already installed
     if gumtree_executable.exists():
         return str(gumtree_executable)
-    
+
     # Try to download GumTree
     print("PyMonitor: GumTree not found, attempting to download...")
-    
+
     if _download_gumtree():
         if gumtree_executable.exists():
             return str(gumtree_executable)
-    
+
     print("PyMonitor: Failed to download GumTree. Code diff functionality will not be available.")
     return None
 
@@ -55,14 +53,14 @@ def _download_gumtree() -> bool:
     """
     # Path to the download script
     download_script = Path(__file__).parent / "download_gumtree.py"
-    
+
     if not download_script.exists():
         print(f"PyMonitor: GumTree download script not found at {download_script}")
         return False
-    
+
     # Path to the GumTree installation directory
     gumtree_dir = Path(__file__).parent / "gumtree"
-    
+
     try:
         # Run the download script
         result = subprocess.run(
@@ -71,16 +69,15 @@ def _download_gumtree() -> bool:
             text=True,
             timeout=300  # 5 minutes timeout
         )
-        
+
         if result.returncode == 0:
             print("PyMonitor: GumTree download completed successfully")
             return True
-        else:
-            print(f"PyMonitor: GumTree download failed with return code {result.returncode}")
-            if result.stderr:
-                print(f"Error: {result.stderr}")
-            return False
-            
+        print(f"PyMonitor: GumTree download failed with return code {result.returncode}")
+        if result.stderr:
+            print(f"Error: {result.stderr}")
+        return False
+
     except subprocess.TimeoutExpired:
         print("PyMonitor: GumTree download timed out")
         return False
@@ -111,11 +108,11 @@ def ensure_gumtree_available() -> str:
         RuntimeError: If GumTree cannot be found or downloaded.
     """
     gumtree_path = get_gumtree_path()
-    
+
     if gumtree_path is None:
         raise RuntimeError(
             "GumTree executable not found and could not be downloaded. "
             "Please install GumTree manually or check your internet connection."
         )
-    
-    return gumtree_path 
+
+    return gumtree_path

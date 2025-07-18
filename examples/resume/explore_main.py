@@ -1,7 +1,6 @@
 import monitoringpy
 import tkinter as tk
 from typing import List, Optional, Any, Dict, Callable
-import tkinter.ttk as ttk
 from sqlalchemy.orm import Session as SQLASession
 import typing
 import logging
@@ -134,9 +133,12 @@ replay_here_button = tk.Button(button_frame, text="Replay from Here")
 # Retrieve Checkbox Labels
 if current_session and hasattr(current_session, 'common_globals') and isinstance(current_session.common_globals, dict):
     checkbox_labels = current_session.common_globals.get(FUNCTION_NAME, [])
-    if not isinstance(checkbox_labels, list): checkbox_labels = []
-elif not current_session: pass
-else: pass
+    if not isinstance(checkbox_labels, list): 
+        checkbox_labels = []
+elif not current_session: 
+    pass
+else: 
+    pass
 
 # Create Checkbox Widgets
 checkbox_widgets: List[tk.Checkbutton] = []
@@ -311,8 +313,9 @@ def refresh_branch_ui():
 
             slider_min = min(branch_sequence)
             slider_max = max(branch_sequence)
-            
-            slider_command = lambda val, rid=root_id: update_active_branch_slider(val, rid)
+            def slider_command(val, rid=root_id):
+                update_active_branch_slider(val, rid)
+
             branch_slider = tk.Scale(
                 branch_frame,
                 from_=slider_min,

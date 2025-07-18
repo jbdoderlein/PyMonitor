@@ -1,7 +1,6 @@
 import base64
 import io
 import pygame
-import sys
 import monitoringpy
 
 # Initialize Pygame

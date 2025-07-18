@@ -1,7 +1,8 @@
-import os
 import re
 import subprocess
+
 from .gumtree_utils import ensure_gumtree_available
+
 
 def get_line_number_from_index(text:str, index:int) -> int:
     """Get a text and a index position in the file, return the line number
@@ -60,7 +61,7 @@ def generate_line_mapping(code_path_1:str, code_path_2:str) -> tuple[dict, dict,
             m2_line = get_line_number_from_index(foo2_code, m2)
             if m1_line == m2_line:
                 modified_lines.append(m1_line)
-            
+
         elif section.startswith('match'):
             data = section.split("---")[1].strip()
             matches = re.finditer(regex, data, re.MULTILINE)

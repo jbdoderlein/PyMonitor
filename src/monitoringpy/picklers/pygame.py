@@ -1,7 +1,7 @@
 """
 Custom pickler for Pygame objects.
 
-This module provides reduction functions for Pygame types that aren't 
+This module provides reduction functions for Pygame types that aren't
 normally picklable, like Surface and Rect.
 """
 
@@ -9,17 +9,16 @@ normally picklable, like Surface and Rect.
 try:
     import pygame
 except ImportError:
-    raise ImportError("pygame is not installed. Please install it using 'pip install pygame'.")
+    raise ImportError("pygame is not installed. Please install it")
 
-import sys
 
 def reduce_rect(rect):
     """
     Reduction function for pygame.Rect objects.
-    
+
     Args:
         rect: The pygame.Rect object to pickle
-        
+
     Returns:
         A tuple that can be used to reconstruct the rect
     """
@@ -29,10 +28,10 @@ def reduce_rect(rect):
 def reduce_color(color):
     """
     Reduction function for pygame.Color objects.
-    
+
     Args:
         color: The pygame.Color object to pickle
-        
+
     Returns:
         A tuple that can be used to reconstruct the color
     """
@@ -42,10 +41,10 @@ def reduce_color(color):
 def reduce_pygame_event(e):
     """
     Reduction function for pygame.event.EventType objects.
-    
+
     Args:
         e: The pygame event to pickle
-        
+
     Returns:
         A tuple that can be used to reconstruct the event
     """
@@ -54,10 +53,10 @@ def reduce_pygame_event(e):
 def reduce_pygame_clock(c):
     """
     Reduction function for pygame.time.Clock objects.
-    
+
     Args:
         c: The pygame clock to pickle
-        
+
     Returns:
         A tuple that can be used to reconstruct the clock
     """
@@ -66,7 +65,7 @@ def reduce_pygame_clock(c):
 def get_dispatch_table():
     """
     Return a dictionary mapping Pygame types to their reduction functions.
-    
+
     Returns:
         A dictionary where keys are Pygame types and values are reduction functions
     """
@@ -76,4 +75,4 @@ def get_dispatch_table():
         pygame.event.EventType: reduce_pygame_event,
         pygame.time.Clock: reduce_pygame_clock,
         # Add more Pygame types here as needed
-    } 
+    }

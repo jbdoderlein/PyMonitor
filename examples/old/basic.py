@@ -3,7 +3,6 @@
 Basic example demonstrating custom object handling in PyMonitor.
 """
 
-import os
 import monitoringpy
 
 class MyCustomClass:

@@ -9,7 +9,6 @@ This example:
 """
 
 import os
-import sys
 import random
 from monitoringpy import init_monitoring, pymonitor, load_execution_data, reanimate_function
 
