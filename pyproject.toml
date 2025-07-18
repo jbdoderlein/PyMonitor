@@ -33,6 +33,7 @@ dependencies = [
     "pipreqs>=0.5.0",
     "pyarrow>=20.0.0",
     "pygame>=2.6.1",
+    "scipy>=1.16.0",
     "sqlalchemy>=2.0.0",
     "uvicorn>=0.34.2",
     "watchdog>=6.0.0",

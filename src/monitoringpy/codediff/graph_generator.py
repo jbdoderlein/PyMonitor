@@ -5,15 +5,13 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import types
 from collections import defaultdict
 
 import networkx as nx
-from watchdog.events import FileSystemEventHandler
-from watchdog.observers import Observer
 
-MONITOR_TOOL_ID = sys.monitoring.PROFILER_ID
 
 def get_line_number_from_index(text:str, index:int) -> int:
     """Get a text and a index position in the file, return the line number
@@ -25,6 +23,14 @@ def get_line_number_from_index(text:str, index:int) -> int:
             return i+1
         base_index += len(line)+1
     raise ValueError(f"Index {index} not found in text")
+
+def generate_line_mapping_from_string(code_1:str, code_2:str) -> tuple[dict, dict, list]:
+    with tempfile.NamedTemporaryFile(delete=False,suffix=".py") as f1, tempfile.NamedTemporaryFile(delete=False,suffix=".py") as f2:
+        f1.write(code_1.encode())
+        f2.write(code_2.encode())
+        f1.flush()
+        f2.flush()
+        return generate_line_mapping(f1.name, f2.name)
 
 def generate_line_mapping(code_path_1:str, code_path_2:str) -> tuple[dict, dict, list]:
     gumtree_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "gumtree","bin","gumtree"))
@@ -38,7 +44,6 @@ def generate_line_mapping(code_path_1:str, code_path_2:str) -> tuple[dict, dict,
         foo1_code = f1.read()
     with open(code_path_2) as f2:
         foo2_code = f2.read()
-
 
     mapping_v1_to_v2 = {}
     mapping_v2_to_v1 = {}
@@ -69,7 +74,7 @@ def generate_line_mapping(code_path_1:str, code_path_2:str) -> tuple[dict, dict,
             matches = re.finditer(regex, data, re.MULTILINE)
             m1,m2 = tuple(map(int, next(matches).group(0)[1:-1].split(',')))
             m1_line = get_line_number_from_index(foo1_code, m1)
-            m2_line = get_line_number_from_index(foo2_code, m2)
+            m2_line = get_line_number_from_index(foo1_code, m2)
             if m1_line == m2_line:
                 modified_lines.append(m1_line)
 
@@ -92,66 +97,49 @@ def generate_line_mapping(code_path_1:str, code_path_2:str) -> tuple[dict, dict,
     return mapping_v1_to_v2, mapping_v2_to_v1, modified_lines
 
 
-def generate_trace(func):
-    if sys.monitoring.get_tool(MONITOR_TOOL_ID) is None:
-            sys.monitoring.use_tool_id(MONITOR_TOOL_ID, "py_monitoring")
-
-    events = (sys.monitoring.events.LINE |
-                     sys.monitoring.events.PY_START |
-                     sys.monitoring.events.PY_RETURN)
-    sys.monitoring.set_local_events(MONITOR_TOOL_ID, func.__code__, events)
-    trace = []
-    def hook(code: types.CodeType, line_number):
-        current_frame = inspect.currentframe()
-        if current_frame is None or current_frame.f_back is None:
-            return
-        frame = current_frame.f_back
-        trace.append((frame.f_lineno, {k:v for k,v in frame.f_locals.items() if not k.startswith('__')}))
-    sys.monitoring.register_callback(
-                MONITOR_TOOL_ID,
-                sys.monitoring.events.LINE,
-                hook
-            )
-    func()
-    return trace
+def convert_trace(trace :list[dict], use_ref :bool = False, include_globals :bool = False) -> list[tuple[int, dict]]:
+    result = []
+    for frame in trace:
+        locals = frame['locals'] if not use_ref else frame['locals_ref']
+        if include_globals:
+            globals = frame['globals'] if not use_ref else frame['globals_ref']
+            locals.update(globals)
+        result.append((frame['line'], locals))
+    return result
 
 
-def generate_graph(trace, merge_node_on_line):
+def generate_graph(trace:list[tuple[int, dict]]) -> nx.DiGraph:
     graph = nx.DiGraph()
-    previous_node = None
+    previous_node: int | None = None
+    line_to_node = {}
     for i, (line, vars) in enumerate(trace):
-        if merge_node_on_line:
-            matching_nodes = [n for n, d in graph.nodes(data=True) if d.get("line") == line]
-            if len(matching_nodes) == 0:
-                graph.add_node(i, line=line, vars=[vars])
-            else:
-                graph.nodes[matching_nodes[0]]['vars'].append(vars)
-                i = matching_nodes[0]
-
-        else:
+        if line not in line_to_node:
             graph.add_node(i, line=line, vars=[vars])
+            line_to_node[line] = i
+        else:
+            graph.nodes[line_to_node[line]]['vars'].append(vars)
+            i = line_to_node[line]
 
         if previous_node is not None:
-            diff = defaultdict(list)
-            for k,v in previous_node[1][1].items():
-                if k not in vars:
-                    diff[k].append((None, v))
-                elif vars[k] != v:
-                    diff[k].append((v,vars[k]))
-            if (previous_node[0], i) in graph.edges:
-                for k,v in diff.items():
-                    graph.edges[previous_node[0], i]['diff'][k].extend(v)
+            diff = {}
+            previous_vars = graph.nodes[previous_node]['vars'][-1]
+            for k,v in vars.items():
+                if k not in previous_vars:
+                    diff[k] = (None, v)
+                elif previous_vars[k] != v:
+                    diff[k] = (previous_vars[k],v)
+            if (previous_node, i) in graph.edges:
+                graph.edges[previous_node, i]['diff'].append(diff)
             else:
-                graph.add_edge(previous_node[0], i, diff=diff)
-
-        previous_node = (i, (line, vars))
+                graph.add_edge(previous_node, i, diff=[diff])
+        previous_node = i
     return graph
 
-def generate_edit_graph(g1, g2, mapping_v1_to_v2, modified_lines):
+def generate_edit_graph(g1 :nx.DiGraph, g2 :nx.DiGraph, mapping_v1_to_v2 :dict, mapping_v2_to_v1 :dict, modified_lines :list[int]) -> nx.DiGraph:
     # First make sure g1 and g2 have no common indices (i.e. shift g2 indices)
     g2_offset = max(g1.nodes) + 1
     g2 = nx.relabel_nodes(g2, {n: n + g2_offset for n in g2.nodes})
-
+    
     paths = list(nx.optimal_edit_paths(
         g1,
         g2,
@@ -165,6 +153,7 @@ def generate_edit_graph(g1, g2, mapping_v1_to_v2, modified_lines):
         edge_ins_cost=lambda _: 1,
     ))
     node_map, edge_map = paths[0][0]
+    dict_node_map = {k:v for k, v in node_map if v is not None and k is not None}
     inverse_node_map = {v: k for k, v in node_map if v is not None and k is not None}
 
     # Deletede node and edge keep their original number
@@ -194,7 +183,7 @@ def generate_edit_graph(g1, g2, mapping_v1_to_v2, modified_lines):
 
     # Add all G1 edges
     for u, v, data in g1.edges(data=True):
-        edit_graph.add_edge(u, v, diff=data['diff'])
+        edit_graph.add_edge(u, v, diff1=data['diff'])
 
     # Mark deleted edges
     for u, v in deleted_edges:
@@ -211,14 +200,24 @@ def generate_edit_graph(g1, g2, mapping_v1_to_v2, modified_lines):
             u = inverse_node_map[u]
         if v in inverse_node_map:
             v = inverse_node_map[v]
-
-        edit_graph.add_edge(u, v, state='only2', diff=diff)
+        
+        edit_graph.add_edge(u, v, state='only2', diff2=diff)
 
     # Mark unchanged edges/nodes as gray
     for u, v in edit_graph.edges():
         if 'state' not in edit_graph[u][v]:
             edit_graph[u][v]['state'] = 'common'
-
+            # common edge, need to have both diffs
+            if (u, v) in g1.edges:
+                edit_graph[u][v]['diff1'] = g1.edges[(u, v)]['diff']
+            g2u, g2v = u, v
+            if g2u in dict_node_map:
+                g2u = dict_node_map[g2u]
+            if g2v in dict_node_map:
+                g2v = dict_node_map[g2v]
+            if (g2u, g2v) in g2.edges:
+                edit_graph[u][v]['diff2'] = g2.edges[(g2u, g2v)]['diff']
+            
 
     for n,v in edit_graph.nodes(data=True):
         if 'state' not in v:
@@ -249,149 +248,9 @@ def generate_edit_graph(g1, g2, mapping_v1_to_v2, modified_lines):
 
     return edit_graph
 
-
-def load_module_and_generate_trace(file_path: str, func_name: str):
-    """Load a Python module from file path and generate execution trace for specified function."""
-    module_name = os.path.splitext(os.path.basename(file_path))[0]
-    spec = importlib.util.spec_from_file_location(module_name, file_path)
-    module = importlib.util.module_from_spec(spec)  # type: ignore
-    spec.loader.exec_module(module)  # type: ignore
-    return generate_trace(module.__dict__[func_name])  # type: ignore
-
-
-def export_graph(graph):
+def export_edit_graph(edit_graph :nx.DiGraph) -> dict:
     return {
-        "type": "graph",
-        "nodes": dict(graph.nodes(data=True)),
-        "edges": list(graph.edges(data=True))
+        "nodes": edit_graph.nodes(data=True),
+        "edges": edit_graph.edges(data=True),
     }
 
-class FileChangeHandler(FileSystemEventHandler):
-    def __init__(self, file1, file2, func_name, callback):
-        self.file1 = file1
-        self.file2 = file2
-        self.func_name = func_name
-        self.callback = callback
-        self.last_modified = {}
-
-    def on_modified(self, event):
-        if event.is_directory:
-            return
-
-        file_path = os.path.abspath(event.src_path) # type: ignore
-
-        # Check if it's one of our monitored files
-        if file_path in [self.file1, self.file2]:
-            # Debounce rapid file changes
-            current_time = time.time()
-            if file_path in self.last_modified:
-                if current_time - self.last_modified[file_path] < 1.0:  # 1 second debounce
-                    return
-
-            self.last_modified[file_path] = current_time
-
-            # Call the callback with the specific file that changed
-            self.callback(file_path)
-
-
-def regenerate_graph_selective(file1, file2, func_name, changed_file, trace_cache):
-    """Regenerate the graph, only regenerating trace for the changed file."""
-    try:
-        # Generate line mapping (always needed as it compares both files)
-        mapping_v1_to_v2, mapping_v2_to_v1, modified_lines = generate_line_mapping(file1, file2)
-
-        # Only regenerate trace for the changed file
-        if changed_file == file1:
-            trace_cache['trace_1'] = load_module_and_generate_trace(file1, func_name)
-        elif changed_file == file2:
-            trace_cache['trace_2'] = load_module_and_generate_trace(file2, func_name)
-
-        # Use cached traces
-        trace_1 = trace_cache['trace_1']
-        trace_2 = trace_cache['trace_2']
-
-        g1 = generate_graph(trace_1, merge_node_on_line=True)
-        g2 = generate_graph(trace_2, merge_node_on_line=True)
-
-        edit_graph = generate_edit_graph(g1, g2, mapping_v1_to_v2, mapping_v2_to_v1, modified_lines)
-
-        # Export to dot
-        output_json(export_graph(edit_graph))
-
-    except Exception as e:
-        output_json({"type": "error", "message": f"Error regenerating graph: {e}"})
-
-
-def regenerate_graph_full(file1, file2, func_name, trace_cache):
-    """Regenerate the graph completely (both traces)."""
-    try:
-        # Generate line mapping
-        mapping_v1_to_v2, mapping_v2_to_v1, modified_lines = generate_line_mapping(file1, file2)
-
-        # Generate both traces and cache them
-        trace_cache['trace_1'] = load_module_and_generate_trace(file1, func_name)
-        trace_cache['trace_2'] = load_module_and_generate_trace(file2, func_name)
-
-        g1 = generate_graph(trace_cache['trace_1'], merge_node_on_line=True)
-        g2 = generate_graph(trace_cache['trace_2'], merge_node_on_line=True)
-
-        edit_graph = generate_edit_graph(g1, g2, mapping_v1_to_v2, mapping_v2_to_v1, modified_lines)
-
-        # Export to dot
-        output_json(export_graph(edit_graph))
-
-    except Exception as e:
-        raise e
-        output_json({"type": "error", "message": f"Error generating graph: {e}"})
-
-
-def watch_files(file1, file2, func_name, trace_cache):
-    """Set up file watching and continuous monitoring."""
-    def on_file_change(changed_file):
-        regenerate_graph_selective(file1, file2, func_name, changed_file, trace_cache)
-
-    # Create event handler
-    event_handler = FileChangeHandler(file1, file2, func_name, on_file_change)
-
-    # Set up observers for both file directories
-    observer = Observer()
-
-    # Watch directory containing file1
-    dir1 = os.path.dirname(file1)
-    observer.schedule(event_handler, dir1, recursive=False)
-
-    # Watch directory containing file2 (if different)
-    dir2 = os.path.dirname(file2)
-    if dir2 != dir1:
-        observer.schedule(event_handler, dir2, recursive=False)
-
-    # Start monitoring
-    observer.start()
-
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        observer.stop()
-
-    observer.join()
-
-
-
-def output_json(data):
-    """Output JSON data to stdout for the VS Code extension to capture."""
-    print(json.dumps(data))
-    sys.stdout.flush()
-
-if __name__ == "__main__":
-    if len(sys.argv) != 4:
-        print(json.dumps({"type": "error", "message": "Usage: python analysis_script.py <original_file> <alternative_file> <function_name>"}))
-        sys.exit(1)
-
-    original_file = os.path.abspath(sys.argv[1])
-    alternative_file = os.path.abspath(sys.argv[2])
-    function_name = sys.argv[3]
-
-    trace_cache = {}
-    regenerate_graph_full(original_file, alternative_file, function_name, trace_cache)
-    watch_files(original_file, alternative_file, function_name, trace_cache)
