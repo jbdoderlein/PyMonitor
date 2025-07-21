@@ -15,6 +15,14 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
+# Add import for graph generation
+from monitoringpy.codediff.graph_generator import (
+    convert_trace,
+    export_edit_graph,
+    generate_edit_graph,
+    generate_graph,
+    generate_line_mapping_from_string,
+)
 from monitoringpy.core import (
     CodeDefinition,
     FunctionCall,
@@ -1032,6 +1040,299 @@ async def get_execution_tree(call_id: str, max_depth: int = Query(5, description
     except Exception as e:
         logger.error(f"Error getting execution tree: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/compare-traces")
+async def compare_traces(request_data: dict[str, Any]):
+    """Generate edit graph from two traces for comparison
+    
+    Request body should contain:
+    {
+        "trace1_id": "function_call_id_1", 
+        "trace2_id": "function_call_id_2"
+    }
+    """
+    global session, object_manager
+    
+    try:
+        if session is None:
+            raise ValueError("Session is not initialized")
+        
+        trace1_id = request_data.get('trace1_id')
+        trace2_id = request_data.get('trace2_id')
+        
+        if not trace1_id or not trace2_id:
+            raise ValueError("Both trace1_id and trace2_id are required")
+        
+        logger.info(f"Starting trace comparison between {trace1_id} and {trace2_id}")
+        
+        # Get stack recordings for both traces
+        logger.info("Loading trace data...")
+        trace1_data = await get_stack_recording_data(trace1_id)
+        trace2_data = await get_stack_recording_data(trace2_id)
+        logger.info(f"Loaded trace1 with {len(trace1_data['frames'])} frames, trace2 with {len(trace2_data['frames'])} frames")
+        
+        # Convert trace data to the format expected by graph_generator
+        logger.info("Converting traces to graph format...")
+        trace1_converted = convert_stack_recording_to_trace(trace1_data)
+        trace2_converted = convert_stack_recording_to_trace(trace2_data)
+        logger.info(f"Converted to {len(trace1_converted)} and {len(trace2_converted)} trace steps")
+        
+        # Generate individual graphs
+        logger.info("Generating graphs...")
+        graph1 = generate_graph(trace1_converted)
+        graph2 = generate_graph(trace2_converted)
+        logger.info(f"Generated graphs with {len(graph1.nodes)} and {len(graph2.nodes)} nodes")
+        
+        # Debug: show line number ranges
+        lines1 = [node_data['line'] for node_data in graph1.nodes.values()]
+        lines2 = [node_data['line'] for node_data in graph2.nodes.values()]
+        logger.info(f"Trace1 line range: {min(lines1) if lines1 else 'N/A'}-{max(lines1) if lines1 else 'N/A'}")
+        logger.info(f"Trace2 line range: {min(lines2) if lines2 else 'N/A'}-{max(lines2) if lines2 else 'N/A'}")
+        
+        # Get code content for line mapping
+        logger.info("Getting code content...")
+        code1 = get_code_content(trace1_data)
+        code2 = get_code_content(trace2_data)
+        logger.info(f"Code lengths: {len(code1) if code1 else 0} and {len(code2) if code2 else 0} characters")
+        
+        if code1:
+            code1_lines = len(code1.splitlines())
+            logger.info(f"Code1 has {code1_lines} lines")
+        if code2:
+            code2_lines = len(code2.splitlines())
+            logger.info(f"Code2 has {code2_lines} lines")
+        
+        # Generate line mapping between the two code versions
+        if code1 and code2 and code1.strip() and code2.strip():
+            logger.info("Generating line mapping...")
+            mapping_v1_to_v2, mapping_v2_to_v1, modified_lines = generate_line_mapping_from_string(code1, code2)
+            logger.info(f"Generated mappings with {len(mapping_v1_to_v2)} v1->v2 and {len(modified_lines)} modified lines")
+            logger.info(f"V1->V2 mapping keys: {sorted(mapping_v1_to_v2.keys()) if mapping_v1_to_v2 else 'None'}")
+        else:
+            # Fallback if no code available or codes are identical
+            logger.info("Using simple line mapping fallback")
+            mapping_v1_to_v2, mapping_v2_to_v1, modified_lines = {}, {}, []
+            
+            # Create simple identity mapping for common lines
+            all_lines_1 = set(node_data['line'] for node_data in graph1.nodes.values())
+            all_lines_2 = set(node_data['line'] for node_data in graph2.nodes.values())
+            common_lines = all_lines_1.intersection(all_lines_2)
+            
+            for line in common_lines:
+                mapping_v1_to_v2[line] = line
+                mapping_v2_to_v1[line] = line
+            
+            logger.info(f"Fallback mapping created for {len(common_lines)} common lines: {sorted(common_lines)}")
+        
+        # Ensure all graph lines exist in mapping (add missing ones as identity)
+        all_graph_lines = set(lines1 + lines2)
+        missing_lines = all_graph_lines - set(mapping_v1_to_v2.keys())
+        if missing_lines:
+            logger.info(f"Adding identity mapping for missing lines: {sorted(missing_lines)}")
+            for line in missing_lines:
+                if line not in mapping_v1_to_v2:
+                    mapping_v1_to_v2[line] = line
+                if line not in mapping_v2_to_v1:
+                    mapping_v2_to_v1[line] = line
+        
+        # Generate edit graph
+        logger.info("Generating edit graph...")
+        edit_graph = generate_edit_graph(graph1, graph2, mapping_v1_to_v2, mapping_v2_to_v1, modified_lines)
+        logger.info(f"Generated edit graph with {len(edit_graph.nodes)} nodes and {len(edit_graph.edges)} edges")
+        
+        # Export to JSON format
+        logger.info("Exporting graph data...")
+        result = export_edit_graph(edit_graph)
+        
+        # Convert NetworkX data views to regular Python data structures
+        # Convert nodes from NodeDataView to dict
+        nodes_dict = {}
+        for node_id, node_data in result['nodes']:
+            nodes_dict[str(node_id)] = dict(node_data)
+        
+        # Convert edges from EdgeDataView to list of [from, to, edge_data] tuples
+        edges_list = []
+        for from_node, to_node, edge_data in result['edges']:
+            edges_list.append([str(from_node), str(to_node), dict(edge_data)])
+        
+        # Update result with properly formatted data
+        result = {
+            'nodes': nodes_dict,
+            'edges': edges_list
+        }
+        
+        logger.info(f"Formatted result with {len(nodes_dict)} nodes and {len(edges_list)} edges")
+        
+        # Add metadata about the traces
+        result['metadata'] = {
+            'trace1': {
+                'id': trace1_id,
+                'function': trace1_data['function']['name'],
+                'file': trace1_data['function']['file'],
+                'line': trace1_data['function']['line']
+            },
+            'trace2': {
+                'id': trace2_id,
+                'function': trace2_data['function']['name'],
+                'file': trace2_data['function']['file'], 
+                'line': trace2_data['function']['line']
+            },
+            'mapping': {
+                'v1_to_v2': mapping_v1_to_v2,
+                'v2_to_v1': mapping_v2_to_v1,
+                'modified_lines': modified_lines
+            }
+        }
+        
+        logger.info("Trace comparison completed successfully")
+        return result
+        
+    except ValueError as e:
+        logger.error(f"Validation error in trace comparison: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error comparing traces: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+async def get_stack_recording_data(function_id: str):
+    """Helper function to get stack recording data"""
+    global session, object_manager
+
+    if session is None:
+        raise ValueError("Session is not initialized")
+
+    function_call = session.query(FunctionCall).filter(FunctionCall.id == function_id).first()
+    if not function_call:
+        raise ValueError(f"Function call {function_id} not found")
+
+    # Get all snapshots for this function call
+    snapshots = session.query(StackSnapshot).filter(
+        StackSnapshot.function_call_id == function_id
+    ).order_by(StackSnapshot.order_in_call.asc()).all()
+
+    if not snapshots:
+        raise ValueError(f"No stack snapshots found for function call {function_id}")
+
+    # Get code information
+    code = None
+    if function_call.code_definition_id:
+        try:
+            code_definition = session.query(CodeDefinition).filter(
+                CodeDefinition.id == function_call.code_definition_id
+            ).first()
+
+            if code_definition:
+                first_line_no = code_definition.first_line_no if code_definition.first_line_no is not None else function_call.line
+                code = {
+                    'content': code_definition.code_content,
+                    'module_path': code_definition.module_path,
+                    'type': code_definition.type,
+                    'name': code_definition.name,
+                    'first_line_no': first_line_no
+                }
+        except Exception as e:
+            logger.error(f"Error retrieving code definition: {e}")
+
+    # Build frames data
+    frames = []
+    for stack_snapshot in snapshots:
+        frame_info = {
+            "id": stack_snapshot.id,
+            "line": stack_snapshot.line_number,
+            "locals_refs": stack_snapshot.locals_refs,
+            "globals_refs": stack_snapshot.globals_refs,
+            "timestamp": stack_snapshot.timestamp.isoformat() if stack_snapshot.timestamp else None
+        }
+        
+        # Process locals and globals
+        if stack_snapshot.locals_refs:
+            frame_info["locals"] = {}
+            for name, value in stack_snapshot.locals_refs.items():
+                frame_info["locals"][name] = serialize_stored_value(value)
+
+        if stack_snapshot.globals_refs:
+            frame_info["globals"] = {}
+            for name, value in stack_snapshot.globals_refs.items():
+                if not name.startswith("__") and not name.endswith("__"):
+                    frame_info["globals"][name] = serialize_stored_value(value)
+
+        frames.append(frame_info)
+
+    return {
+        "function": {
+            "id": function_id,
+            "name": function_call.function,
+            "file": function_call.file,
+            "line": function_call.line,
+            "code": code
+        },
+        "frames": frames
+    }
+
+def convert_stack_recording_to_trace(stack_recording_data):
+    """Convert stack recording data to the format expected by graph_generator"""
+    trace = []
+    
+    # Get the first line offset from the code info
+    code_info = stack_recording_data.get('function', {}).get('code')
+    first_line_offset = 1  # Default to 1 if no offset info
+    
+    if code_info and isinstance(code_info, dict):
+        first_line_offset = int(code_info.get('first_line_no', 1))
+    
+    logger.info(f"Using line offset: {first_line_offset}")
+    
+    for frame in stack_recording_data['frames']:
+        # Convert locals and globals to simple dict format
+        locals_dict = {}
+        if 'locals' in frame:
+            for name, data in frame['locals'].items():
+                # Extract value from the serialized format
+                if isinstance(data, dict) and 'value' in data:
+                    locals_dict[name] = data['value']
+                else:
+                    locals_dict[name] = str(data)
+        
+        globals_dict = {}
+        if 'globals' in frame:
+            for name, data in frame['globals'].items():
+                # Extract value from the serialized format
+                if isinstance(data, dict) and 'value' in data:
+                    globals_dict[name] = data['value']
+                else:
+                    globals_dict[name] = str(data)
+        
+        # Adjust line number to match the stored code content
+        # The trace has absolute line numbers, but the stored code starts from first_line_no
+        original_line = frame['line']
+        adjusted_line = original_line - first_line_offset + 1
+        
+        # Ensure we don't get negative or zero line numbers
+        if adjusted_line < 1:
+            adjusted_line = 1
+        
+        trace_frame = {
+            'line': adjusted_line,
+            'locals': locals_dict,
+            'globals': globals_dict
+        }
+        trace.append(trace_frame)
+    
+    logger.info(f"Converted trace with line numbers adjusted by offset {first_line_offset}")
+    
+    # Convert to the expected format: list of (line, locals_dict) tuples
+    return convert_trace(trace, use_ref=False, include_globals=True)
+
+def get_code_content(stack_recording_data):
+    """Extract code content from stack recording data"""
+    code_info = stack_recording_data.get('function', {}).get('code')
+
+    if not code_info:
+        return ""
+
+    if isinstance(code_info, dict):
+        return code_info.get('content', '')
+    return str(code_info)
 
 def initialize_db(db_file: str):
     """Initialize the database with the given file path"""

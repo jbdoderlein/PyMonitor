@@ -1,14 +1,7 @@
-import importlib.util
-import inspect
-import json
 import os
 import re
 import subprocess
-import sys
 import tempfile
-import time
-import types
-from collections import defaultdict
 
 import networkx as nx
 
@@ -139,7 +132,7 @@ def generate_edit_graph(g1 :nx.DiGraph, g2 :nx.DiGraph, mapping_v1_to_v2 :dict, 
     # First make sure g1 and g2 have no common indices (i.e. shift g2 indices)
     g2_offset = max(g1.nodes) + 1
     g2 = nx.relabel_nodes(g2, {n: n + g2_offset for n in g2.nodes})
-    
+
     paths = list(nx.optimal_edit_paths(
         g1,
         g2,

@@ -31,6 +31,17 @@ def foo1(x, cl):
         a += cl.rep() + i + custom_class_1.rep()
     return a
 
+@monitoringpy.pymonitor(mode="line")
+def foo2(x, cl):
+    """A simple function that uses custom objects."""
+    a = imbricated_list[0][0]
+    imbricated_list[0][0]+=1
+    imbricated_list[0][1]+=1
+    for i in range(x):
+        a-=1
+        a += cl.rep() + i + custom_class_1.rep()
+    return a
+
 def get_event():
     """A function that could be used for effects"""
     return {"type": "event", "data": random.randint(0, 100)}
@@ -51,6 +62,7 @@ if __name__ == "__main__":
     monitoringpy.init_monitoring(db_path="main.db")
     with monitoringpy.session_context(name="main"):
         foo1(10, custom_class_1)
+        foo1(15, custom_class_1)
+        foo2(10, custom_class_1)
         for i in range(5):
             complex_function(i)
-    
