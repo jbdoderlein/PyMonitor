@@ -56,5 +56,3 @@ htmlcov/
 *.log
 .cursor/mcp.json
 
-# Debugger # Todo later
-src/monitoringpy/interface/debugger/
