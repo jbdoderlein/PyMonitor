@@ -10,6 +10,7 @@ import io
 import logging
 import os
 import sys
+import threading
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
@@ -29,10 +30,12 @@ from monitoringpy.core import (
     FunctionCallRepository,
     MonitoringSession,
     ObjectManager,
+    PyMonitoring,
     StackSnapshot,
     StoredObject,
     init_db,
 )
+from sqlalchemy import and_
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -949,9 +952,9 @@ async def get_session_details(session_id: str):
 
         # Get function calls in this session
         call_sequence = monitoring_session.get_call_sequence(session)
-
         # Process function calls
         function_calls = []
+        function_call_ids = []
         function_calls_map = {}
         common_variables = {}
 
@@ -959,8 +962,35 @@ async def get_session_details(session_id: str):
         function_variables = {}
 
         for function_call in call_sequence:
-            # Store function call ID
-            function_calls.append(function_call.id)
+            # Store function call ID for backward compatibility
+            function_call_ids.append(function_call.id)
+
+            # Build detailed function call object similar to /api/function-calls endpoint
+            call_data = function_call.to_dict()
+
+            # Add additional fields for API
+            call_data["duration"] = (function_call.end_time - function_call.start_time).total_seconds() if function_call.end_time and function_call.start_time else None
+            call_data["has_stack_recording"] = session.query(StackSnapshot).filter(StackSnapshot.function_call_id == function_call.id).count() > 0
+
+            # Add serialized locals
+            locals_data = {}
+            if function_call.locals_refs:
+                for name, value in function_call.locals_refs.items():
+                    locals_data[name] = serialize_stored_value(value)
+            call_data["locals"] = locals_data
+
+            # Add serialized globals
+            globals_data = {}
+            if function_call.globals_refs:
+                for name, value in function_call.globals_refs.items():
+                    globals_data[name] = serialize_stored_value(value)
+            call_data["globals"] = globals_data
+
+            # Add serialized return value
+            call_data["return_value"] = serialize_stored_value(function_call.return_ref)
+
+            # Store the full function call object
+            function_calls.append(call_data)
 
             # Group by function name
             if function_call.function not in function_calls_map:
@@ -1003,7 +1033,8 @@ async def get_session_details(session_id: str):
             "start_time": monitoring_session.start_time.isoformat(),
             "end_time": monitoring_session.end_time.isoformat() if monitoring_session.end_time else None,
             "duration": monitoring_session.duration,  # Use the new duration property
-            "function_calls": function_calls,
+            "function_calls": function_calls,  # Now contains full function call objects with details
+            "function_call_ids": function_call_ids,  # For backward compatibility - just the IDs
             "function_calls_map": function_calls_map,
             "function_count": {f.function: sum(1 for x in call_sequence if x.function == f.function) for f in call_sequence},
             "metadata": monitoring_session.session_metadata,
@@ -1044,64 +1075,64 @@ async def get_execution_tree(call_id: str, max_depth: int = Query(5, description
 @app.post("/api/compare-traces")
 async def compare_traces(request_data: dict[str, Any]):
     """Generate edit graph from two traces for comparison
-    
+
     Request body should contain:
     {
-        "trace1_id": "function_call_id_1", 
+        "trace1_id": "function_call_id_1",
         "trace2_id": "function_call_id_2"
     }
     """
     global session, object_manager
-    
+
     try:
         if session is None:
             raise ValueError("Session is not initialized")
-        
+
         trace1_id = request_data.get('trace1_id')
         trace2_id = request_data.get('trace2_id')
-        
+
         if not trace1_id or not trace2_id:
             raise ValueError("Both trace1_id and trace2_id are required")
-        
+
         logger.info(f"Starting trace comparison between {trace1_id} and {trace2_id}")
-        
+
         # Get stack recordings for both traces
         logger.info("Loading trace data...")
         trace1_data = await get_stack_recording_data(trace1_id)
         trace2_data = await get_stack_recording_data(trace2_id)
         logger.info(f"Loaded trace1 with {len(trace1_data['frames'])} frames, trace2 with {len(trace2_data['frames'])} frames")
-        
+
         # Convert trace data to the format expected by graph_generator
         logger.info("Converting traces to graph format...")
         trace1_converted = convert_stack_recording_to_trace(trace1_data)
         trace2_converted = convert_stack_recording_to_trace(trace2_data)
         logger.info(f"Converted to {len(trace1_converted)} and {len(trace2_converted)} trace steps")
-        
+
         # Generate individual graphs
         logger.info("Generating graphs...")
         graph1 = generate_graph(trace1_converted)
         graph2 = generate_graph(trace2_converted)
         logger.info(f"Generated graphs with {len(graph1.nodes)} and {len(graph2.nodes)} nodes")
-        
+
         # Debug: show line number ranges
         lines1 = [node_data['line'] for node_data in graph1.nodes.values()]
         lines2 = [node_data['line'] for node_data in graph2.nodes.values()]
         logger.info(f"Trace1 line range: {min(lines1) if lines1 else 'N/A'}-{max(lines1) if lines1 else 'N/A'}")
         logger.info(f"Trace2 line range: {min(lines2) if lines2 else 'N/A'}-{max(lines2) if lines2 else 'N/A'}")
-        
+
         # Get code content for line mapping
         logger.info("Getting code content...")
         code1 = get_code_content(trace1_data)
         code2 = get_code_content(trace2_data)
         logger.info(f"Code lengths: {len(code1) if code1 else 0} and {len(code2) if code2 else 0} characters")
-        
+
         if code1:
             code1_lines = len(code1.splitlines())
             logger.info(f"Code1 has {code1_lines} lines")
         if code2:
             code2_lines = len(code2.splitlines())
             logger.info(f"Code2 has {code2_lines} lines")
-        
+
         # Generate line mapping between the two code versions
         if code1 and code2 and code1.strip() and code2.strip():
             logger.info("Generating line mapping...")
@@ -1112,18 +1143,18 @@ async def compare_traces(request_data: dict[str, Any]):
             # Fallback if no code available or codes are identical
             logger.info("Using simple line mapping fallback")
             mapping_v1_to_v2, mapping_v2_to_v1, modified_lines = {}, {}, []
-            
+
             # Create simple identity mapping for common lines
-            all_lines_1 = set(node_data['line'] for node_data in graph1.nodes.values())
-            all_lines_2 = set(node_data['line'] for node_data in graph2.nodes.values())
+            all_lines_1 = {node_data['line'] for node_data in graph1.nodes.values()}
+            all_lines_2 = {node_data['line'] for node_data in graph2.nodes.values()}
             common_lines = all_lines_1.intersection(all_lines_2)
-            
+
             for line in common_lines:
                 mapping_v1_to_v2[line] = line
                 mapping_v2_to_v1[line] = line
-            
+
             logger.info(f"Fallback mapping created for {len(common_lines)} common lines: {sorted(common_lines)}")
-        
+
         # Ensure all graph lines exist in mapping (add missing ones as identity)
         all_graph_lines = set(lines1 + lines2)
         missing_lines = all_graph_lines - set(mapping_v1_to_v2.keys())
@@ -1134,35 +1165,35 @@ async def compare_traces(request_data: dict[str, Any]):
                     mapping_v1_to_v2[line] = line
                 if line not in mapping_v2_to_v1:
                     mapping_v2_to_v1[line] = line
-        
+
         # Generate edit graph
         logger.info("Generating edit graph...")
         edit_graph = generate_edit_graph(graph1, graph2, mapping_v1_to_v2, mapping_v2_to_v1, modified_lines)
         logger.info(f"Generated edit graph with {len(edit_graph.nodes)} nodes and {len(edit_graph.edges)} edges")
-        
+
         # Export to JSON format
         logger.info("Exporting graph data...")
         result = export_edit_graph(edit_graph)
-        
+
         # Convert NetworkX data views to regular Python data structures
         # Convert nodes from NodeDataView to dict
         nodes_dict = {}
         for node_id, node_data in result['nodes']:
             nodes_dict[str(node_id)] = dict(node_data)
-        
+
         # Convert edges from EdgeDataView to list of [from, to, edge_data] tuples
         edges_list = []
         for from_node, to_node, edge_data in result['edges']:
             edges_list.append([str(from_node), str(to_node), dict(edge_data)])
-        
+
         # Update result with properly formatted data
         result = {
             'nodes': nodes_dict,
             'edges': edges_list
         }
-        
+
         logger.info(f"Formatted result with {len(nodes_dict)} nodes and {len(edges_list)} edges")
-        
+
         # Add metadata about the traces
         result['metadata'] = {
             'trace1': {
@@ -1174,7 +1205,7 @@ async def compare_traces(request_data: dict[str, Any]):
             'trace2': {
                 'id': trace2_id,
                 'function': trace2_data['function']['name'],
-                'file': trace2_data['function']['file'], 
+                'file': trace2_data['function']['file'],
                 'line': trace2_data['function']['line']
             },
             'mapping': {
@@ -1183,10 +1214,10 @@ async def compare_traces(request_data: dict[str, Any]):
                 'modified_lines': modified_lines
             }
         }
-        
+
         logger.info("Trace comparison completed successfully")
         return result
-        
+
     except ValueError as e:
         logger.error(f"Validation error in trace comparison: {e}")
         raise HTTPException(status_code=400, detail=str(e))
@@ -1243,7 +1274,7 @@ async def get_stack_recording_data(function_id: str):
             "globals_refs": stack_snapshot.globals_refs,
             "timestamp": stack_snapshot.timestamp.isoformat() if stack_snapshot.timestamp else None
         }
-        
+
         # Process locals and globals
         if stack_snapshot.locals_refs:
             frame_info["locals"] = {}
@@ -1272,16 +1303,16 @@ async def get_stack_recording_data(function_id: str):
 def convert_stack_recording_to_trace(stack_recording_data):
     """Convert stack recording data to the format expected by graph_generator"""
     trace = []
-    
+
     # Get the first line offset from the code info
     code_info = stack_recording_data.get('function', {}).get('code')
     first_line_offset = 1  # Default to 1 if no offset info
-    
+
     if code_info and isinstance(code_info, dict):
         first_line_offset = int(code_info.get('first_line_no', 1))
-    
+
     logger.info(f"Using line offset: {first_line_offset}")
-    
+
     for frame in stack_recording_data['frames']:
         # Convert locals and globals to simple dict format
         locals_dict = {}
@@ -1292,7 +1323,7 @@ def convert_stack_recording_to_trace(stack_recording_data):
                     locals_dict[name] = data['value']
                 else:
                     locals_dict[name] = str(data)
-        
+
         globals_dict = {}
         if 'globals' in frame:
             for name, data in frame['globals'].items():
@@ -1301,25 +1332,25 @@ def convert_stack_recording_to_trace(stack_recording_data):
                     globals_dict[name] = data['value']
                 else:
                     globals_dict[name] = str(data)
-        
+
         # Adjust line number to match the stored code content
         # The trace has absolute line numbers, but the stored code starts from first_line_no
         original_line = frame['line']
         adjusted_line = original_line - first_line_offset + 1
-        
+
         # Ensure we don't get negative or zero line numbers
         if adjusted_line < 1:
             adjusted_line = 1
-        
+
         trace_frame = {
             'line': adjusted_line,
             'locals': locals_dict,
             'globals': globals_dict
         }
         trace.append(trace_frame)
-    
+
     logger.info(f"Converted trace with line numbers adjusted by offset {first_line_offset}")
-    
+
     # Convert to the expected format: list of (line, locals_dict) tuples
     return convert_trace(trace, use_ref=False, include_globals=True)
 
@@ -1333,6 +1364,26 @@ def get_code_content(stack_recording_data):
     if isinstance(code_info, dict):
         return code_info.get('content', '')
     return str(code_info)
+
+def initialize_from_monitor(monitor: PyMonitoring):
+    """Initialize the API from an existing PyMonitoring instance
+
+    Args:
+        monitor: PyMonitoring instance with an active session
+    """
+    global session, call_tracker, db_path, object_manager
+
+    if not monitor or not monitor.session:
+        raise ValueError("Monitor instance must have an active database session")
+
+    # Set global variables from the monitor instance
+    session = monitor.session
+    call_tracker = monitor.call_tracker  
+    object_manager = monitor.object_manager
+    db_path = monitor.db_path
+
+    logger.info(f"API initialized from PyMonitoring instance with database: {db_path}")
+    return session
 
 def initialize_db(db_file: str):
     """Initialize the database with the given file path"""
@@ -1364,6 +1415,44 @@ def close_db():
         session = None
         logger.info("Database connection closed")
 
+def refresh_database():
+    """Refresh the database connection to see new data"""
+    global session, call_tracker, db_path, object_manager
+
+    try:
+        if session:
+            session.close()
+            logger.info("Closed existing database session")
+
+        if not db_path:
+            raise ValueError("Database path is not set")
+
+        # Reinitialize database connection
+        Session = init_db(db_path)
+        session = Session()
+        object_manager = ObjectManager(session)
+        call_tracker = FunctionCallRepository(session)
+
+        logger.info(f"Database session refreshed: {db_path}")
+        return True
+    except Exception as e:
+        logger.error(f"Error refreshing database: {e}")
+        return False
+
+# API endpoint for refreshing database
+@app.post("/api/refresh")
+async def refresh_database_endpoint():
+    """Refresh the database connection to see new data"""
+    try:
+        success = refresh_database()
+        if success:
+            return {"status": "success", "message": "Database refreshed successfully"}
+        else:
+            raise HTTPException(status_code=500, detail="Failed to refresh database")
+    except Exception as e:
+        logger.error(f"Error refreshing database via API: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 def run_api(db_file: str, host: str = '127.0.0.1', port: int = 8000):
     """Run the API server"""
     import uvicorn
@@ -1380,3 +1469,54 @@ def run_api(db_file: str, host: str = '127.0.0.1', port: int = 8000):
     finally:
         # Clean up database connections on exit
         close_db()
+
+def start_api_from_monitor(monitor: PyMonitoring, port: int = 8000, host: str = '127.0.0.1'):
+    """Start the API server in a background thread from an existing PyMonitoring instance
+
+    Args:
+        monitor: PyMonitoring instance with an active session
+        port: Port to run the server on (default: 8000)
+        host: Host to run the server on (default: '127.0.0.1')
+
+    Returns:
+        threading.Thread: The thread running the API server
+
+    Example:
+        >>> import monitoringpy
+        >>> monitor = monitoringpy.init_monitoring()
+        >>> api_thread = monitoringpy.interface.start_api_from_monitor(monitor, 3456)
+        >>> # API server is now running in background on port 3456
+        >>> # Your code continues here...
+        >>> # To stop the server, you would need to terminate the thread
+    """
+    import uvicorn
+
+    if not monitor or not monitor.session:
+        raise ValueError("Monitor instance must have an active database session")
+
+    # Initialize the API from the monitor instance
+    initialize_from_monitor(monitor)
+
+    def _run_server():
+        """Internal function to run the server"""
+        try:
+            logger.info(f"Starting API server in background thread at http://{host}:{port}")
+            # Configure uvicorn to run without logs to stdout to avoid interference
+            config = uvicorn.Config(
+                app, 
+                host=host, 
+                port=port,
+                log_config=None,  # Disable uvicorn's default logging
+                access_log=False  # Disable access logs
+            )
+            server = uvicorn.Server(config)
+            server.run()
+        except Exception as e:
+            logger.error(f"API server error: {e}")
+
+    # Create and start the background thread
+    api_thread = threading.Thread(target=_run_server, daemon=True)
+    api_thread.start()
+
+    logger.info(f"API server thread started on http://{host}:{port}")
+    return api_thread

@@ -38,6 +38,29 @@ from .core import (
 # Or use the convenience function:
 # from monitoringpy.interface import start_web_explorer
 # start_web_explorer('my_session.db')
+#
+# To start the API from an existing monitor instance:
+# import monitoringpy
+# monitor = monitoringpy.init_monitoring()
+# monitoringpy.start_api(monitor, 3456)
+
+# Import start_api convenience function
+def _lazy_import_start_api():
+    """Lazy import start_api to avoid loading web dependencies."""
+    from .interface import start_api
+    return start_api
+
+def _lazy_import_refresh_api_database():
+    """Lazy import refresh_api_database to avoid loading web dependencies."""
+    from .interface import refresh_api_database
+    return refresh_api_database
+
+def __getattr__(name):
+    if name == 'start_api':
+        return _lazy_import_start_api()
+    if name == 'refresh_api_database':
+        return _lazy_import_refresh_api_database()
+    raise AttributeError(f"module {__name__} has no attribute {name}")
 
 __version__ = '0.1.0'
 
@@ -78,6 +101,9 @@ __all__ = [
     'load_snapshot',
     'load_snapshot_in_frame',
     'replay_session_from',
+    # API functionality
+    'start_api',
+    'refresh_api_database',
     # Wrapped modules - pygame is available but not imported by default
     # 'pygame',  # Use: from monitoringpy import pygame (when needed)
 

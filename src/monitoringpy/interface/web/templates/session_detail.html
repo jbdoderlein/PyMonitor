@@ -398,30 +398,33 @@ document.addEventListener('DOMContentLoaded', () => {
         // Main function to display calls
         const displayCalls = async () => {
             try {
-                // First try to use function_calls_data if available
+                // Check if function_calls contains full objects or just IDs
                 let callsData = [];
                 
-                if (data.function_calls_data && Array.isArray(data.function_calls_data)) {
-                    // Use pre-loaded call data if available
-                    callsData = data.function_calls_data;
-                } else if (data.function_calls && Array.isArray(data.function_calls)) {
-                    // Function calls array with just IDs - fetch details
-                    // Only fetch first 20 to avoid overloading
-                    const callsToFetch = data.function_calls.slice(0, 20);
-                    
-                    // Show a loading message for large datasets
-                    if (data.function_calls.length > 20) {
-                        functionCallsElement.innerHTML = `
-                            <div class="alert alert-info">
-                                Loading first 20 calls out of ${data.function_calls.length} total calls...
-                            </div>
-                        `;
+                if (data.function_calls && Array.isArray(data.function_calls) && data.function_calls.length > 0) {
+                    // Check if the first item is a full object (has function property) or just an ID (string)
+                    if (typeof data.function_calls[0] === 'object' && data.function_calls[0].function) {
+                        // Function calls array contains full objects - use them directly
+                        callsData = data.function_calls.slice(0, 20);
+                    } else {
+                        // Function calls array contains just IDs - fetch details (backward compatibility)
+                        // Only fetch first 20 to avoid overloading
+                        const callsToFetch = data.function_calls.slice(0, 20);
+                        
+                        // Show a loading message for large datasets
+                        if (data.function_calls.length > 20) {
+                            functionCallsElement.innerHTML = `
+                                <div class="alert alert-info">
+                                    Loading first 20 calls out of ${data.function_calls.length} total calls...
+                                </div>
+                            `;
+                        }
+                        
+                        // Fetch all call details in parallel
+                        const fetchPromises = callsToFetch.map(callId => fetchCallDetails(callId));
+                        const results = await Promise.all(fetchPromises);
+                        callsData = results.filter(call => call !== null);
                     }
-                    
-                    // Fetch all call details in parallel
-                    const fetchPromises = callsToFetch.map(callId => fetchCallDetails(callId));
-                    const results = await Promise.all(fetchPromises);
-                    callsData = results.filter(call => call !== null);
                 }
                 
                 if (callsData.length === 0) {
@@ -443,9 +446,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     console.log(call);
                     const time = call.start_time ? new Date(call.start_time).toLocaleString() : 'N/A';
                     
-                    // Calculate duration if both times exist
+                    // Use pre-calculated duration if available, otherwise calculate it
                     let duration = 'N/A';
-                    if (call.start_time && call.end_time) {
+                    if (call.duration !== undefined && call.duration !== null) {
+                        duration = `${call.duration.toFixed(3)} sec`;
+                    } else if (call.start_time && call.end_time) {
                         const start = new Date(call.start_time);
                         const end = new Date(call.end_time);
                         const durationMs = end - start;
