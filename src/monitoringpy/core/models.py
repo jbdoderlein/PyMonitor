@@ -14,6 +14,7 @@ from sqlalchemy import (
     LargeBinary,
     String,
     Text,
+    and_,
     create_engine,
     desc,
 )
@@ -341,9 +342,9 @@ class MonitoringSession(Base):
         Returns:
             List of FunctionCall objects in chronological order
         """
-        return session.query(FunctionCall).filter(
+        return session.query(FunctionCall).filter(and_(
             FunctionCall.session_id == self.id,
-            FunctionCall.parent_call_id is None  # Only top-level calls
+            FunctionCall.parent_call_id.is_(None))  # Only top-level calls
         ).order_by(FunctionCall.order_in_session).all()
 
 def init_db(db_path, in_memory=True):
