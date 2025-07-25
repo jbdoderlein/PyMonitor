@@ -475,6 +475,7 @@ class PyMonitoring:
 
     def monitor_callback_function_start(self, code: types.CodeType, offset):
         # Check if recording is enabled
+        logger.info(f"Monitoring function start: {code.co_name}")
         if not self.is_recording_enabled:
             return
         if self.call_tracker is None:
@@ -659,6 +660,7 @@ class PyMonitoring:
 
     def monitor_callback_function_return(self, code: types.CodeType, offset, return_value):
         # Check if recording is enabled
+        logger.info(f"Monitoring function return: {code.co_name}")
         if not self.is_recording_enabled:
             return
 
@@ -849,6 +851,7 @@ class PyMonitoring:
     def monitor_callback_line(self, code: types.CodeType, line_number):
         """Callback function for line events"""
         # Check if recording is enabled
+        logger.info(f"Monitoring line: {code.co_name} at line {line_number}")
         if not self.is_recording_enabled:
             return
 

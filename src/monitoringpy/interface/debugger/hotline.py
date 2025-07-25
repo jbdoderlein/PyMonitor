@@ -1,9 +1,26 @@
+import ctypes
 import inspect
+import sys
 
 import bytecode
 import pydevd
 from bytecode.instr import Instr
 
+from monitoringpy.codediff.graph_generator import generate_line_mapping_from_string
+
+
+def change_f_back(f_up, f_down):
+    """Change the f_back of a frame (f_up) to a different frame (f_down)"""
+
+    class PyFrameObject(ctypes.Structure):
+        _fields_ = [("ob_refcnt", ctypes.c_ssize_t),
+                    ("ob_type", ctypes.c_void_p),
+                    ("f_back", ctypes.py_object)]
+
+    raw_c_frame = ctypes.cast(id(f_up), ctypes.POINTER(PyFrameObject))
+    raw_c_frame.contents.f_back = f_down  # now c() thinks it was called directly by a()
+    # Confirm
+    assert f_up.f_back is f_down
 
 def hotline(f_to_patch):
     """
@@ -36,7 +53,7 @@ def hotline(f_to_patch):
         # Optionnal : make the goto here
         t = pydevd.threadingCurrentThread()
         if t is not None:
-            info = t.additional_info
+            info = t.additional_info # type: ignore
             info.pydev_original_step_cmd = pydevd.CMD_SET_NEXT_STATEMENT
             info.pydev_step_cmd = pydevd.CMD_SET_NEXT_STATEMENT
             info.pydev_step_stop = None
@@ -53,9 +70,11 @@ def hotline(f_to_patch):
         old_source_code = f_to_patch._ahs_current_frame_source_code
         new_source_code = inspect.getsource(f_to_patch)
         f_to_patch._ahs_current_frame_source_code = new_source_code
-        # get the line to jump
-        line_to_jump = before_line # TODO : implement the algorithm
-        return line_to_jump
+        old_to_new,_,changed = generate_line_mapping_from_string(old_source_code, new_source_code)
+        first_line = f_to_patch.__code__.co_firstlineno
+
+        return old_to_new[before_line-first_line+1]+first_line-1
+
 
     def _ahs_correct_jump():
         stack = inspect.stack()
@@ -63,8 +82,12 @@ def hotline(f_to_patch):
         while stack[frame_index].function != f_to_patch.__name__:
             frame_index += 1
         frame = stack[frame_index].frame
+        # Load locals
         for k,v in f_to_patch._ahs_last_frame_locals.items():
             frame.f_locals[k] = v
+        # Load f_back
+        change_f_back(frame, f_to_patch._ahs_last_frame_fback)
+        # step to the correct line
         t = pydevd.threadingCurrentThread()
         info = t.additional_info
         info.pydev_original_step_cmd = pydevd.CMD_SET_NEXT_STATEMENT
@@ -81,17 +104,27 @@ def hotline(f_to_patch):
     def _ahs_injected_part():
         import importlib
         import inspect
+        nonlocal f_to_patch
         _ahs_frame = inspect.stack()[1]
         _ahs_function = getattr(inspect.getmodule(_ahs_frame.frame), _ahs_frame.function)
         if hasattr(_ahs_function, "_ahs_deroute"):  # The user want to reload code. Branch triggered by _ash_reload
             # Reload the module and function from source
             line_to_jump = _ahs_function._ahs_deroute # we save here because we loose it on reload
-            _ahs_function = getattr(importlib.reload(inspect.getmodule(_ahs_frame.frame)), _ahs_frame.function)
+            # For monitoringpy compability
+            event_before = sys.monitoring.get_local_events(sys.monitoring.PROFILER_ID,_ahs_function.__code__)
+            _ahs_function = getattr(importlib.reload(inspect.getmodule(_ahs_frame.frame)), _ahs_frame.function) # type: ignore
+            f_to_patch = _ahs_function
+            if event_before != 0:
+                sys.monitoring.set_local_events(sys.monitoring.PROFILER_ID,_ahs_function.__code__,event_before)
             # From the reload version, patch bytecode for correct jump and locals
+            for n in ["__pydevd_ret_val_dict"]:
+                if n in _ahs_frame.frame.f_locals:
+                    del _ahs_frame.frame.f_locals[n]
             _ahs_function._ahs_last_frame_locals = _ahs_frame.frame.f_locals
             _ahs_function._ahs_line_to_jump = line_to_jump
-            return _ahs_function() # TODO : propagate the return value
-        return
+            _ahs_function._ahs_last_frame_fback = _ahs_frame.frame.f_back
+            _ahs_function()
+
     # == Bytecode Injection ==
     bt = bytecode.Bytecode.from_code(f_to_patch.__code__)
     # find first line after resume

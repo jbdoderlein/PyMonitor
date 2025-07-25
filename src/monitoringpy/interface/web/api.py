@@ -35,7 +35,6 @@ from monitoringpy.core import (
     StoredObject,
     init_db,
 )
-from sqlalchemy import and_
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -1070,6 +1069,42 @@ async def get_execution_tree(call_id: str, max_depth: int = Query(5, description
         raise HTTPException(status_code=404 if "not found" in str(e) else 400, detail=str(e))
     except Exception as e:
         logger.error(f"Error getting execution tree: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/function-call/{call_id}/graph")
+async def get_graph(call_id: str):
+    """Get the graph for a function call"""
+    global session
+
+    try:
+        if session is None:
+            raise ValueError("Session is not initialized")
+
+        trace_data = await get_stack_recording_data(call_id)
+        trace_converted = convert_stack_recording_to_trace(trace_data)
+        graph = generate_graph(trace_converted)
+        result = export_edit_graph(graph)
+        # Convert NetworkX data views to regular Python data structures
+        # Convert nodes from NodeDataView to dict
+        nodes_dict = {}
+        for node_id, node_data in result['nodes']:
+            nodes_dict[str(node_id)] = dict(node_data)
+
+        # Convert edges from EdgeDataView to list of [from, to, edge_data] tuples
+        edges_list = []
+        for from_node, to_node, edge_data in result['edges']:
+            edges_list.append([str(from_node), str(to_node), dict(edge_data)])
+
+        # Update result with properly formatted data
+        return {
+            'nodes': nodes_dict,
+            'edges': edges_list
+        }
+
+    except ValueError as e:
+        raise HTTPException(status_code=404 if "not found" in str(e) else 400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error getting graph: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/compare-traces")
