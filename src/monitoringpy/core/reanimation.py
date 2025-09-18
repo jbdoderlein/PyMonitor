@@ -128,6 +128,7 @@ def execute_function_call(
     mock_function: list[str] = [],
     enable_monitoring: bool = False,
     reload_module: bool = True,
+    additional_decorators: list[Callable] | None = None,
 ) -> Any:
     """
     Execute a single function call from its stored data.
@@ -218,6 +219,9 @@ def execute_function_call(
             # Mock functions if provided
             _load_mock_functions(session, function_execution_id, obj_manager, module, mock_function)
 
+            if additional_decorators:
+                for decorator in additional_decorators:
+                    function_obj = decorator(function_obj)
             # Execute the function
             result = function_obj(*args, **kwargs)
 
@@ -1058,7 +1062,6 @@ def _load_mock_functions(session, function_execution_id, obj_manager, module, mo
                         try:
                             return next(return_values_dict[captured_func_name])
                         except StopIteration:
-                            print(f"Generator for {captured_func_name} is exhausted, returning original function")
                             # If the generator is exhausted, return the original function
                             old_func = working_module.__dict__[f"_old_{captured_func_name.split('.')[-1]}"]
                             return old_func(*args, **kwargs)
