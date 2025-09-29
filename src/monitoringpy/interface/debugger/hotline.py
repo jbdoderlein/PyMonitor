@@ -40,7 +40,7 @@ def hotline(f_to_patch):
     - debugger set line function set all unitialised variable to None, maybe fixable
     - variable/function with _ahs_ prefix are used internally by the hotline system (visible in globals)
     """
-    def _ahs_reload():
+    def _ahs_reload(line_number=None):
         # get the current line of the frame
         stack = inspect.stack()
         frame_index = 0
@@ -49,7 +49,10 @@ def hotline(f_to_patch):
         _info = stack[frame_index]
         _ahs_line = _info.lineno
         # get the line to jump
-        f_to_patch._ahs_deroute = f_to_patch._ahs_get_line_to_jump(_ahs_line)
+        if line_number is not None:
+            f_to_patch._ahs_deroute = line_number
+        else:
+            f_to_patch._ahs_deroute = f_to_patch._ahs_get_line_to_jump(_ahs_line)
         # Optionnal : make the goto here
         t = pydevd.threadingCurrentThread()
         if t is not None:
