@@ -2,6 +2,7 @@ import atexit
 import datetime
 import dis
 import inspect
+import linecache
 import logging
 import os
 import sys
@@ -118,7 +119,6 @@ class PyMonitoring:
     def shutdown(self):
         """Gracefully shut down monitoring"""
         logger.info("Starting PyMonitoring shutdown")
-        print("Shutting down monitoring")
         if hasattr(self, 'session'):
             try:
                 logger.info("Committing final changes and closing session")
@@ -131,7 +131,6 @@ class PyMonitoring:
                 logger.error(f"Error during monitoring shutdown: {e}")
                 logger.error(traceback.format_exc())
         logger.info("PyMonitoring shutdown completed")
-        print("PyMonitoring shutdown completed")
 
     def disable_recording(self):
         """Temporarily disable recording of function calls and line execution.
@@ -862,6 +861,22 @@ class PyMonitoring:
         if current_frame is None or current_frame.f_back is None:
             return
 
+        if (
+            code.co_name in PyMonitoring._monitored_functions and
+            "lines" in PyMonitoring._monitored_functions[code.co_name] and
+            PyMonitoring._monitored_functions[code.co_name]["lines"] is not None and
+            line_number not in PyMonitoring._monitored_functions[code.co_name]["lines"]
+        ):
+            return
+
+        if (
+            code.co_name in PyMonitoring._monitored_functions and
+            "use_tag_line" in PyMonitoring._monitored_functions[code.co_name] and
+            PyMonitoring._monitored_functions[code.co_name]["use_tag_line"] and
+            "#tag" not in linecache.getline(code.co_filename, line_number)
+        ):
+            return
+
         # The parent frame should be the actual function being executed
         frame = current_frame.f_back
 
@@ -926,7 +941,7 @@ class PyMonitoring:
             logger.error(traceback.format_exc())
 
 
-def pymonitor(mode="function", ignore=None, start_hooks=None, return_hooks=None, track=None):
+def pymonitor(mode="function", ignore=None, start_hooks=None, return_hooks=None, track=None, lines=None, use_tag_line=False):
     """
     Unified decorator for monitoring Python function execution.
 
@@ -942,6 +957,8 @@ def pymonitor(mode="function", ignore=None, start_hooks=None, return_hooks=None,
         track (list[callable], optional): Additional functions to track only when they are called within
             this monitored function context. These functions won't be tracked when called directly
             outside a monitored context. Defaults to None.
+        lines (list[int], optional): Specific line numbers to monitor within the function if mode is "line". Defaults to None (monitor all lines).
+        use_tag_line (bool, optional): If True and mode is "line", only monitor lines containing the comment "#tag". Defaults to False.
 
     Returns:
         The decorated function with monitoring enabled
@@ -992,7 +1009,9 @@ def pymonitor(mode="function", ignore=None, start_hooks=None, return_hooks=None,
             "ignore": ignore,
             "start_hooks": start_hooks,
             "return_hooks": return_hooks,
-            "tracked_functions": track
+            "tracked_functions": track,
+            "lines": lines,  # Specific lines to monitor if in line mode
+            "use_tag_line": use_tag_line  # Whether to only monitor lines with #tag
         }
 
         # Also enable monitoring for tracked functions
@@ -1066,7 +1085,6 @@ def init_monitoring(*args, **kwargs):
 
 def _cleanup_monitoring():
     if PyMonitoring._instance is not None:
-        print("Shutting down monitoring")
         PyMonitoring._instance.shutdown()
 
 atexit.register(_cleanup_monitoring)
