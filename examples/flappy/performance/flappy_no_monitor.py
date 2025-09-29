@@ -2,6 +2,7 @@ import base64
 import io
 import random
 import time
+
 import pygame
 
 # Initialize pygame
@@ -16,7 +17,7 @@ pygame.display.set_caption("Flappy Bird")
 
 
 # Game variables
-BIRD_MOVEMENT = 0 
+BIRD_MOVEMENT = 0
 GAME_ACTIVE = True
 FONT = pygame.font.SysFont("Arial", 30)
 
@@ -33,24 +34,24 @@ def create_pipe():
     """Create a new pipe pair"""
     # Random position for the gap between top and bottom pipes
     gap_y_pos = random.randint(200, SCREEN_HEIGHT - 200)
-    
-    pipe_gap = 200
+
+    pipe_gap = 250
     # Bottom pipe starts at the gap position and extends to the bottom of the screen
     bottom_pipe = pygame.Rect(SCREEN_WIDTH, gap_y_pos + pipe_gap//2, 100, SCREEN_HEIGHT - gap_y_pos - pipe_gap//2)
-    
+
     # Top pipe starts at the top of the screen and extends to the gap position
     top_pipe = pygame.Rect(SCREEN_WIDTH, 0, 100, gap_y_pos - pipe_gap//2)
-    
+
     return bottom_pipe, top_pipe
 
 def move_pipes():
     global pipes
     pipes_to_remove = []
     for pipe in pipes:
-        pipe.x -= 3 # Pipe speed
+        pipe.x -= 2 # Pipe speed
         if pipe.right < 0: # Check if pipe is completely off-screen to the left
             pipes_to_remove.append(pipe)
-        
+
     # Clean up passed_pipes list
     for p in pipes_to_remove:
         pipes.remove(p)
@@ -68,12 +69,8 @@ def check_collision(pipes, bird_rect):
     """Check if bird collides with pipes or goes off screen"""
     if bird_rect.top <= 0 or bird_rect.bottom >= SCREEN_HEIGHT:
         return True
-    
-    for pipe in pipes:
-        if bird_rect.colliderect(pipe):
-            return True
-    
-    return False
+
+    return any(bird_rect.colliderect(pipe) for pipe in pipes)
 
 def reset_game():
     """Reset game state"""
@@ -97,56 +94,57 @@ def display_game():
     for event in get_events():
         if event.type == pygame.QUIT:
             return False
-        
+
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_SPACE and GAME_ACTIVE:
-                BIRD_MOVEMENT = -7
-            
+                BIRD_MOVEMENT = -5
+
             if event.key == pygame.K_SPACE and not GAME_ACTIVE:
                 reset_game()
-    
+
     # Fill background
     SCREEN.fill((135, 206, 235))
-    
+
     if GAME_ACTIVE:
         # Bird movement
-        BIRD_MOVEMENT += 0.35 # Gravity
+        BIRD_MOVEMENT += 0.15 # Gravity
         bird_rect.y = int(bird_rect.y + BIRD_MOVEMENT)
-        
+
         # Draw bird
         pygame.draw.rect(SCREEN, (255, 0, 0), bird_rect, border_radius=10)
-        
+
         # Pipe logic
         if len(pipes) == 0 or pipes[-1].x < SCREEN_WIDTH - 300:
             bottom_pipe, top_pipe = create_pipe()
             pipes.append(bottom_pipe)
             pipes.append(top_pipe)
-        
+
         move_pipes()
         draw_pipes()
-        
+
         # Check collision
         if check_collision(pipes, bird_rect):
             GAME_ACTIVE = False
 
-        
-        
+
+
     else:
         # Game over screen
         game_over_text = FONT.render("Game Over!", True, (0, 0, 0))
         SCREEN.blit(game_over_text, (SCREEN_WIDTH//2 - 180, SCREEN_HEIGHT//2 - 15))
-    
-    
+
+
     # Update display
     pygame.display.update()
-    clock.tick(60) 
+    clock.tick(120)
     return True
 
 
 if __name__ == "__main__":
+    N_FRAMES = 1000
     t1 = time.time()
-    for _ in range(500):
+    for _ in range(N_FRAMES):
         display_game()
     t2 = time.time()
-    print(f"Time taken: {t2 - t1} seconds")
-        
+    print(f"Time taken: {t2 - t1} seconds, FPS: {N_FRAMES/(t2 - t1)}")
+

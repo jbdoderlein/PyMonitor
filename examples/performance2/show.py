@@ -28,7 +28,7 @@ def plot_performance_data():
     ]
     
     # Create figure with subplots
-    fig, axes = plt.subplots(2, 3, figsize=(15, 12))
+    fig, axes = plt.subplots(3, 2, figsize=(15, 12))
     fig.suptitle('Performance Analysis - Execution Time vs Index', fontsize=16, fontweight='bold')
     
     # Flatten axes for easier indexing
@@ -60,26 +60,26 @@ def plot_performance_data():
     
     # Combined plot in the last subplot
     if valid_data:
-        axes_flat[len(perf_files)].set_title('Combined Performance Comparison')
-        axes_flat[len(perf_files)].set_xlabel('Index')
-        axes_flat[len(perf_files)].set_ylabel('Time (seconds)')
-        axes_flat[len(perf_files)].grid(True, alpha=0.3)
-
+        axes_flat[3].set_title('Combined Performance Comparison')
+        axes_flat[3].set_xlabel('Index')
+        axes_flat[3].set_ylabel('Time (seconds)')
+        axes_flat[3].grid(True, alpha=0.3)
+        
         for times, label, color, db_size in valid_data:
-            axes_flat[len(perf_files)].plot(range(len(times)), times, 'o-', color=color, markersize=2, 
+            axes_flat[3].plot(range(len(times)), times, 'o-', color=color, markersize=2, 
                              linewidth=1, alpha=0.7, label=label)
-
-        axes_flat[len(perf_files)].legend()
-        axes_flat[len(perf_files)].set_yscale('log')  # Log scale for better comparison
+        
+        axes_flat[3].legend()
+        axes_flat[3].set_yscale('log')  # Log scale for better comparison
     else:
-        axes_flat[len(perf_files)].text(0.5, 0.5, 'No valid data found', 
-                         transform=axes_flat[len(perf_files)].transAxes, ha='center', va='center')
-        axes_flat[len(perf_files)].set_title('No Data Available')
-
+        axes_flat[3].text(0.5, 0.5, 'No valid data found', 
+                         transform=axes_flat[3].transAxes, ha='center', va='center')
+        axes_flat[3].set_title('No Data Available')
+    
     # Hide unused subplots
     for i in range(len(valid_data), 3):
         axes_flat[i].set_visible(False)
-
+    
     plt.tight_layout()
     plt.show()
 
@@ -87,14 +87,14 @@ def print_summary():
     """Print a summary of available performance data."""
     print("Performance Data Summary")
     print("=" * 40)
-
+    
     perf_files = [
         ('perf.json', 'Basic Performance'),
         ('perf_function.json', 'Function-level Performance'),
         ('perf_line.json', 'Line-level Performance'),
         ('perf_line_tag.json', 'Line-level Performance with Tags')
     ]
-
+    
     for filename, description in perf_files:
         times, db_size = load_performance_data(filename)
         if times is not None:
@@ -110,7 +110,7 @@ def print_summary():
 if __name__ == "__main__":
     print("Performance Visualization Tool")
     print("=" * 40)
-
+    
     # Check if we should just print summary
     if len(sys.argv) > 1 and sys.argv[1] == '--summary':
         print_summary()
