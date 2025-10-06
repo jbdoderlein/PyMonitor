@@ -1,9 +1,9 @@
+import json
 import os
+import resource
+import signal
 import subprocess
 import time
-import resource
-import json
-import signal
 from multiprocessing import Pool
 
 current_path = os.path.dirname(os.path.abspath(__file__))
