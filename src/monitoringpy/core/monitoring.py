@@ -6,6 +6,7 @@ import linecache
 import logging
 import os
 import sys
+from time import perf_counter
 import traceback
 import types
 from typing import Any
@@ -35,7 +36,7 @@ class PyMonitoring:
         """
         return cls._instance
 
-    def __init__(self, db_path="monitoring.db", pickle_config: PickleConfig | None = None, in_memory=True):
+    def __init__(self, db_path="monitoring.db", pickle_config: PickleConfig | None = None, in_memory=True, performance=False):
         if hasattr(self, 'initialized') and self._instance is not None:
             return
         self.initialized = True
@@ -112,6 +113,16 @@ class PyMonitoring:
             logger.info("Registered monitoring callbacks")
         except Exception as e:
             logger.error(f"Failed to register monitoring callbacks: {e}")
+
+        self.performance = performance
+        if self.performance:
+            logger.info("Performance monitoring enabled")
+            # Additional performance monitoring setup can go here
+            self.performance_data = {
+                "function_starts": [],
+                "function_returns": [],
+                "line_events": []
+            }
 
         PyMonitoring._instance = self
         logger.info("Monitoring initialized successfully")
@@ -479,6 +490,8 @@ class PyMonitoring:
             return
         if self.call_tracker is None:
             return
+        if self.performance:
+            t1 = perf_counter()
 
         current_frame = inspect.currentframe()
         if current_frame is None or current_frame.f_back is None:
@@ -656,6 +669,11 @@ class PyMonitoring:
             logger.error(traceback.format_exc())
             self.session.rollback()
 
+        if self.performance:
+            t2 = perf_counter()
+            elapsed = t2 - t1
+            self.performance_data["function_starts"].append((func_name, elapsed))
+
 
     def monitor_callback_function_return(self, code: types.CodeType, offset, return_value):
         # Check if recording is enabled
@@ -665,6 +683,9 @@ class PyMonitoring:
 
         if self.call_tracker is None or not self.call_stack:
             return
+
+        if self.performance:
+            t1 = perf_counter()
 
         collected_return_metadata = {}
         try:
@@ -732,6 +753,11 @@ class PyMonitoring:
             logger.error(f"Error capturing function return: {e}")
             logger.error(traceback.format_exc())
             self.session.rollback()
+
+        if self.performance:
+            t2 = perf_counter()
+            elapsed = t2 - t1
+            self.performance_data["function_returns"].append((code.co_name, elapsed))
 
     def _get_accessed_global_names(self, code: types.CodeType, processed_functions=None):
         """Extract global names accessed by bytecode (static analysis, cached)"""
@@ -856,6 +882,9 @@ class PyMonitoring:
 
         if self.call_tracker is None:
             return
+        
+        if self.performance:
+            t1 = perf_counter()
 
         current_frame = inspect.currentframe()
         if current_frame is None or current_frame.f_back is None:
@@ -940,6 +969,10 @@ class PyMonitoring:
             logger.error(f"Error in line monitoring callback: {e}")
             logger.error(traceback.format_exc())
 
+        if self.performance:
+            t2 = perf_counter()
+            elapsed = t2 - t1
+            self.performance_data["line_events"].append((code.co_name, line_number, elapsed))
 
 def pymonitor(mode="function", ignore=None, start_hooks=None, return_hooks=None, track=None, lines=None, use_tag_line=False):
     """
