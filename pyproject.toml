@@ -21,6 +21,7 @@ dependencies = [
     "bytecode>=0.16.2",
     "watchdog>=6.0.0",
     "pandas>=2.3.1",
+    "networkx>=3.5",
     "sqlalchemy>=2.0.0",
     "tqdm>=4.67.1"
 ]
@@ -45,7 +46,6 @@ chlorophyll = { git = "https://github.com/jbdoderlein/chlorophyll" }
 
 game = [
     "pygame>=2.6.1",
-    "networkx>=3.5",
     "chlorophyll",
 ]
 visualization = [
