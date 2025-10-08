@@ -19,24 +19,10 @@ classifiers = [
 ]
 dependencies = [
     "bytecode>=0.16.2",
-    "chlorophyll",
-    "debugpy>=1.8.14",
-    "fastapi>=0.115.12",
-    "fastparquet>=2024.11.0",
-    "flask>=2.0.0",
-    "flask-cors>=4.0.0",
-    "ipykernel>=6.29.5",
-    "matplotlib>=3.10.3",
-    "networkx>=3.5",
-    "pandas>=2.3.1",
-    "pillow>=11.2.1",
-    "pyarrow>=20.0.0",
-    "pydevd>=3.3.0",
-    "pygame>=2.6.1",
-    "scipy>=1.16.0",
-    "sqlalchemy>=2.0.0",
-    "uvicorn>=0.34.2",
     "watchdog>=6.0.0",
+    "pandas>=2.3.1",
+    "sqlalchemy>=2.0.0",
+    "tqdm>=4.67.1"
 ]
 
 [project.scripts]
@@ -53,6 +39,34 @@ include = [
 
 [tool.uv.sources]
 chlorophyll = { git = "https://github.com/jbdoderlein/chlorophyll" }
+
+[project.optional-dependencies]
+# Optional groups to install only what you need. Example: `pip install .[game]`
+
+game = [
+    "pygame>=2.6.1",
+    "chlorophyll",
+]
+visualization = [
+    "matplotlib>=3.10.3",
+    "seaborn>=0.13.2",
+    "pillow>=11.2.1",
+    "networkx>=3.5",
+    "pyarrow>=20.0.0",
+    "fastparquet>=2024.11.0",
+    "scipy>=1.16.0",
+]
+web = [
+    "fastapi>=0.115.12",
+    "uvicorn>=0.34.2",
+    "flask>=2.0.0",
+    "flask-cors>=4.0.0",
+]
+debug = [
+    "debugpy>=1.8.14",
+    "pydevd>=3.3.0",
+]
+
 
 [tool.ruff.lint]
 extend-select = [
