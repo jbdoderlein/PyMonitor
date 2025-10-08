@@ -139,6 +139,8 @@ class PyMonitoring:
         logger.info("Starting PyMonitoring shutdown")
         if self.performance:
             with open("monitoring_performance.json", "w") as f:
+                self.performance_data["line_failed_type"] = [str(t) for t in self.performance_data["line_failed_type"]]
+                self.performance_data["function_failed_type"] = [str(t) for t in self.performance_data["function_failed_type"]]
                 json.dump(self.performance_data, f)
 
         if hasattr(self, 'session'):
