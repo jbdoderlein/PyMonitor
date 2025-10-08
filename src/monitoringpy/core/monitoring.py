@@ -2,6 +2,7 @@ import atexit
 import datetime
 import dis
 import inspect
+import json
 import linecache
 import logging
 import os
@@ -121,7 +122,13 @@ class PyMonitoring:
             self.performance_data = {
                 "function_starts": [],
                 "function_returns": [],
-                "line_events": []
+                "line_events": [],
+                "line_failed_serialization": 0,
+                "line_failed_type": set(),
+                "line_captured_locals": 0,
+                "function_failed_serialization": 0,
+                "function_failed_type": set(),
+                "function_captured_locals": 0,
             }
 
         PyMonitoring._instance = self
@@ -130,6 +137,10 @@ class PyMonitoring:
     def shutdown(self):
         """Gracefully shut down monitoring"""
         logger.info("Starting PyMonitoring shutdown")
+        if self.performance:
+            with open("monitoring_performance.json", "w") as f:
+                json.dump(self.performance_data, f)
+
         if hasattr(self, 'session'):
             try:
                 logger.info("Committing final changes and closing session")
@@ -324,6 +335,11 @@ class PyMonitoring:
             except Exception as e:
                 # Log warning but continue if we can't store a variable
                 logger.info(f"Could not store variable {name}: {e}")
+                print("==========STORE VARIABLE ERROR==========")
+                raise e
+                if self.performance:
+                    self.performance_data["function_failed_serialization"] += 1
+                    self.performance_data["function_failed_type"].add(type(value))
         return refs
 
     def _get_cached_code_definition(self, func_obj, code_name: str) -> str | None:
@@ -882,7 +898,7 @@ class PyMonitoring:
 
         if self.call_tracker is None:
             return
-        
+
         if self.performance:
             t1 = perf_counter()
 
@@ -927,8 +943,13 @@ class PyMonitoring:
                         continue
                     ref = self.call_tracker.object_manager.store(value)
                     function_locals[name] = ref
+                    if self.performance:
+                        self.performance_data["line_captured_locals"] += 1
                 except Exception as e:
-                    logger.warning(f"Failed to store local variable {name}: {e}")
+                    if self.performance:
+                        self.performance_data["line_failed_serialization"] += 1
+                        self.performance_data["line_failed_type"].add(type(value))
+                    #logger.warning(f"Failed to store local variable {name}: {e}")
 
             # Capture used globals
             for name, value in self.get_used_globals(code, frame.f_globals).items():
@@ -936,7 +957,10 @@ class PyMonitoring:
                     ref = self.call_tracker.object_manager.store(value)
                     globals_used[name] = ref
                 except Exception as e:
-                    logger.warning(f"Failed to store global variable {name}: {e}")
+                    if self.performance:
+                        self.performance_data["line_failed_serialization"] += 1
+                        self.performance_data["line_failed_type"].add(type(value))
+                    #logger.warning(f"Failed to store global variable {name}: {e}")
 
             # Create a new stack snapshot
             try:
@@ -972,7 +996,7 @@ class PyMonitoring:
         if self.performance:
             t2 = perf_counter()
             elapsed = t2 - t1
-            self.performance_data["line_events"].append((code.co_name, line_number, elapsed))
+            self.performance_data["line_events"].append((code.co_name, elapsed))
 
 def pymonitor(mode="function", ignore=None, start_hooks=None, return_hooks=None, track=None, lines=None, use_tag_line=False):
     """
