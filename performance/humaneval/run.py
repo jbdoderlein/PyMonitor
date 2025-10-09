@@ -25,10 +25,10 @@ def run_single_problem(problem_index, timeout=DEFAULT_TIMEOUT):
     Returns a dictionary with performance metrics and saves result immediately.
     """
     result_file = os.path.join(results_path, f"result_{problem_index}.json")
-    
+
     # Check if already completed
     if os.path.exists(result_file):
-        with open(result_file, 'r') as f:
+        with open(result_file) as f:
 
             data = json.load(f)
             if data['reference']['timeout'] or data['monitored_line']['timeout'] or data['monitored_function']['timeout']:
@@ -37,7 +37,7 @@ def run_single_problem(problem_index, timeout=DEFAULT_TIMEOUT):
             else:
                 print(f"Problem {problem_index} already completed, skipping...")
                 return data
-    
+
     results = {
         'problem_index': problem_index,
         'reference': {},
@@ -45,35 +45,35 @@ def run_single_problem(problem_index, timeout=DEFAULT_TIMEOUT):
         'monitored_function': {},
         'timeout_limit': timeout
     }
-    
+
     reference_file = os.path.join(reference_path, f"{problem_index}.py")
     monitoring_line_file = os.path.join(monitoring_line_path, f"{problem_index}.py")
     monitoring_function_file = os.path.join(monitoring_function_path, f"{problem_index}.py")
-    
+
     # Check if files exist
     if not os.path.exists(reference_file):
         results['error'] = f"Reference file {reference_file} not found"
         save_individual_result(results, problem_index)
         return results
-    
+
     if not os.path.exists(monitoring_line_file):
         results['error'] = f"Monitoring file {monitoring_line_file} not found"
         save_individual_result(results, problem_index)
         return results
-    
+
     if not os.path.exists(monitoring_function_file):
         results['error'] = f"Monitoring file {monitoring_function_file} not found"
         save_individual_result(results, problem_index)
         return results
-    
+
     print(f"Running problem {problem_index} (timeout: {timeout}s)...")
-    
+
     # Run reference version
     try:
         results['reference'] = run_python_file(reference_file, reference_path, timeout)
     except Exception as e:
         results['reference']['error'] = str(e)
-    
+
     # Run monitored version
     try:
         results['monitored_line'] = run_python_file(monitoring_line_file, monitoring_line_path, timeout)
@@ -81,10 +81,10 @@ def run_single_problem(problem_index, timeout=DEFAULT_TIMEOUT):
     except Exception as e:
         results['monitored_line']['error'] = str(e)
         results['monitored_function']['error'] = str(e)
-    
+
     # Save individual result immediately
     save_individual_result(results, problem_index)
-    
+
     return results
 
 def run_with_timeout(args):
@@ -110,8 +110,8 @@ def get_completed_problems():
 def get_remaining_problems():
     """Get list of problems that still need to be run."""
     completed = get_completed_problems()
-    remaining = [i for i in range(164) if i not in completed]
-    return remaining
+    return [i for i in range(164) if i not in completed]
+
 
 def get_timed_out_problems():
     """Get list of problems that timed out."""
@@ -119,10 +119,10 @@ def get_timed_out_problems():
     for i in range(164):
         result_file = os.path.join(results_path, f"result_{i}.json")
         if os.path.exists(result_file):
-            with open(result_file, 'r') as f:
+            with open(result_file) as f:
                 result = json.load(f)
                 # Check if either version timed out
-                if (result.get('reference', {}).get('timeout', False) or 
+                if (result.get('reference', {}).get('timeout', False) or
                     result.get('monitored_line', {}).get('timeout', False) or
                     result.get('monitored_function', {}).get('timeout', False)):
                     timed_out.append(i)
@@ -136,7 +136,7 @@ def run_python_file(file_path, working_dir, timeout=DEFAULT_TIMEOUT):
     # Get initial resource usage
     start_resources = resource.getrusage(resource.RUSAGE_CHILDREN)
     start_time = time.time()
-    
+
     # Run the Python file with timeout
     try:
         process = subprocess.Popen(
@@ -147,7 +147,7 @@ def run_python_file(file_path, working_dir, timeout=DEFAULT_TIMEOUT):
             text=True,
             preexec_fn=os.setsid  # Create new process group for cleanup
         )
-        
+
         # Wait for process with timeout
         try:
             stdout, stderr = process.communicate(timeout=timeout)
@@ -161,15 +161,15 @@ def run_python_file(file_path, working_dir, timeout=DEFAULT_TIMEOUT):
                 os.killpg(os.getpgid(process.pid), signal.SIGKILL)
                 stdout, stderr = process.communicate()
             timed_out = True
-            
+
     except Exception as e:
         return {'error': f'Failed to run process: {str(e)}'}
-    
+
     end_time = time.time()
-    
+
     # Get final resource usage
     end_resources = resource.getrusage(resource.RUSAGE_CHILDREN)
-    
+
     # Calculate differences
     wall_time = end_time - start_time
     user_time = end_resources.ru_utime - start_resources.ru_utime
@@ -181,8 +181,13 @@ def run_python_file(file_path, working_dir, timeout=DEFAULT_TIMEOUT):
     except Exception as e:
         print("ERROR: ", e)
         internal_time = None
-    
-    
+
+    if os.path.exists(str(file_path)[:-2] + "db"):
+        db_size = os.path.getsize(str(file_path)[:-2] + "db")
+    else:
+        db_size = 0
+
+
     result = {
         'wall_time': wall_time,
         'user_time': user_time,
@@ -193,16 +198,17 @@ def run_python_file(file_path, working_dir, timeout=DEFAULT_TIMEOUT):
         'stderr': stderr,
         'timeout': timed_out,
         'timeout_limit': timeout,
-        'internal_time': internal_time
+        'internal_time': internal_time,
+        'db_size_bytes': db_size
     }
-    
+
     # Set success based on return code and timeout
     if timed_out:
         result['success'] = False
         result['timeout_message'] = f"Process timed out after {timeout} seconds"
     else:
         result['success'] = process.returncode == 0
-    
+
     return result
 
 def run_all_problems_parallel(num_processes=os.cpu_count(), timeout=DEFAULT_TIMEOUT):
@@ -210,21 +216,21 @@ def run_all_problems_parallel(num_processes=os.cpu_count(), timeout=DEFAULT_TIME
     remaining = get_remaining_problems()
     completed = get_completed_problems()
     timed_out = get_timed_out_problems()
-    
+
     print(f"Already completed: {len(completed)}/164 problems")
     print(f"Remaining to run: {len(remaining)} problems")
     print(f"Timed out: {len(timed_out)} problems")
-    
+
     if not remaining and not timed_out:
         print("All problems already completed!")
         return
     todo = list(set(remaining).union(set(timed_out)))
     # Create argument tuples for multiprocessing
     args = [(i, timeout) for i in todo]
-    
+
     with Pool(processes=num_processes) as pool:
         results = pool.map(run_with_timeout, args)
-    
+
     # Count timeouts
     timeout_count = sum(1 for r in results if r.get('reference', {}).get('timeout', False) or r.get('monitored', {}).get('timeout', False))
     if timeout_count > 0:
@@ -233,26 +239,26 @@ def run_all_problems_parallel(num_processes=os.cpu_count(), timeout=DEFAULT_TIME
 
 if __name__ == "__main__":
     import argparse
-    
+
     parser = argparse.ArgumentParser(description='Run HumanEval performance benchmark')
     parser.add_argument('--timeout', type=int, default=DEFAULT_TIMEOUT,
                         help=f'Timeout in seconds (default: {DEFAULT_TIMEOUT})')
     parser.add_argument('--processes', type=int, default=8,
                         help='Number of parallel processes (default: 8)')
-    
+
     args = parser.parse_args()
-    
+
     print("Starting HumanEval performance benchmark...")
     print(f"Reference path: {reference_path}")
     print(f"Monitoring line path: {monitoring_line_path}")
     print(f"Monitoring function path: {monitoring_function_path}")
     print(f"Results path: {results_path}")
     print(f"Timeout: {args.timeout} seconds")
-    
+
 
     print(f"\nRunning remaining problems in parallel (timeout: {args.timeout}s, processes: {args.processes})...")
     run_all_problems_parallel(num_processes=args.processes, timeout=args.timeout)
-    
-    
+
+
     print("\nRun 'python combine_results.py' to combine all results into final JSON file.")
     print("Or use 'python utils.py combine' to combine results.")
