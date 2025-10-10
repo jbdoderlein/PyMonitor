@@ -1,5 +1,5 @@
 """
-Core functionality for PyMonitor.
+Core functionality for SpaceTimePy.
 This module contains the core implementation of the monitoring system.
 """
 

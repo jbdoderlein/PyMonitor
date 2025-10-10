@@ -100,7 +100,7 @@ def run_explorer(
 
 def main():
     """Main function for the explorer command line tool."""
-    parser = argparse.ArgumentParser(description='PyMonitor Web Explorer')
+    parser = argparse.ArgumentParser(description='SpaceTimePy Web Explorer')
     parser.add_argument('db_file', help='Path to the SQLite database file')
     parser.add_argument('--mode', '-m', choices=['ui', 'api', 'both'], default='both',
                         help='Mode to run the explorer in (ui, api, or both)')

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-PyMonitor API
+SpaceTimePy API
 
-API endpoints for PyMonitor database access.
+API endpoints for SpaceTimePy database access.
 """
 
 import base64
@@ -48,8 +48,8 @@ object_manager = None
 
 # Create FastAPI app
 app = FastAPI(
-    title="PyMonitor API",
-    description="API endpoints for PyMonitor database access",
+    title="SpaceTimePy API",
+    description="API endpoints for SpaceTimePy database access",
     version="1.0.0",
 )
 
