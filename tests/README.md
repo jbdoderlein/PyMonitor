@@ -1,6 +1,6 @@
-# PyMonitor Tests
+# SpaceTimePy Tests
 
-This directory contains unit tests for the PyMonitor package.
+This directory contains unit tests for the SpaceTimePy package.
 
 ## Test Structure
 
@@ -46,7 +46,7 @@ Example:
 
 ```python
 import unittest
-from src.monitoringpy.some_module import SomeClass
+from src.spacetimepy.some_module import SomeClass
 
 class TestSomeClass(unittest.TestCase):
     def test_some_method(self):

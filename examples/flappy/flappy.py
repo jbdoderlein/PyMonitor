@@ -2,7 +2,7 @@ import base64
 import io
 import random
 import pygame
-import monitoringpy
+import spacetimepy
 
 # Initialize pygame
 pygame.init()
@@ -92,7 +92,7 @@ def save_screen(m,c,o,r):
     pygame.image.save(pygame.display.get_surface(), buffer, "PNG")
     return {"image": base64.encodebytes(buffer.getvalue()).decode('utf-8')}
 
-@monitoringpy.pymonitor(
+@spacetimepy.pymonitor(
         ignore=['SCREEN','FONT', 'clock'], 
         return_hooks=[save_screen],
         track=[get_events,random.randint])
@@ -146,9 +146,9 @@ def display_game():
 
 
 if __name__ == "__main__":
-    monitor = monitoringpy.init_monitoring(db_path="flappy.db", custom_picklers=["pygame"])
-    monitoringpy.start_session("Flappy Bird")
+    monitor = spacetimepy.init_monitoring(db_path="flappy.db", custom_picklers=["pygame"])
+    spacetimepy.start_session("Flappy Bird")
     while display_game():
         pass
-    monitoringpy.end_session()
+    spacetimepy.end_session()
     pygame.quit()

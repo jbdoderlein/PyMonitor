@@ -1,6 +1,6 @@
 import random
 import pygame
-import monitoringpy
+import spacetimepy
 
 # Initialize pygame
 pygame.init()
@@ -96,7 +96,7 @@ def fill(color, rect=None, special_flags=0):
     return SCREEN.fill(color, rect, special_flags)
 
 
-@monitoringpy.pymonitor(
+@spacetimepy.pymonitor(
         ignore=['SCREEN','FONT', 'clock'], 
         track=[get_events,random.randint, draw_rect, blit, fill])
 def display_game():
@@ -149,9 +149,9 @@ def display_game():
 
 
 if __name__ == "__main__":
-    monitor = monitoringpy.init_monitoring(db_path="flappy2.db", custom_picklers=["pygame"])
-    monitoringpy.start_session("Flappy Bird")
+    monitor = spacetimepy.init_monitoring(db_path="flappy2.db", custom_picklers=["pygame"])
+    spacetimepy.start_session("Flappy Bird")
     while display_game():
         pass
-    monitoringpy.end_session()
+    spacetimepy.end_session()
     pygame.quit()

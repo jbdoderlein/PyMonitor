@@ -1,7 +1,7 @@
 import base64
 import io
 import pygame
-import monitoringpy
+import spacetimepy
 
 # Initialize Pygame
 pygame.init()
@@ -147,7 +147,7 @@ def get_pressed_keys():
     """Get pygame key pressed states"""
     return pygame.key.get_pressed()
 
-@monitoringpy.pymonitor(
+@spacetimepy.pymonitor(
     ignore=['SCREEN', 'FONT', 'clock'], 
     return_hooks=[save_screen],
     track=[get_events, get_pressed_keys]
@@ -224,9 +224,9 @@ def display_game():
     return True
 
 if __name__ == "__main__":
-    monitor = monitoringpy.init_monitoring(db_path="mario.db", custom_picklers=["pygame"])
-    monitoringpy.start_session("Mario Platformer")
+    monitor = spacetimepy.init_monitoring(db_path="mario.db", custom_picklers=["pygame"])
+    spacetimepy.start_session("Mario Platformer")
     while display_game():
         pass
-    monitoringpy.end_session()
+    spacetimepy.end_session()
     pygame.quit() 

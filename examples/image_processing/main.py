@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Image Processing Example with PyMonitor
+Image Processing Example with SpaceTimePy
 This example demonstrates various image transformations with line-level monitoring.
 """
 
-import monitoringpy
-from monitoringpy.core.monitoring import init_monitoring
+import spacetimepy
+from spacetimepy.core.monitoring import init_monitoring
 import numpy as np
 from PIL import Image, ImageFilter, ImageEnhance, ImageOps
 import math
@@ -85,7 +85,7 @@ def apply_kaleidoscope_effect(img_array, width, height):
     
     return kaleidoscope_array
 
-@monitoringpy.pymonitor(mode="line")
+@spacetimepy.pymonitor(mode="line")
 def apply_cool_transformations(image):
     """Apply a series of cool image transformations using numpy arrays."""
     

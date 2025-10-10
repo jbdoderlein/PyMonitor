@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Example demonstrating how to delete function executions with PyMonitor.
+Example demonstrating how to delete function executions with SpaceTimePy.
 
 This example:
 1. Creates a function and monitors its execution
@@ -10,7 +10,7 @@ This example:
 """
 
 import os
-from monitoringpy import init_monitoring, pymonitor, delete_function_execution
+from spacetimepy import init_monitoring, pymonitor, delete_function_execution
 
 # Define a function to monitor
 @pymonitor
@@ -36,7 +36,7 @@ def main():
         print(f"  Call {i+1} result: {result}")
     
     # Get all function call IDs
-    from monitoringpy.core import init_db, FunctionCallTracker
+    from spacetimepy.core import init_db, FunctionCallTracker
     Session = init_db(db_path)
     session = Session()
     tracker = FunctionCallTracker(session)

@@ -4,9 +4,9 @@ import json
 import os
 import time
 
-import monitoringpy
+import spacetimepy
 
-@monitoringpy.pymonitor(mode="function")
+@spacetimepy.pymonitor(mode="function")
 def pi_decimal():
     """decimal"""
     D = decimal.Decimal
@@ -21,8 +21,8 @@ def pi_decimal():
 
 
 if __name__ == "__main__":
-    monitor = monitoringpy.init_monitoring(db_path="perf_function.db")
-    monitoringpy.start_session("Perf Function")
+    monitor = spacetimepy.init_monitoring(db_path="perf_function.db")
+    spacetimepy.start_session("Perf Function")
     times = []
     #for i in range(100):
     for prec in [9, 19]:
@@ -33,7 +33,7 @@ if __name__ == "__main__":
             t2 = time.time()
             times.append(t2 - t1)
 
-    monitoringpy.end_session()
+    spacetimepy.end_session()
     monitor.export_db()
     # Db size
     db_size = os.path.getsize("perf_function.db")

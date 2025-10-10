@@ -8,7 +8,7 @@ import seaborn as sns
 import tqdm
 import sys
 
-import monitoringpy
+import spacetimepy
 
 def name_generator(size):
     """Generate all name of given size using alphabetic lowercase letters."""
@@ -20,13 +20,13 @@ def name_generator(size):
 def custom_args_nm(*args, **kwargs):
     pass
 
-@monitoringpy.pymonitor(mode="function")
+@spacetimepy.pymonitor(mode="function")
 def custom_args_m(*args, **kwargs):
     pass
 
 
 if __name__ == "__main__":
-    monitoringpy.init_monitoring(db_path="main2.db", performance=True)
+    spacetimepy.init_monitoring(db_path="main2.db", performance=True)
     size = []
     times1 = []
     times2 = []

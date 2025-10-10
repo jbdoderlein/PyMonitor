@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-import monitoringpy
+import spacetimepy
 import time
 import json
 import os
 
-@monitoringpy.pymonitor(mode="line", use_tag_line=True)
+@spacetimepy.pymonitor(mode="line", use_tag_line=True)
 def simple_function(n):
     tmp = []
     for i in range(n): #tag
@@ -13,8 +13,8 @@ def simple_function(n):
 
 
 if __name__ == "__main__":
-    monitor = monitoringpy.init_monitoring(db_path="perf_line_tag.db")
-    monitoringpy.start_session("Perf Line Tag")
+    monitor = spacetimepy.init_monitoring(db_path="perf_line_tag.db")
+    spacetimepy.start_session("Perf Line Tag")
     times = []
     for i in range(100):
         print(f"Iteration {i}")
@@ -23,7 +23,7 @@ if __name__ == "__main__":
         t2 = time.time()
         times.append(t2 - t1)
 
-    monitoringpy.end_session()
+    spacetimepy.end_session()
     monitor.export_db()
     # Db size
     db_size = os.path.getsize("perf_line_tag.db")

@@ -2,8 +2,8 @@ import pygame
 import io
 import pickle
 import copyreg
-from monitoringpy import init_monitoring, pymonitor
-from monitoringpy.core.representation import PickleConfig
+from spacetimepy import init_monitoring, pymonitor
+from spacetimepy.core.representation import PickleConfig
 
 # Define a custom reducer for pygame events
 def reduce_pygame_event(e):
@@ -38,7 +38,7 @@ def main():
     """Main function to demonstrate custom pickling of pygame events"""
     # Create a small display
     screen = pygame.display.set_mode((320, 240))
-    pygame.display.set_caption("PyMonitor Custom Pickle Example")
+    pygame.display.set_caption("SpaceTimePy Custom Pickle Example")
     
     # Create some events to monitor
     space_event = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_SPACE, unicode=" ")
