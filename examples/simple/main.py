@@ -22,7 +22,7 @@ class MyCustomClass:
 custom_class_1 = MyCustomClass(10)
 imbricated_list = [[1,2,3], [4,5,6]]
 
-@spacetimepy.pymonitor(mode="line")
+@spacetimepy.line
 def foo1(x, cl):
     """A simple function that uses custom objects."""
     a = imbricated_list[0][0]
@@ -31,7 +31,7 @@ def foo1(x, cl):
         a += cl.rep() + i + custom_class_1.rep()
     return a
 
-@spacetimepy.pymonitor(mode="line")
+@spacetimepy.line
 def foo2(x, cl):
     """A simple function that uses custom objects."""
     a = imbricated_list[0][0]
@@ -46,10 +46,11 @@ def get_event():
     """A function that could be used for effects"""
     return {"type": "event", "data": random.randint(0, 100)}
 
-@spacetimepy.pymonitor(mode="function",
-                        return_hooks=[lambda m,c,o,r: {"custom_return_metric": r+1}],
-                        start_hooks=[lambda m,c,o: {"custom_start_metric": 1}],
-                        track=[get_event])
+@spacetimepy.function(
+    return_hooks=[lambda m,c,o,r: {"custom_return_metric": r+1}],
+    start_hooks=[lambda m,c,o: {"custom_start_metric": 1}],
+    track=[get_event]
+)
 def complex_function(x):
     """A function that uses custom objects and could be used for effects"""
     y = 1

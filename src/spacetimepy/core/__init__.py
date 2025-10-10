@@ -16,7 +16,7 @@ from .models import (
     export_db,
     init_db,
 )
-from .monitoring import PyMonitoring, init_monitoring, pymonitor
+from .monitoring import PyMonitoring, init_monitoring, pymonitor, function, line
 from .reanimation import (
     load_execution_data,
     load_snapshot,
@@ -104,6 +104,8 @@ __all__ = [
     'export_db',
     #decorators
     'pymonitor',
+    'function',
+    'line',
     'init_monitoring',
     # Core classes
     'PyMonitoring',

@@ -17,8 +17,10 @@ from .core import (
     disable_recording,
     enable_recording,
     end_session,
+    function,
     init_db,
     init_monitoring,
+    line,
     load_execution_data,
     load_snapshot,
     load_snapshot_in_frame,
@@ -74,6 +76,8 @@ __all__ = [
     'ObjectManager',
     #decorators
     'pymonitor',
+    'function',
+    'line',
     'init_monitoring',
     # Models
     'StoredObject',

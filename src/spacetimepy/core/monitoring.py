@@ -1109,6 +1109,76 @@ def pymonitor(mode="function", ignore=None, start_hooks=None, return_hooks=None,
     return _decorator
 
 
+def function(ignore=None, start_hooks=None, return_hooks=None, track=None):
+    """
+    Decorator for monitoring function execution at function level.
+    
+    This is a convenience decorator that calls pymonitor with mode="function".
+    It records function entry and exit, capturing arguments, return values, and state.
+    
+    Args:
+        ignore (list[str], optional): Variable names to ignore during monitoring. Defaults to None.
+        start_hooks (list[callable], optional): Functions called at function start to generate metadata.
+            Each function should accept (monitor, code, offset) and return a dictionary. Defaults to None.
+        return_hooks (list[callable], optional): Functions called at function return to generate metadata.
+            Each function should accept (monitor, code, offset, return_value) and return a dictionary. Defaults to None.
+        track (list[callable], optional): Additional functions to track only when they are called within
+            this monitored function context. Defaults to None.
+    
+    Returns:
+        The decorated function with function-level monitoring enabled
+    
+    Example:
+        @spacetimepy.function
+        def calculate_sum(x, y):
+            return x + y
+        
+        @spacetimepy.function(ignore=["temp_data"], track=[helper])
+        def process_data(data):
+            result = helper(data)
+            return result
+    """
+    return pymonitor(mode="function", ignore=ignore, start_hooks=start_hooks, 
+                     return_hooks=return_hooks, track=track)
+
+
+def line(ignore=None, start_hooks=None, return_hooks=None, track=None, lines=None, use_tag_line=False):
+    """
+    Decorator for monitoring function execution at line level.
+    
+    This is a convenience decorator that calls pymonitor with mode="line".
+    It records state at each line of execution, providing detailed execution traces.
+    
+    Args:
+        ignore (list[str], optional): Variable names to ignore during monitoring. Defaults to None.
+        start_hooks (list[callable], optional): Functions called at function start to generate metadata.
+            Each function should accept (monitor, code, offset) and return a dictionary. Defaults to None.
+        return_hooks (list[callable], optional): Functions called at function return to generate metadata.
+            Each function should accept (monitor, code, offset, return_value) and return a dictionary. Defaults to None.
+        track (list[callable], optional): Additional functions to track only when they are called within
+            this monitored function context. Defaults to None.
+        lines (list[int], optional): Specific line numbers to monitor within the function. Defaults to None (monitor all lines).
+        use_tag_line (bool, optional): If True, only monitor lines containing the comment "#tag". Defaults to False.
+    
+    Returns:
+        The decorated function with line-level monitoring enabled
+    
+    Example:
+        @spacetimepy.line
+        def process_items(items):
+            for item in items:
+                result = item * 2
+            return result
+        
+        @spacetimepy.line(lines=[10, 15, 20])
+        def complex_function():
+            # Only lines 10, 15, and 20 will be monitored
+            pass
+    """
+    return pymonitor(mode="line", ignore=ignore, start_hooks=start_hooks, 
+                     return_hooks=return_hooks, track=track, lines=lines, use_tag_line=use_tag_line)
+
+
 def init_monitoring(*args, **kwargs):
     """
     Initialize the monitoring system.
