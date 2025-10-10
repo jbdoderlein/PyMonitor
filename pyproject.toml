@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "spacetimepy"
-version = "0.1.0"
-description = "A Python monitoring tool for tracking function execution"
+version = "1.0.0"
+description = "SpaceTime Programming engine for Python"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
 authors = [
-    { name = "LiveProbes" }
+    { name = "Jean-Baptiste Döderlein" }
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -29,7 +29,7 @@ dependencies = [
 [project.scripts]
 web-spacetimepy = "spacetimepy.interface.web.explorer:main"
 game-explorer = "spacetimepy.interface.gameexplorer.gameexplorer:main"
-game-explorer2 = "spacetimepy.interface.gameexplorer.gameexplorer2:main"
+live-game-explorer = "spacetimepy.interface.gameexplorer.livegameexplorer:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/spacetimepy"]
