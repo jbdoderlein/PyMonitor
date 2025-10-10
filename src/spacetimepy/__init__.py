@@ -11,7 +11,8 @@ from .core import (
     MonitoringSession,
     ObjectIdentity,
     ObjectManager,
-    PyMonitoring,
+    PyMonitoring,  # Backward compatibility alias
+    SpaceTimeMonitor,
     StackSnapshot,
     StoredObject,
     disable_recording,
@@ -70,7 +71,8 @@ __version__ = '0.1.0'
 __all__ = [
     # Core functionality
     'init_db',
-    'PyMonitoring',
+    'SpaceTimeMonitor',
+    'PyMonitoring',  # Backward compatibility alias
     'FunctionCallRepository',
     'CodeManager',
     'ObjectManager',

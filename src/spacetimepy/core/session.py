@@ -1,11 +1,11 @@
 """
-Session management for PyMonitoring.
+Session management for SpaceTimeMonitor.
 This module provides functions for creating and managing monitoring sessions.
 """
 
 from typing import Any, cast
 
-from .monitoring import PyMonitoring
+from .monitoring import SpaceTimeMonitor
 
 
 def start_session(name: str | None = None, description: str | None = None, metadata: dict[str, Any] | None = None) -> int | None:
@@ -19,7 +19,7 @@ def start_session(name: str | None = None, description: str | None = None, metad
     Returns:
         The session ID of the new session or None if session creation failed
     """
-    monitor = PyMonitoring.get_instance()
+    monitor = SpaceTimeMonitor.get_instance()
     if monitor is None:
         print("ERROR: Monitoring is not initialized. Call init_monitoring() first.")
         return None
@@ -36,7 +36,7 @@ def end_session() -> int | None:
     Returns:
         The session ID of the completed session or None if no session was active
     """
-    monitor = PyMonitoring.get_instance()
+    monitor = SpaceTimeMonitor.get_instance()
     if monitor is None:
         print("ERROR: Monitoring is not initialized.")
         return None

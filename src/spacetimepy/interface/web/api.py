@@ -30,7 +30,7 @@ from spacetimepy.core import (
     FunctionCallRepository,
     MonitoringSession,
     ObjectManager,
-    PyMonitoring,
+    SpaceTimeMonitor,
     StackSnapshot,
     StoredObject,
     init_db,
@@ -1400,11 +1400,11 @@ def get_code_content(stack_recording_data):
         return code_info.get('content', '')
     return str(code_info)
 
-def initialize_from_monitor(monitor: PyMonitoring):
-    """Initialize the API from an existing PyMonitoring instance
+def initialize_from_monitor(monitor: SpaceTimeMonitor):
+    """Initialize the API from an existing SpaceTimeMonitor instance
 
     Args:
-        monitor: PyMonitoring instance with an active session
+        monitor: SpaceTimeMonitor instance with an active session
     """
     global session, call_tracker, db_path, object_manager
 
@@ -1417,7 +1417,7 @@ def initialize_from_monitor(monitor: PyMonitoring):
     object_manager = monitor.object_manager
     db_path = monitor.db_path
 
-    logger.info(f"API initialized from PyMonitoring instance with database: {db_path}")
+    logger.info(f"API initialized from SpaceTimeMonitor instance with database: {db_path}")
     return session
 
 def initialize_db(db_file: str):
@@ -1505,11 +1505,11 @@ def run_api(db_file: str, host: str = '127.0.0.1', port: int = 8000):
         # Clean up database connections on exit
         close_db()
 
-def start_api_from_monitor(monitor: PyMonitoring, port: int = 8000, host: str = '127.0.0.1'):
-    """Start the API server in a background thread from an existing PyMonitoring instance
+def start_api_from_monitor(monitor: SpaceTimeMonitor, port: int = 8000, host: str = '127.0.0.1'):
+    """Start the API server in a background thread from an existing SpaceTimeMonitor instance
 
     Args:
-        monitor: PyMonitoring instance with an active session
+        monitor: SpaceTimeMonitor instance with an active session
         port: Port to run the server on (default: 8000)
         host: Host to run the server on (default: '127.0.0.1')
 

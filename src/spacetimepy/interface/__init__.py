@@ -70,7 +70,7 @@ def start_api(monitor, port: int):
     spacetimepy.start_api(monitor, 3456)
 
     Args:
-        monitor: PyMonitoring instance (as returned by init_monitoring)
+        monitor: SpaceTimeMonitor instance (as returned by init_monitoring)
         port: Port number to run the API server on
 
     Returns:

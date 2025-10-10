@@ -22,18 +22,18 @@ logger = logging.getLogger(__name__)
 
 MONITOR_TOOL_ID = sys.monitoring.PROFILER_ID
 
-class PyMonitoring:
+class SpaceTimeMonitor:
     _instance = None
 
     _monitored_functions = {}
     _tracked_functions = {}
 
     @classmethod
-    def get_instance(cls) -> 'PyMonitoring | None':
-        """Get the current PyMonitoring instance.
+    def get_instance(cls) -> 'SpaceTimeMonitor | None':
+        """Get the current SpaceTimeMonitor instance.
 
         Returns:
-            The current PyMonitoring instance or None if not initialized
+            The current SpaceTimeMonitor instance or None if not initialized
         """
         return cls._instance
 
@@ -131,12 +131,12 @@ class PyMonitoring:
                 "function_captured_locals": 0,
             }
 
-        PyMonitoring._instance = self
+        SpaceTimeMonitor._instance = self
         logger.info("Monitoring initialized successfully")
 
     def shutdown(self):
         """Gracefully shut down monitoring"""
-        logger.info("Starting PyMonitoring shutdown")
+        logger.info("Starting SpaceTimeMonitor shutdown")
         if self.performance:
             with open("monitoring_performance.json", "w") as f:
                 self.performance_data["line_failed_type"] = [str(t) for t in self.performance_data["line_failed_type"]]
@@ -154,7 +154,7 @@ class PyMonitoring:
             except Exception as e:
                 logger.error(f"Error during monitoring shutdown: {e}")
                 logger.error(traceback.format_exc())
-        logger.info("PyMonitoring shutdown completed")
+        logger.info("SpaceTimeMonitor shutdown completed")
 
     def disable_recording(self):
         """Temporarily disable recording of function calls and line execution.
@@ -525,8 +525,8 @@ class PyMonitoring:
         tracking_function_name = None
 
         # Check direct attribute on function object
-        if func_obj and func_name in PyMonitoring._tracked_functions:
-            tracking_function_name = PyMonitoring._tracked_functions[func_name]["parent_tracking_function"]
+        if func_obj and func_name in SpaceTimeMonitor._tracked_functions:
+            tracking_function_name = SpaceTimeMonitor._tracked_functions[func_name]["parent_tracking_function"]
 
         # If we found tracking information, verify it's in our call stack
         if tracking_function_name:
@@ -554,15 +554,15 @@ class PyMonitoring:
         globals_used = self.get_used_globals(code, frame.f_globals)
         # Get ignored variables from the function object itself
         ignored_variables = []
-        if func_obj and func_name in PyMonitoring._monitored_functions:
-            ignored_variables = PyMonitoring._monitored_functions[func_name]["ignore"] or [] # Ensure it's a list
+        if func_obj and func_name in SpaceTimeMonitor._monitored_functions:
+            ignored_variables = SpaceTimeMonitor._monitored_functions[func_name]["ignore"] or [] # Ensure it's a list
 
         # Get hooks from the function object
         start_hooks = []
         if func_obj:
             # Safely get start_hooks, handling case where function isn't registered
-            if func_name in PyMonitoring._monitored_functions:
-                start_hooks = PyMonitoring._monitored_functions[func_name]["start_hooks"] or []
+            if func_name in SpaceTimeMonitor._monitored_functions:
+                start_hooks = SpaceTimeMonitor._monitored_functions[func_name]["start_hooks"] or []
             else:
                 # Function not explicitly registered for monitoring, use empty hooks
                 logger.debug(f"Function '{func_name}' not found in _monitored_functions, using empty start_hooks")
@@ -718,8 +718,8 @@ class PyMonitoring:
             return_hooks = []
             if func_obj:
                 # Safely get return_hooks, handling case where function isn't registered
-                if code.co_name in PyMonitoring._monitored_functions:
-                    return_hooks = PyMonitoring._monitored_functions[code.co_name]["return_hooks"] or []
+                if code.co_name in SpaceTimeMonitor._monitored_functions:
+                    return_hooks = SpaceTimeMonitor._monitored_functions[code.co_name]["return_hooks"] or []
                 else:
                     # Function not explicitly registered for monitoring, use empty hooks
                     logger.debug(f"Function '{code.co_name}' not found in _monitored_functions, using empty return_hooks")
@@ -909,17 +909,17 @@ class PyMonitoring:
             return
 
         if (
-            code.co_name in PyMonitoring._monitored_functions and
-            "lines" in PyMonitoring._monitored_functions[code.co_name] and
-            PyMonitoring._monitored_functions[code.co_name]["lines"] is not None and
-            line_number not in PyMonitoring._monitored_functions[code.co_name]["lines"]
+            code.co_name in SpaceTimeMonitor._monitored_functions and
+            "lines" in SpaceTimeMonitor._monitored_functions[code.co_name] and
+            SpaceTimeMonitor._monitored_functions[code.co_name]["lines"] is not None and
+            line_number not in SpaceTimeMonitor._monitored_functions[code.co_name]["lines"]
         ):
             return
 
         if (
-            code.co_name in PyMonitoring._monitored_functions and
-            "use_tag_line" in PyMonitoring._monitored_functions[code.co_name] and
-            PyMonitoring._monitored_functions[code.co_name]["use_tag_line"] and
+            code.co_name in SpaceTimeMonitor._monitored_functions and
+            "use_tag_line" in SpaceTimeMonitor._monitored_functions[code.co_name] and
+            SpaceTimeMonitor._monitored_functions[code.co_name]["use_tag_line"] and
             "#tag" not in linecache.getline(code.co_filename, line_number)
         ):
             return
@@ -1064,7 +1064,7 @@ def pymonitor(mode="function", ignore=None, start_hooks=None, return_hooks=None,
         sys.monitoring.set_local_events(MONITOR_TOOL_ID, func.__code__, events)
 
         # Store metadata on the function object
-        PyMonitoring._monitored_functions[func.__name__] = {
+        SpaceTimeMonitor._monitored_functions[func.__name__] = {
             "ignore": ignore,
             "start_hooks": start_hooks,
             "return_hooks": return_hooks,
@@ -1078,12 +1078,12 @@ def pymonitor(mode="function", ignore=None, start_hooks=None, return_hooks=None,
             if callable(tracked_func):
                 # Mark the tracked function with the parent that's tracking it
 
-                PyMonitoring._tracked_functions[tracked_func.__name__] = {
+                SpaceTimeMonitor._tracked_functions[tracked_func.__name__] = {
                     "parent_tracking_function": func.__name__
                 }
 
-                if tracked_func.__name__ not in PyMonitoring._monitored_functions:
-                    PyMonitoring._monitored_functions[tracked_func.__name__] = {
+                if tracked_func.__name__ not in SpaceTimeMonitor._monitored_functions:
+                    SpaceTimeMonitor._monitored_functions[tracked_func.__name__] = {
                         "ignore": [],
                         "start_hooks": [],
                         "return_hooks": [],
@@ -1193,10 +1193,10 @@ def init_monitoring(*args, **kwargs):
             These will be loaded from the spacetimepy/picklers directory. Defaults to None.
 
     Returns:
-        PyMonitoring: The monitoring instance
+        SpaceTimeMonitor: The monitoring instance
     """
     # Add debug logging
-    logger.info("Initializing PyMonitoring system")
+    logger.info("Initializing SpaceTimeMonitor system")
 
     # If custom_picklers is specified but pickle_config is not,
     # create a new pickle_config with the custom picklers
@@ -1208,13 +1208,13 @@ def init_monitoring(*args, **kwargs):
         kwargs['pickle_config'].load_custom_picklers(custom_picklers)
 
 
-    return PyMonitoring(*args, **kwargs)
+    return SpaceTimeMonitor(*args, **kwargs)
 
 
 
 def _cleanup_monitoring():
-    if PyMonitoring._instance is not None:
-        PyMonitoring._instance.shutdown()
+    if SpaceTimeMonitor._instance is not None:
+        SpaceTimeMonitor._instance.shutdown()
 
 atexit.register(_cleanup_monitoring)
 

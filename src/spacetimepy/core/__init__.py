@@ -16,7 +16,10 @@ from .models import (
     export_db,
     init_db,
 )
-from .monitoring import PyMonitoring, init_monitoring, pymonitor, function, line
+from .monitoring import SpaceTimeMonitor, init_monitoring, pymonitor, function, line
+
+# Backward compatibility alias
+PyMonitoring = SpaceTimeMonitor
 from .reanimation import (
     load_execution_data,
     load_snapshot,
@@ -33,7 +36,7 @@ from .trace import TraceExporter
 # Recording control helper functions
 def disable_recording():
     """Temporarily disable recording of function calls and line execution."""
-    monitor = PyMonitoring.get_instance()
+    monitor = SpaceTimeMonitor.get_instance()
     if monitor is not None:
         monitor.disable_recording()
     else:
@@ -41,7 +44,7 @@ def disable_recording():
 
 def enable_recording():
     """Re-enable recording of function calls and line execution."""
-    monitor = PyMonitoring.get_instance()
+    monitor = SpaceTimeMonitor.get_instance()
     if monitor is not None:
         monitor.enable_recording()
     else:
@@ -77,7 +80,7 @@ def recording_context(enabled=False):
             self.previous_state = None
 
         def __enter__(self):
-            monitor = PyMonitoring.get_instance()
+            monitor = SpaceTimeMonitor.get_instance()
             if monitor is not None:
                 self.previous_state = monitor.is_recording_enabled
                 if self.enabled:
@@ -87,7 +90,7 @@ def recording_context(enabled=False):
             return self
 
         def __exit__(self, exc_type, exc_val, exc_tb):
-            monitor = PyMonitoring.get_instance()
+            monitor = SpaceTimeMonitor.get_instance()
             if monitor is not None and self.previous_state is not None:
                 if self.previous_state:
                     monitor.enable_recording()
@@ -108,7 +111,8 @@ __all__ = [
     'line',
     'init_monitoring',
     # Core classes
-    'PyMonitoring',
+    'SpaceTimeMonitor',
+    'PyMonitoring',  # Backward compatibility alias
     'FunctionCallRepository',
     'CodeManager',
     'ObjectManager',

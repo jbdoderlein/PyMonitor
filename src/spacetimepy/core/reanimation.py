@@ -19,7 +19,7 @@ from typing import Any
 from . import models
 from .function_call import FunctionCallRepository
 from .models import init_db
-from .monitoring import PyMonitoring
+from .monitoring import SpaceTimeMonitor
 from .representation import ObjectManager
 
 # Configure logging
@@ -160,7 +160,7 @@ def execute_function_call(
     """
     with get_db_session(db_path_or_session) as session:
         # Get the monitor instance to control recording
-        monitor_instance = PyMonitoring.get_instance()
+        monitor_instance = SpaceTimeMonitor.get_instance()
         original_recording_state = None
 
         try:
@@ -493,7 +493,7 @@ def replay_session_sequence(
 
     Loads the state (code, globals) once at the start, then executes the
     original function call sequence, loading only locals for each subsequent call.
-    The new execution can optionally be recorded by the active PyMonitoring instance.
+    The new execution can optionally be recorded by the active SpaceTimeMonitor instance.
 
     Args:
         starting_function_id: The integer ID of the function execution within the
@@ -509,12 +509,12 @@ def replay_session_sequence(
 
     Raises:
         ValueError: If IDs not found, function/module fails to load, etc.
-        RuntimeError: If PyMonitoring instance is not available and monitoring is enabled.
+        RuntimeError: If SpaceTimeMonitor instance is not available and monitoring is enabled.
     """
-    monitor_instance = PyMonitoring.get_instance()
+    monitor_instance = SpaceTimeMonitor.get_instance()
     if enable_monitoring and (not monitor_instance or not monitor_instance.session):
         raise RuntimeError(
-            "PyMonitoring is not initialized or has no active session. Cannot replay with monitoring enabled."
+            "SpaceTimeMonitor is not initialized or has no active session. Cannot replay with monitoring enabled."
         )
 
     if enable_monitoring and monitor_instance:
