@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Basic example demonstrating PyMonitor.
+Basic example demonstrating SpaceTimePy.
 """
-import monitoringpy
+import spacetimepy
 
 
-@monitoringpy.pymonitor(mode="line")
+@spacetimepy.pymonitor(mode="line")
 def binary_search(arr, target):
     left, right = 0, len(arr) - 1
     while left <= right:
@@ -20,8 +20,8 @@ def binary_search(arr, target):
 
 if __name__ == "__main__":
     # Initialize monitoring
-    monitoringpy.init_monitoring(db_path="main.db")
-    with monitoringpy.session_context(name="main"):
+    spacetimepy.init_monitoring(db_path="main.db")
+    with spacetimepy.session_context(name="main"):
         binary_search([1, 2, 3, 4, 5], 3)
         binary_search([1, 2, 3, 4, 5], 6)
         binary_search([1, 2, 3, 4, 5], 0)

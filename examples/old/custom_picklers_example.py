@@ -1,12 +1,12 @@
 """
-Example demonstrating the use of custom picklers with PyMonitor.
+Example demonstrating the use of custom picklers with SpaceTimePy.
 
-This example shows how to use PyMonitor with custom picklers for Pygame objects.
+This example shows how to use SpaceTimePy with custom picklers for Pygame objects.
 """
 
 import pygame
 import random
-from monitoringpy.core import init_monitoring, pymonitor
+from spacetimepy.core import init_monitoring, pymonitor
 
 # Initialize Pygame
 pygame.init()
@@ -34,7 +34,7 @@ def game_loop():
     """Main game loop."""
     # Create a window
     screen = pygame.display.set_mode((800, 600))
-    pygame.display.set_caption("PyMonitor Pygame Example")
+    pygame.display.set_caption("SpaceTimePy Pygame Example")
     
     # Create background
     background = pygame.Surface(screen.get_size())
@@ -106,5 +106,5 @@ if __name__ == "__main__":
     
     # Generate a report
     print("\nTo view the monitoring results, run:")
-    print("from monitoringpy.interface.web import app")
+    print("from spacetimepy.interface.web import app")
     print("app.run()") 

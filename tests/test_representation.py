@@ -14,8 +14,8 @@ from sqlalchemy.exc import SQLAlchemyError
 # Add the parent directory to the path so we can import the package
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from monitoringpy.core.models import Base, init_db, StoredObject, ObjectIdentity
-from monitoringpy.core.representation import ObjectManager, ObjectType, Primitive, List, DictObject, CustomClass
+from spacetimepy.core.models import Base, init_db, StoredObject, ObjectIdentity
+from spacetimepy.core.representation import ObjectManager, ObjectType, Primitive, List, DictObject, CustomClass
 
 class TestClass:
     def __init__(self, value):

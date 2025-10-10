@@ -1,4 +1,4 @@
-import monitoringpy
+import spacetimepy
 import tkinter as tk
 from typing import List, Optional, Any, Dict, Callable
 from sqlalchemy.orm import Session as SQLASession
@@ -11,12 +11,12 @@ FUNCTION_NAME = "play_game"
 # 2. Data Retrieval Functions
 def get_branch_roots(session: SQLASession) -> List[int]:
     roots = []
-    main_session = session.query(monitoringpy.MonitoringSession).first()
+    main_session = session.query(spacetimepy.MonitoringSession).first()
     if main_session and main_session.entry_point_call_id:
         roots.append(main_session.entry_point_call_id)
-    branch_starts = session.query(monitoringpy.FunctionCall).\
-        filter(monitoringpy.FunctionCall.parent_call_id != None).\
-        order_by(monitoringpy.FunctionCall.start_time).all()
+    branch_starts = session.query(spacetimepy.FunctionCall).\
+        filter(spacetimepy.FunctionCall.parent_call_id != None).\
+        order_by(spacetimepy.FunctionCall.start_time).all()
     for call in branch_starts:
         if call.id is not None and call.id not in roots:
              roots.append(call.id)
@@ -29,7 +29,7 @@ def get_branch_sequence(session: SQLASession, root_call_id: int) -> List[int]:
     sequence = []
     current_call_id: Optional[int] = root_call_id
     while current_call_id is not None:
-        call = session.get(monitoringpy.FunctionCall, current_call_id)
+        call = session.get(spacetimepy.FunctionCall, current_call_id)
         if call:
             sequence.append(call.id)
             # Ensure we handle None next_call_id gracefully
@@ -49,7 +49,7 @@ def get_branch_depth(session: SQLASession, call_id: int, max_depth=10) -> int:
         if current_id is None or current_id in visited:
             break # Reached root or cycle detected
         visited.add(current_id)
-        call = session.get(monitoringpy.FunctionCall, current_id)
+        call = session.get(spacetimepy.FunctionCall, current_id)
         if call and call.parent_call_id is not None:
             current_id = typing.cast(typing.Optional[int], call.parent_call_id)
             depth += 1
@@ -61,24 +61,24 @@ def get_branch_depth(session: SQLASession, call_id: int, max_depth=10) -> int:
 
 # Initialize a live monitor instance for recording replays
 # Use the main DB so replay branches are stored alongside original trace
-live_monitor = monitoringpy.init_monitoring(db_path=DB)
+live_monitor = spacetimepy.init_monitoring(db_path=DB)
 
 # Set logging level to INFO to see more details
 logging.getLogger().setLevel(logging.ERROR)
 
 # Start a session for this live monitor; needed for replay_session_from
 # We don't necessarily need the ID unless we explicitly manage this session later
-live_monitor_session_id = monitoringpy.start_session("Replay Recording Session")
+live_monitor_session_id = spacetimepy.start_session("Replay Recording Session")
 if live_monitor_session_id is None:
     print("WARNING: Failed to start live monitoring session for replay recording.")
     # Handle this case if needed, maybe disable replay button?
 
 # Load the main database session for reading
-Session = monitoringpy.init_db(DB)
+Session = spacetimepy.init_db(DB)
 session = Session()
-object_manager = monitoringpy.ObjectManager(session)
-call_tracker = monitoringpy.FunctionCallTracker(session)
-current_session = session.query(monitoringpy.MonitoringSession).first()
+object_manager = spacetimepy.ObjectManager(session)
+call_tracker = spacetimepy.FunctionCallTracker(session)
+current_session = session.query(spacetimepy.MonitoringSession).first()
 assert current_session is not None
 
 # Keep track of the root ID of the branch currently being viewed/controlled
@@ -166,7 +166,7 @@ def update_active_branch_slider(selected_call_id_str: str, branch_root_id: int):
     set_active_branch(branch_root_id) # Mark this branch as active
     unchecked_globals = get_unchecked_globals()
     # Ensure monitor recording is off for simple reanimation
-    monitoringpy.reanimate_function(
+    spacetimepy.reanimate_function(
         selected_call_id_str, DB, ignore_globals=unchecked_globals
     )
 
@@ -269,7 +269,7 @@ def reload_current():
     slider = branch_widgets[active_branch_root_id]['slider']
     current_value = slider.get()
     unchecked_globals = get_unchecked_globals()
-    monitoringpy.reanimate_function(
+    spacetimepy.reanimate_function(
         str(int(current_value)), DB, ignore_globals=unchecked_globals
     )
 
@@ -301,7 +301,7 @@ def refresh_branch_ui():
             # Pack the frame first, then pack items inside it
             branch_frame.pack(fill=tk.X, pady=2, padx=(indent_amount, 0))
 
-            parent_call = session.get(monitoringpy.FunctionCall, root_id)
+            parent_call = session.get(spacetimepy.FunctionCall, root_id)
             label_text = f"Branch {root_id}"
             if parent_call and parent_call.parent_call_id:
                  label_text += f" (from Call {parent_call.parent_call_id})"
@@ -369,7 +369,7 @@ def replay_from_start():
         return
     print(f"Replaying from start of branch: {active_branch_root_id}")
     unchecked_globals = get_unchecked_globals()
-    new_branch_start_id = monitoringpy.replay_session_from(
+    new_branch_start_id = spacetimepy.replay_session_from(
         int(active_branch_root_id), DB, ignore_globals=unchecked_globals
     )
     if new_branch_start_id:
@@ -392,7 +392,7 @@ def replay_from_here():
     print(f"Replaying from selected call: {current_value}")
     unchecked_globals = get_unchecked_globals()
     # The selected value IS the starting function ID for the new branch
-    new_branch_start_id = monitoringpy.replay_session_from(
+    new_branch_start_id = spacetimepy.replay_session_from(
         int(current_value), DB, ignore_globals=unchecked_globals
     )
     if new_branch_start_id:

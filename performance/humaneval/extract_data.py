@@ -72,7 +72,7 @@ for index, row in df.iterrows():
 
     with open(os.path.join(monitoring_line_path, f"{index}.py"), "w") as f:
         f.write("import time\n")
-        f.write(f"""from monitoringpy import pymonitor,init_monitoring
+        f.write(f"""from spacetimepy import pymonitor,init_monitoring
 init_monitoring(db_path="{index}.db")
 """)
         f.write(row["prompt"])
@@ -82,7 +82,7 @@ init_monitoring(db_path="{index}.db")
 
     with open(os.path.join(monitoring_function_path, f"{index}.py"), "w") as f:
         f.write("import time\n")
-        f.write(f"""from monitoringpy import pymonitor,init_monitoring
+        f.write(f"""from spacetimepy import pymonitor,init_monitoring
 init_monitoring(db_path="{index}.db")
 """)
         f.write(row["prompt"])

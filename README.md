@@ -1,3 +1,3 @@
-# Pymonitor
+# SpaceTimePy
 
 TODO

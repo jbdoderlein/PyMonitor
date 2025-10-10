@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Demonstration of PyMonitor session replay capabilities.
+Demonstration of SpaceTimePy session replay capabilities.
 
 This script demonstrates:
 1. Replaying foo1 with the same context
@@ -9,23 +9,23 @@ This script demonstrates:
 4. Replaying from the middle of a complex function sequence
 """
 
-import monitoringpy
-from monitoringpy.core.reanimation import execute_function_call, replay_session_sequence
+import spacetimepy
+from spacetimepy.core.reanimation import execute_function_call, replay_session_sequence
 
 def demonstrate_replay_capabilities():
     """Demonstrate various replay capabilities."""
     
     print("=" * 60)
-    print("PyMonitor Session Replay Demonstration")
+    print("SpaceTimePy Session Replay Demonstration")
     print("=" * 60)
     
     # Initialize monitoring for new session
-    monitor = monitoringpy.init_monitoring(db_path="main.db")
+    monitor = spacetimepy.init_monitoring(db_path="main.db")
     
     # Get some function call IDs from the database to replay
     # We'll query the database to find the calls we want to replay
-    with monitoringpy.core.reanimation.get_db_session("main.db") as session:
-        from monitoringpy.core.models import FunctionCall, MonitoringSession
+    with spacetimepy.core.reanimation.get_db_session("main.db") as session:
+        from spacetimepy.core.models import FunctionCall, MonitoringSession
         
         # Find the main session
         main_session = session.query(MonitoringSession).filter_by(name="main").first()
@@ -149,7 +149,7 @@ def demonstrate_replay_capabilities():
             enable_monitoring=True
         )
         # get the last call in the session
-        with monitoringpy.core.reanimation.get_db_session("main.db") as session:
+        with spacetimepy.core.reanimation.get_db_session("main.db") as session:
             last_call = session.query(FunctionCall).filter_by(session_id=replay_session_id).order_by(FunctionCall.order_in_session.desc()).first()
             assert isinstance(last_call, FunctionCall) and last_call.call_metadata is not None
             assert "custom_return_metric" in last_call.call_metadata
@@ -173,7 +173,7 @@ def demonstrate_replay_capabilities():
     
     try:
         # Show the complete sequence structure
-        with monitoringpy.core.reanimation.get_db_session("main.db") as session:
+        with spacetimepy.core.reanimation.get_db_session("main.db") as session:
             # Get all function calls in the session, ordered by execution
             all_calls = session.query(FunctionCall).filter(
                 FunctionCall.session_id == main_session.id
@@ -263,7 +263,7 @@ def demonstrate_replay_capabilities():
         print(f"✅ Complex sequence replay (with mocking) started with call ID: {result6}")
         
         # Verify that the mocked sequence produced consistent results
-        with monitoringpy.core.reanimation.get_db_session("main.db") as session:
+        with spacetimepy.core.reanimation.get_db_session("main.db") as session:
             # Get the newly created calls from this replay
             new_replay_calls = session.query(FunctionCall).filter(
                 FunctionCall.session_id == replay_session_id,
@@ -305,7 +305,7 @@ def demonstrate_replay_capabilities():
     monitor.end_session()
     
     # Show what was recorded in the replay session
-    with monitoringpy.core.reanimation.get_db_session("main.db") as session:
+    with spacetimepy.core.reanimation.get_db_session("main.db") as session:
         replay_session = session.query(MonitoringSession).filter_by(id=replay_session_id).first()
         if replay_session:
             replay_calls = session.query(FunctionCall).filter_by(session_id=replay_session_id).all()

@@ -4,10 +4,10 @@ import json
 import os
 import time
 
-import monitoringpy
+import spacetimepy
 
 
-@monitoringpy.pymonitor(mode="line")
+@spacetimepy.pymonitor(mode="line")
 def pi_decimal():
     """decimal"""
     D = decimal.Decimal
@@ -22,8 +22,8 @@ def pi_decimal():
 
 
 if __name__ == "__main__":
-    monitor = monitoringpy.init_monitoring(db_path="perf_line.db")
-    monitoringpy.start_session("Perf Line")
+    monitor = spacetimepy.init_monitoring(db_path="perf_line.db")
+    spacetimepy.start_session("Perf Line")
     times = []
     for prec in [9, 19]:
         decimal.getcontext().prec = prec
@@ -33,7 +33,7 @@ if __name__ == "__main__":
             t2 = time.time()
             times.append(t2 - t1)
 
-    monitoringpy.end_session()
+    spacetimepy.end_session()
     monitor.export_db()
     # Db size
     db_size = os.path.getsize("perf_line.db")

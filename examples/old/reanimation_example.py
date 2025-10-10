@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Example demonstrating PyMonitor's function reanimation features.
+Example demonstrating SpaceTimePy's function reanimation features.
 
 This example:
 1. Creates a function and monitors its execution
@@ -10,7 +10,7 @@ This example:
 
 import os
 import random
-from monitoringpy import init_monitoring, pymonitor, load_execution_data, reanimate_function
+from spacetimepy import init_monitoring, pymonitor, load_execution_data, reanimate_function
 
 # Define a function to monitor
 @pymonitor
@@ -54,7 +54,7 @@ def main():
     print(f"Result: {result}")
     
     # Get the function call ID (last recorded call for this function)
-    from monitoringpy.core import init_db, FunctionCallTracker
+    from spacetimepy.core import init_db, FunctionCallTracker
     Session = init_db(db_path)
     session = Session()
     tracker = FunctionCallTracker(session)

@@ -3,8 +3,8 @@ import sys
 import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from monitoringpy.core.models import Base, init_db, FunctionCall, StackSnapshot
-from monitoringpy.core.function_call import FunctionCallTracker, FunctionCallInfo, delete_function_execution
+from spacetimepy.core.models import Base, init_db, FunctionCall, StackSnapshot
+from spacetimepy.core.function_call import FunctionCallTracker, FunctionCallInfo, delete_function_execution
 
 class TestClass:
     def __init__(self, value):
