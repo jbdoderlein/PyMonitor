@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Basic example demonstrating custom object handling in PyMonitor.
+Basic example demonstrating custom object handling in SpaceTimePy.
 """
 
-import monitoringpy
+import spacetimepy
 
 class MyCustomClass:
     """A simple custom class with attributes."""
@@ -22,7 +22,7 @@ class MyCustomClass:
 gcl = MyCustomClass(10)
 ncl = [[1,2,3], [4,5,6]]
 
-@monitoringpy.pymonitor_line
+@spacetimepy.pymonitor_line
 def linear_function(x, cl):
     """A simple function that uses custom objects."""
     a = ncl[0][0]
@@ -33,7 +33,7 @@ def linear_function(x, cl):
 if __name__ == "__main__":
 
     # Initialize monitoring
-    monitor = monitoringpy.init_monitoring(db_path="basic.db", pyrapl_enabled=False)
+    monitor = spacetimepy.init_monitoring(db_path="basic.db", pyrapl_enabled=False)
     
     # Run the function with a custom object
     for i in range(2):

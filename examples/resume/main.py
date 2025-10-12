@@ -1,16 +1,16 @@
-import monitoringpy
+import spacetimepy
 
 GAME_N = 0
 
-@monitoringpy.pymonitor()
+@spacetimepy.pymonitor()
 def play_game():
     global GAME_N
     GAME_N += 1
     print(f"Playing game {GAME_N}")
 
 if __name__ == "__main__":
-    monitoringpy.init_monitoring(db_path="main.db")
-    monitoringpy.start_session("Main")
+    spacetimepy.init_monitoring(db_path="main.db")
+    spacetimepy.start_session("Main")
     for i in range(10):
         play_game()
-    monitoringpy.end_session()
+    spacetimepy.end_session()

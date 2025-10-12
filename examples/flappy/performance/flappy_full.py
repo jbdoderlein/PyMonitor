@@ -6,7 +6,7 @@ import random
 
 import pygame
 
-import monitoringpy
+import spacetimepy
 
 # Initialize pygame
 pygame.init()
@@ -92,7 +92,7 @@ def save_screen(m,c,o,r):
     pygame.image.save(pygame.display.get_surface(), buffer, "PNG")
     return {"image": base64.encodebytes(buffer.getvalue()).decode('utf-8')}
 
-@monitoringpy.pymonitor(
+@spacetimepy.pymonitor(
         ignore=['SCREEN','FONT', 'clock'], 
         return_hooks=[save_screen],
         track=[get_events,random.randint])
@@ -148,15 +148,15 @@ def display_game():
 if __name__ == "__main__":
     N_FRAMES = 1000
     t2_global = time.time()
-    monitor = monitoringpy.init_monitoring(db_path="flappy_full.db", custom_picklers=["pygame"])
+    monitor = spacetimepy.init_monitoring(db_path="flappy_full.db", custom_picklers=["pygame"])
     t3_global = time.time()
-    monitoringpy.start_session("Flappy Bird")
+    spacetimepy.start_session("Flappy Bird")
     t1 = time.time()
     for _ in range(N_FRAMES):
         display_game()
     t2 = time.time()
     print(f"Time taken: {t2 - t1} seconds, FPS: {N_FRAMES / (t2 - t1)}")
-    monitoringpy.end_session()
+    spacetimepy.end_session()
     monitor.export_db()
     pygame.quit()
     t4_global = time.time()

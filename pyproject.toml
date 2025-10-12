@@ -3,14 +3,14 @@ requires = ["hatchling", "setuptools>=65.0", "wheel"]
 build-backend = "hatchling.build"
 
 [project]
-name = "pymonitor"
-version = "0.1.0"
-description = "A Python monitoring tool for tracking function execution"
+name = "spacetimepy"
+version = "1.0.0"
+description = "SpaceTime Programming engine for Python"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
 authors = [
-    { name = "LiveProbes" }
+    { name = "Jean-Baptiste Döderlein" }
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -27,15 +27,15 @@ dependencies = [
 ]
 
 [project.scripts]
-web-pymonitor = "monitoringpy.interface.web.explorer:main"
-game-explorer = "monitoringpy.interface.gameexplorer.gameexplorer:main"
-game-explorer2 = "monitoringpy.interface.gameexplorer.gameexplorer2:main"
+web-spacetimepy = "spacetimepy.interface.web.explorer:main"
+game-explorer = "spacetimepy.interface.gameexplorer.gameexplorer:main"
+live-game-explorer = "spacetimepy.interface.gameexplorer.livegameexplorer:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/monitoringpy"]
+packages = ["src/spacetimepy"]
 include = [
-    "src/monitoringpy/codediff/download_gumtree.py",
-    "src/monitoringpy/codediff/gumtree_utils.py",
+    "src/spacetimepy/codediff/download_gumtree.py",
+    "src/spacetimepy/codediff/gumtree_utils.py",
 ] 
 
 [tool.uv.sources]

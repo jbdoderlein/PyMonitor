@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test runner script for PyMonitor.
+Test runner script for SpaceTimePy.
 This script discovers and runs all tests in the tests directory.
 """
 

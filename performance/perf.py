@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-Basic example demonstrating custom object handling in PyMonitor.
+Basic example demonstrating custom object handling in SpaceTimePy.
 """
 
-import monitoringpy
+import spacetimepy
 import random
 import time
 import matplotlib.pyplot as plt
 
-@monitoringpy.pymonitor_line
+@spacetimepy.pymonitor_line
 def linear_function_line(arr):
     for i in range(len(arr)-1):
         arr[i] = arr[i]*arr[i+1]
     return arr
 
-@monitoringpy.pymonitor
+@spacetimepy.pymonitor
 def linear_function_mnt(arr):
     for i in range(len(arr)-1):
         arr[i] = arr[i]*arr[i+1]
@@ -28,7 +28,7 @@ def linear_function(arr):
 
 if __name__ == "__main__":
     # Initialize monitoring
-    monitor = monitoringpy.init_monitoring(db_path=":memory:", pyrapl_enabled=False)
+    monitor = spacetimepy.init_monitoring(db_path=":memory:", pyrapl_enabled=False)
     times={
         "linear_function": [],
         "linear_function_mnt": [],

@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Basic example demonstrating custom object handling in PyMonitor.
+Basic example demonstrating custom object handling in SpaceTimePy.
 """
 
-import monitoringpy
+import spacetimepy
 import random
 import time
 import matplotlib.pyplot as plt
 
-@monitoringpy.pymonitor_line
+@spacetimepy.pymonitor_line
 def binary_search_line(arr, target):
     left, right = 0, len(arr) - 1
     while left <= right:
@@ -21,7 +21,7 @@ def binary_search_line(arr, target):
             right = mid - 1
     return -1
 
-@monitoringpy.pymonitor
+@spacetimepy.pymonitor
 def binary_search_fct(arr, target):
     left, right = 0, len(arr) - 1
     while left <= right:
@@ -49,7 +49,7 @@ def binary_search(arr, target):
 
 if __name__ == "__main__":
     # Initialize monitoring
-    monitor = monitoringpy.init_monitoring(db_path="basic2.db", pyrapl_enabled=False)
+    monitor = spacetimepy.init_monitoring(db_path="basic2.db", pyrapl_enabled=False)
     times={
         "binary_search_fct": [],
         "binary_search_line": [],

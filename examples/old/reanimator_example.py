@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Example script demonstrating how to use the PyMonitor reanimator functionality.
+Example script demonstrating how to use the SpaceTimePy reanimator functionality.
 This script shows how to load a monitoring database, search for function calls,
 and reanimate them. It also demonstrates the new object versioning features.
 """
@@ -14,7 +14,7 @@ from typing import Dict
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from basic import *
-from src.monitoringpy import load_pydb
+from src.spacetimepy import load_pydb
 
 def main():
     # Path to the database file

@@ -3,7 +3,7 @@ import time
 
 import pygame
 
-import monitoringpy
+import spacetimepy
 
 # Initialize pygame
 pygame.init()
@@ -84,7 +84,7 @@ def reset_game():
 def get_events():
     return pygame.event.get()
 
-@monitoringpy.pymonitor(
+@spacetimepy.pymonitor(
         ignore=['SCREEN','FONT', 'clock'],
         track=[get_events,random.randint])
 def display_game():
@@ -138,13 +138,13 @@ def display_game():
 
 if __name__ == "__main__":
     N_FRAMES = 1000
-    monitor = monitoringpy.init_monitoring(db_path="flappy_woscreen.db", custom_picklers=["pygame"])
-    monitoringpy.start_session("Flappy Bird")
+    monitor = spacetimepy.init_monitoring(db_path="flappy_woscreen.db", custom_picklers=["pygame"])
+    spacetimepy.start_session("Flappy Bird")
     t1 = time.time()
     for _ in range(N_FRAMES):
         display_game()
     t2 = time.time()
     print(f"Time taken: {t2 - t1} seconds , FPS: {N_FRAMES/(t2 - t1)}")
-    monitoringpy.end_session()
+    spacetimepy.end_session()
     monitor.export_db()
     pygame.quit()
