@@ -72,6 +72,9 @@ class SpaceTimeMonitor:
         # Performance optimization: Cache for code definitions to avoid expensive inspect operations
         self._code_definition_cache = {}  # Cache for code definition results (func_obj -> {code_def_id, mtime, module_path})
 
+        # Functions to skip one line snapshot (e.g. hotswap function trampoline skip frame)
+        self.skip_one_line_snapshot = set()
+
         # Initialize the database and managers
         try:
             # First, initialize the database and ensure tables are created
@@ -932,7 +935,9 @@ class SpaceTimeMonitor:
             if not self.call_stack:
                 return
             current_call = self.call_stack[-1]
-
+            if code.co_name in self.skip_one_line_snapshot:
+                self.skip_one_line_snapshot.remove(code.co_name)
+                return
             # Get function's locals and globals
             function_locals = {}
             globals_used = {}

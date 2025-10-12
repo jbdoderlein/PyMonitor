@@ -51,8 +51,10 @@ def hotline(f_to_patch):
         # get the line to jump
         if line_number is not None:
             f_to_patch._ahs_deroute = line_number
+            f_to_patch._skip_one_line_snapshot = False
         else:
             f_to_patch._ahs_deroute = f_to_patch._ahs_get_line_to_jump(_ahs_line)
+            f_to_patch._skip_one_line_snapshot = True
         # Optionnal : make the goto here
         t = pydevd.threadingCurrentThread()
         if t is not None:
@@ -114,19 +116,37 @@ def hotline(f_to_patch):
             # Reload the module and function from source
             line_to_jump = _ahs_function._ahs_deroute # we save here because we loose it on reload
             ahs_call_arguments : inspect.ArgInfo | None = getattr(_ahs_function, "_ahs_call_arguments", None)
+            skip_one_line_snapshot = _ahs_function._skip_one_line_snapshot
             # For spacetimepy compability
+            # Transfer monitoring event
             event_before = sys.monitoring.get_local_events(sys.monitoring.PROFILER_ID,_ahs_function.__code__)
+            # then we need to indicate to skip the call event
+            # spt = inspect.getmodule(_ahs_frame.frame).spacetimepy.SpaceTimeMonitor.get_instance()
             _ahs_function = getattr(importlib.reload(inspect.getmodule(_ahs_frame.frame)), _ahs_frame.function) # type: ignore
+            _ahs_function = hotline(_ahs_function)  # re-patch the function
             f_to_patch = _ahs_function
             if event_before != 0:
+                if event_before & sys.monitoring.events.PY_START:
+                    event_before ^= sys.monitoring.events.PY_START
+                    if skip_one_line_snapshot:
+                        try:
+                            spt = inspect.getmodule(_ahs_frame.frame).spacetimepy.SpaceTimeMonitor.get_instance()
+                            spt.skip_one_line_snapshot.add(_ahs_function.__name__)
+                        except Exception as e:
+                            print("failed skip on trampoline skip in spacetimepy because no spacetimepy found", e)
                 sys.monitoring.set_local_events(sys.monitoring.PROFILER_ID,_ahs_function.__code__,event_before)
             # From the reload version, patch bytecode for correct jump and locals
             for n in ["__pydevd_ret_val_dict"]:
                 if n in _ahs_frame.frame.f_locals:
                     del _ahs_frame.frame.f_locals[n]
+            
             _ahs_function._ahs_last_frame_locals = _ahs_frame.frame.f_locals
             _ahs_function._ahs_line_to_jump = line_to_jump
             _ahs_function._ahs_last_frame_fback = _ahs_frame.frame.f_back
+            _ahs_function._ahs_call_arguments = ahs_call_arguments
+            #_ahs_function._ahs_get_line_to_jump = _ahs_get_line_to_jump
+            """source_code = inspect.getsource(_ahs_function)
+            _ahs_function._ahs_current_frame_source_code = source_code"""
             fargs = {}
             if ahs_call_arguments:
                 args, varargs, varkw, locals_ = ahs_call_arguments
