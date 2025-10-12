@@ -113,6 +113,7 @@ def hotline(f_to_patch):
         if hasattr(_ahs_function, "_ahs_deroute"):  # The user want to reload code. Branch triggered by _ash_reload
             # Reload the module and function from source
             line_to_jump = _ahs_function._ahs_deroute # we save here because we loose it on reload
+            ahs_call_arguments : inspect.ArgInfo | None = getattr(_ahs_function, "_ahs_call_arguments", None)
             # For spacetimepy compability
             event_before = sys.monitoring.get_local_events(sys.monitoring.PROFILER_ID,_ahs_function.__code__)
             _ahs_function = getattr(importlib.reload(inspect.getmodule(_ahs_frame.frame)), _ahs_frame.function) # type: ignore
@@ -126,7 +127,20 @@ def hotline(f_to_patch):
             _ahs_function._ahs_last_frame_locals = _ahs_frame.frame.f_locals
             _ahs_function._ahs_line_to_jump = line_to_jump
             _ahs_function._ahs_last_frame_fback = _ahs_frame.frame.f_back
-            _ahs_function()
+            fargs = {}
+            if ahs_call_arguments:
+                args, varargs, varkw, locals_ = ahs_call_arguments
+                for a in args:
+                    if a in locals_:
+                        fargs[a] = locals_[a]
+                if varargs is not None and varargs in locals_:
+                    fargs[varargs] = locals_[varargs]
+                if varkw is not None and varkw in locals_:
+                    fargs[varkw] = locals_[varkw]
+            _ahs_function(**fargs)  # re-call the function to create a new frame
+        else:  # Normal function call, capture locals and f_back for future use
+            _ahs_function._ahs_call_arguments = inspect.getargvalues(_ahs_frame.frame)
+
 
     # == Bytecode Injection ==
     bt = bytecode.Bytecode.from_code(f_to_patch.__code__)
