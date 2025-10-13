@@ -728,6 +728,259 @@ def replay_session_sequence(
         read_session.close()
         logger.info("Replay function finished.")
 
+def replay_session_subsequence(
+    starting_function_id: int,
+    ending_function_id: int,
+    db_path: str,
+    ignore_globals: list[str] | None = None,
+    enable_monitoring: bool = True,
+    mock_functions: list[str] | None = None,
+) -> int | None:
+    """
+    Replays a sequence of function calls from a monitoring session.
+
+    Loads the state (code, globals) once at the start, then executes the
+    original function call sequence, loading only locals for each subsequent call.
+    The new execution can optionally be recorded by the active SpaceTimeMonitor instance.
+
+    Args:
+        starting_function_id: The integer ID of the function execution within the
+                               original session to start the replay from.
+        db_path: Path to the database file.
+        ignore_globals: Optional list of global variable names to ignore when
+                        loading the initial state.
+        enable_monitoring: Whether to enable monitoring during replay (default: True)
+        mock_functions: Optional list of function names to mock during replay
+    Returns:
+        The integer ID of the first function call recorded in the new replay
+        sequence, or None if replay fails.
+
+    Raises:
+        ValueError: If IDs not found, function/module fails to load, etc.
+        RuntimeError: If SpaceTimeMonitor instance is not available and monitoring is enabled.
+    """
+    monitor_instance = SpaceTimeMonitor.get_instance()
+    if enable_monitoring and (not monitor_instance or not monitor_instance.session):
+        raise RuntimeError(
+            "SpaceTimeMonitor is not initialized or has no active session. Cannot replay with monitoring enabled."
+        )
+
+    if enable_monitoring and monitor_instance:
+        read_session = monitor_instance.session
+    else:
+        ReadSession = init_db(db_path)
+        read_session = ReadSession()
+
+    # Cache for loaded modules during replay
+    loaded_modules_cache: dict[str, Any] = {}
+    first_replayed_call_id: int | None = None
+    # We need ObjectManager associated with the read session
+    read_obj_manager = ObjectManager(read_session)
+    # We need FunctionCallRepository associated with the read session
+    read_call_repository = FunctionCallRepository(read_session)
+
+    # Backup monitor state (optional, but good practice)
+    original_parent_id_for_next_call = None
+    original_recording_state = None
+    if monitor_instance:
+        original_parent_id_for_next_call = monitor_instance._parent_id_for_next_call
+        if not enable_monitoring:
+            original_recording_state = monitor_instance.is_recording_enabled
+            monitor_instance.is_recording_enabled = False
+
+    try:
+        # 1. Load Starting State (using read_session)
+        logger.info(f"Loading starting function call info: {starting_function_id}")
+        start_call_info = read_call_repository.get_call(str(starting_function_id))
+        if not start_call_info:
+            raise ValueError(
+                f"Function execution ID {starting_function_id} not found in db: {db_path}"
+            )
+
+        # 2. Load Starting Function Object (load/reload module ONCE)
+        logger.info(
+            f"Loading starting function and module... :{start_call_info}, {loaded_modules_cache}"
+        )
+        start_function, start_module = _load_or_reload_function_and_module(
+            start_call_info.to_dict(), loaded_modules_cache, reload_module=True
+        )
+        logger.info(
+            f"Loaded starting function: {start_function.__name__} from module {start_module.__name__}"
+        )
+
+        # 3. Load Starting Args & Globals
+        logger.info("Loading starting arguments and globals...")
+        start_args, start_kwargs = _load_execution_data_from_call_info(
+            start_call_info.to_dict(), read_obj_manager
+        )
+        current_globals = _load_globals_from_call_info(
+            start_call_info.to_dict(), read_obj_manager, ignore_globals
+        )
+        logger.info(
+            f"Loaded {len(start_args)} args, {len(start_kwargs)} kwargs, {len(current_globals)} globals."
+        )
+
+        # 4. Inject Initial Globals
+        _inject_globals(start_module, start_function, current_globals)
+
+        # 5. Mock Functions
+        if mock_functions:
+            _load_mock_functions(read_session, starting_function_id, read_obj_manager, start_module, mock_functions)
+
+        # --- Start Replay Execution ---
+
+        # 5. Execute First Call (monitor will record if enabled)
+        if enable_monitoring and monitor_instance:
+            logger.info(f"Setting parent ID for next call to: {starting_function_id}")
+            monitor_instance._parent_id_for_next_call = starting_function_id
+
+        logger.info(f"Executing first replay call: {start_function.__name__}...")
+        start_function(*start_args, **start_kwargs)  # Execution happens here
+
+        # Check if the call was actually recorded by the monitor (only if monitoring enabled)
+        if enable_monitoring and monitor_instance:
+            first_replayed_call_id = monitor_instance._current_session_last_call_id
+            if monitor_instance._parent_id_for_next_call is not None:
+                # This means the flag wasn't reset by monitor_callback_function_start,
+                # likely because the function wasn't monitored or capture_call failed.
+                monitor_instance._parent_id_for_next_call = None  # Reset anyway
+                raise RuntimeError(
+                    f"First function call '{start_function.__name__}' was executed but not recorded by the monitor. Aborting replay."
+                )
+
+            logger.info(f"First replayed call recorded with ID: {first_replayed_call_id}")
+
+        # 6. Loop through subsequent original calls - use session ordering instead of next_call_id
+        # Note: UI filtering is separate from replay execution
+        original_current_call_id: int | None = starting_function_id
+        while original_current_call_id is not None:
+            # Get the current call from the *original* sequence (using read_session)
+            original_call = read_session.get(
+                models.FunctionCall, original_current_call_id
+            )
+            if not original_call:
+                logger.warning(
+                    f"Warning: Could not find original call {original_current_call_id} in read session."
+                )
+                break
+
+            # Find the next call in the session sequence using order_in_session
+            original_next_call_id = None
+            if original_call.session_id is not None and original_call.order_in_session is not None:
+                # Get the next call in the same session with the next order number
+                next_call = read_session.query(models.FunctionCall).filter(
+                    models.FunctionCall.session_id == original_call.session_id,
+                    models.FunctionCall.function == original_call.function,
+                    models.FunctionCall.order_in_session > original_call.order_in_session
+                ).first()
+
+                if next_call:
+                    original_next_call_id = next_call.id
+
+            if not original_next_call_id:
+                logger.info("Reached end of original sequence.")
+                break  # End of original chain
+
+            if original_next_call_id == ending_function_id:
+                logger.info(f"Reached requested ending_function_id {ending_function_id}; stopping replay.")
+                break
+            #print("next is", original_next_call_id, ending_function_id)
+            logger.info(f"Processing next original call ID: {original_next_call_id}")
+
+            # Fetch details of the next original call
+            next_call_info = read_call_repository.get_call_with_code(str(original_next_call_id))
+            if not next_call_info:
+                logger.warning(
+                    f"Warning: Could not get call info for original call {original_next_call_id}"
+                )
+                original_current_call_id = original_next_call_id  # Skip to next potential
+                continue
+
+            # Load function object (DO NOT reload module)
+            try:
+                next_function, next_module = _load_or_reload_function_and_module(
+                    next_call_info, loaded_modules_cache, reload_module=False
+                )
+            except Exception as load_exc:
+                logger.error(
+                    f"Error loading function/module for call {original_next_call_id}: {load_exc}. Skipping call."
+                )
+                original_current_call_id = original_next_call_id
+                continue
+
+            # Load LOCALS ONLY for this call
+            try:
+                next_args, next_kwargs = _load_execution_data_from_call_info(
+                    next_call_info, read_obj_manager
+                )
+            except Exception as locals_exc:
+                logger.error(
+                    f"Error loading locals for call {original_next_call_id}: {locals_exc}. Skipping call."
+                )
+                original_current_call_id = original_next_call_id
+                continue
+
+            # 7 . Inject mock functions
+            if mock_functions:
+                _load_mock_functions(read_session, original_next_call_id, read_obj_manager, next_module, mock_functions)
+
+            # Execute the next function (monitor records it, linking automatically if enabled)
+            logger.info(f"Executing next replay call: {next_function.__name__}...")
+            try:
+                next_function(*next_args, **next_kwargs)
+                logger.info(f"Call {original_next_call_id} replayed successfully.")
+            except Exception as exec_exc:
+                import debugpy
+                debugpy.breakpoint()
+                logger.error(
+                    f"Error executing replayed call for original ID {original_next_call_id} ('{next_function.__name__}'): {exec_exc}"
+                )
+                logger.info("Stopping replay sequence due to execution error.")
+                break
+
+            # Move to the next call in the original sequence for the next iteration
+            original_current_call_id = original_next_call_id
+
+        # --- End Replay Loop ---
+
+        # 7. Commit monitor session to save all recorded calls from the replay (if monitoring enabled)
+        if enable_monitoring and monitor_instance:
+            logger.info(
+                f"Committing monitor session to save replayed calls (starting from {first_replayed_call_id})."
+            )
+            monitor_instance.session.commit()
+            logger.info("Replay sequence committed.")
+
+        return first_replayed_call_id  # Return ID of the start of the new branch
+
+    except Exception as e:
+        logger.error(f"Error during session replay: {e}")
+        traceback.print_exc()  # Print full traceback for debugging
+        # Rollback the *main* monitor session to undo potential partial recordings (if monitoring enabled)
+        if enable_monitoring and monitor_instance:
+            try:
+                monitor_instance.session.rollback()
+                logger.info("Rolled back main monitoring session due to error.")
+            except Exception as rb_err:
+                logger.error(f"Error rolling back main monitoring session: {rb_err}")
+        return None  # Indicate failure
+    finally:
+        # Restore monitor state if backed up
+        if monitor_instance:
+            if original_parent_id_for_next_call is not None:
+                monitor_instance._parent_id_for_next_call = (
+                    original_parent_id_for_next_call
+                )
+            if original_recording_state is not None:
+                monitor_instance.is_recording_enabled = original_recording_state
+        # Close the separate read session
+        read_session.commit()
+        assert monitor_instance is not None
+        monitor_instance.export_db()
+        read_session.close()
+        logger.info("Replay function finished.")
+
+
 
 # Helper function (can be moved elsewhere if preferred)
 def _load_or_reload_function_and_module(
