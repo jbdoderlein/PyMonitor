@@ -18,7 +18,7 @@ from PIL import Image, ImageTk
 
 from spacetimepy.core import FunctionCall, MonitoringSession, ObjectManager, init_db
 from spacetimepy.core.monitoring import init_monitoring
-from spacetimepy.core.reanimation import replay_session_sequence
+from spacetimepy.core.reanimation import replay_session_sequence, replay_session_subsequence
 from spacetimepy.core.session import end_session, start_session
 
 # Import chlorophyll for code editor
@@ -30,6 +30,7 @@ except ImportError:
     print("Warning: chlorophyll not available. Code editor will be disabled.")
 
 import pygame
+import contextlib
 
 HIDDEN_PYGAME = False
 original_set_mode = pygame.display.set_mode
@@ -39,6 +40,120 @@ def modified_set_mode(*args, **kwargs):
 
     return original_set_mode(*args, **kwargs)
 pygame.display.set_mode = modified_set_mode
+
+
+class TwoHandleRange(tk.Canvas):
+    """A simple two-handle range selector implemented on a Canvas.
+
+    Emits callback(handle_name: 'start'|'end', value:int) when a handle moves.
+    """
+    def __init__(self, parent, min_val: int, max_val: int, start: int, end: int, *, width: int = 400, height: int = 36, handle_radius: int = 6, callback=None, **kwargs):
+        super().__init__(parent, width=width, height=height, highlightthickness=0, **kwargs)
+        self.min_val = min_val
+        self.max_val = max_val
+        self.start = max(min_val, min(start, max_val))
+        self.end = max(min_val, min(end, max_val))
+        if self.start > self.end:
+            self.start, self.end = self.end, self.start
+
+        self.width = width
+        self.height = height
+        self.handle_radius = handle_radius
+        self.callback = callback
+
+        self._dragging = None  # 'start' or 'end' or None
+
+        self._pad_x = 10
+        self._track_y = height // 2
+
+        self._draw_all()
+
+        self.bind('<Button-1>', self._on_click)
+        self.bind('<B1-Motion>', self._on_drag)
+        self.bind('<ButtonRelease-1>', self._on_release)
+
+    def _val_to_x(self, val: int) -> int:
+        span = max(1, self.max_val - self.min_val)
+        frac = (val - self.min_val) / span
+        left = self._pad_x
+        right = self.width - self._pad_x
+        return int(left + frac * (right - left))
+
+    def _x_to_val(self, x: int) -> int:
+        left = self._pad_x
+        right = self.width - self._pad_x
+        frac = (x - left) / max(1, (right - left))
+        val = int(round(self.min_val + frac * (self.max_val - self.min_val)))
+        return max(self.min_val, min(self.max_val, val))
+
+    def _draw_all(self):
+        self.delete('all')
+        left = self._pad_x
+        right = self.width - self._pad_x
+        y = self._track_y
+        # track background
+        self.create_line(left, y, right, y, fill='#d0d0d0', width=8, capstyle='round')
+        # selected range
+        sx = self._val_to_x(self.start)
+        ex = self._val_to_x(self.end)
+        self.create_line(sx, y, ex, y, fill='#4a90e2', width=8, capstyle='round')
+        # handles
+        r = self.handle_radius
+        self.create_oval(sx - r, y - r, sx + r, y + r, fill='#ffffff', outline='#666666', width=1, tags=('start',))
+        self.create_oval(ex - r, y - r, ex + r, y + r, fill='#ffffff', outline='#666666', width=1, tags=('end',))
+
+    def _pick_handle(self, x, y):
+        # pick closest handle by distance
+        sx = self._val_to_x(self.start)
+        ex = self._val_to_x(self.end)
+        ds = abs(x - sx)
+        de = abs(x - ex)
+        return 'start' if ds <= de else 'end'
+
+    def _on_click(self, event):
+        which = self._pick_handle(event.x, event.y)
+        self._dragging = which
+        # move that handle to click position
+        self._move_handle_to(which, event.x)
+
+    def _on_drag(self, event):
+        if not self._dragging:
+            return
+        self._move_handle_to(self._dragging, event.x)
+
+    def _on_release(self, event):
+        self._dragging = None
+
+    def _move_handle_to(self, which: str, x: int):
+        val = self._x_to_val(x)
+        if which == 'start':
+            if val > self.end:
+                val = self.end
+            if val != self.start:
+                self.start = val
+                self._draw_all()
+                if self.callback:
+                    with contextlib.suppress(Exception):
+                        self.callback('start', self.start)
+        else:
+            if val < self.start:
+                val = self.start
+            if val != self.end:
+                self.end = val
+                self._draw_all()
+                if self.callback:
+                    with contextlib.suppress(Exception):
+                        self.callback('end', self.end)
+
+    def set_values(self, start: int, end: int):
+        start = max(self.min_val, min(start, self.max_val))
+        end = max(self.min_val, min(end, self.max_val))
+        if start > end:
+            start, end = end, start
+        self.start = start
+        self.end = end
+        self._draw_all()
+
 
 
 # Since we're now inside the spacetimepy module, we can import directly
@@ -110,6 +225,12 @@ class GameExplorer:
         self.stroboscopic_ghost_count = {}  # Dict[session_id, tk.IntVar] - number of ghost frames
         self.stroboscopic_offset = {}  # Dict[session_id, tk.IntVar] - offset between ghost frames
         self.stroboscopic_start_position = {}  # Dict[session_id, tk.IntVar] - start position (-100 to 100, negative=past, positive=future)
+
+        # Range selection (sub-sliders) per session
+        # Each session will have a start and end IntVar and widgets so user can select a range
+        self.range_start = {}  # Dict[session_id, tk.IntVar]
+        self.range_end = {}    # Dict[session_id, tk.IntVar]
+        self.session_range_widgets = {}  # Dict[session_id, Dict] to store start/end scale widgets
 
         self.in_memory_db = True
 
@@ -710,8 +831,84 @@ class GameExplorer:
             # Also synchronize child session sliders if this is a parent session
             self._sync_child_sliders(session_id, index)
 
+            # Note: do not move the range widget when the main slider moves.
+            # Range -> main behavior remains (moving handles moves main slider),
+            # but main -> range behavior is intentionally disabled for better UX.
+
         except (ValueError, IndexError) as e:
             print(f"Error updating display: {e}")
+
+    def _on_range_start_changed(self, session_id: int, value: str):
+        """Handle changes to the range start sub-slider.
+
+        Ensure start <= end, update stored IntVar, and move main slider to start.
+        """
+        try:
+            start_val = int(float(value))
+        except (TypeError, ValueError):
+            return
+
+        # Ensure end exists
+        end_var = self.range_end.get(session_id)
+        if end_var is None:
+            return
+
+        end_val = end_var.get()
+        # Enforce start <= end
+        if start_val > end_val:
+            # clamp end to start_val
+            end_var.set(start_val)
+
+        # Move main slider to the start position
+        slider_info = self.session_sliders.get(session_id)
+        if slider_info and 'slider' in slider_info:
+            try:
+                slider_widget = slider_info['slider']
+                slider_widget.set(start_val)
+                # Trigger display update
+                self._on_slider_change(session_id, str(start_val))
+            except Exception:
+                pass
+        # Update the visual two-handle if present
+        range_widgets = self.session_range_widgets.get(session_id)
+        if range_widgets and 'two_range' in range_widgets:
+            with contextlib.suppress(Exception):
+                range_widgets['two_range'].set_values(self.range_start[session_id].get(), self.range_end[session_id].get())
+
+    def _on_range_end_changed(self, session_id: int, value: str):
+        """Handle changes to the range end sub-slider.
+
+        Ensure end >= start, update stored IntVar, and move main slider to end.
+        """
+        try:
+            end_val = int(float(value))
+        except (TypeError, ValueError):
+            return
+
+        start_var = self.range_start.get(session_id)
+        if start_var is None:
+            return
+
+        start_val = start_var.get()
+        # Enforce end >= start
+        if end_val < start_val:
+            start_var.set(end_val)
+
+        # Move main slider to the end position
+        slider_info = self.session_sliders.get(session_id)
+        if slider_info and 'slider' in slider_info:
+            try:
+                slider_widget = slider_info['slider']
+                slider_widget.set(end_val)
+                # Trigger display update
+                self._on_slider_change(session_id, str(end_val))
+            except Exception:
+                pass
+        # Update the visual two-handle if present
+        range_widgets = self.session_range_widgets.get(session_id)
+        if range_widgets and 'two_range' in range_widgets:
+            with contextlib.suppress(Exception):
+                range_widgets['two_range'].set_values(self.range_start[session_id].get(), self.range_end[session_id].get())
 
     def _on_comparison_selection_changed(self, session_id: int):
         """Handle comparison overlay selection change"""
@@ -890,6 +1087,7 @@ class GameExplorer:
         self.info_label.pack(anchor=tk.W, pady=(5, 0))
 
         # Globals frame
+        """
         globals_frame = ttk.LabelFrame(right_paned, text="Global Variables", padding=10)
         right_paned.add(globals_frame, weight=1)
 
@@ -908,7 +1106,7 @@ class GameExplorer:
 
         globals_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         globals_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
+        """
         # Tracked Functions frame
         tracked_frame = ttk.LabelFrame(right_paned, text="Tracked Functions", padding=10)
         right_paned.add(tracked_frame, weight=1)
@@ -1023,6 +1221,8 @@ class GameExplorer:
         # Replay buttons
         ttk.Button(buttons_frame, text="Replay All", command=self._replay_all).pack(side=tk.LEFT, padx=(0, 5))
         ttk.Button(buttons_frame, text="Replay From Here", command=self._replay_from_here).pack(side=tk.LEFT, padx=(0, 5))
+        # Replay a subsequence using the sub-slider (range) values
+        ttk.Button(buttons_frame, text="Replay Range", command=self._replay_subsequence).pack(side=tk.LEFT, padx=(0, 5))
         ttk.Button(buttons_frame, text="Refresh DB", command=self._refresh_database).pack(side=tk.LEFT, padx=(0, 5))
 
         # Hidden pygame checkbox
@@ -1154,10 +1354,10 @@ class GameExplorer:
                     slider.pack(side=tk.LEFT, padx=(10, 0))
                 else:
                     # Fallback to normal slider if parent not found
-                    slider = self._create_normal_slider(slider_container, session_id, calls)
+                    slider = self._create_normal_slider(slider_container, session_id, calls, length=400)
             else:
                 # Normal full-width slider for main sessions
-                slider = self._create_normal_slider(slider_container, session_id, calls)
+                slider = self._create_normal_slider(slider_container, session_id, calls, length=400)
 
             # Create stroboscopic control panel (initially hidden)
             control_panel = self._create_stroboscopic_control_panel(session_frame, session_id)
@@ -1204,22 +1404,74 @@ class GameExplorer:
 
         return sorted_sessions
 
-    def _create_normal_slider(self, parent_frame: ttk.Frame, session_id: int, calls: list[Any]):
-        """Create a normal full-width slider"""
+    def _create_normal_slider(self, parent_frame: ttk.Frame, session_id: int, calls: list[Any], length: int = 400):
+        """Create a normal full-width slider with optional range sub-sliders (start/end).
+
+        Returns the main slider widget.
+        """
+        # Use a vertical layout: main slider on top, two-handle range below
         slider_frame = ttk.Frame(parent_frame)
         slider_frame.pack(fill=tk.X)
 
-        ttk.Label(slider_frame, text="Frame:").pack(side=tk.LEFT)
+        # Top row: label + main slider
+        top_row = ttk.Frame(slider_frame)
+        top_row.pack(fill=tk.X)
 
+        ttk.Label(top_row, text="Frame:").pack(side=tk.LEFT)
+
+        # Ensure range vars exist
+        if session_id not in self.range_start:
+            self.range_start[session_id] = tk.IntVar(value=0)
+        if session_id not in self.range_end:
+            self.range_end[session_id] = tk.IntVar(value=max(0, len(calls) - 1))
+
+        # Main slider
         slider = tk.Scale(
-            slider_frame,
+            top_row,
             from_=0,
-            to=len(calls) - 1,
+            to=max(0, len(calls) - 1),
             orient=tk.HORIZONTAL,
             command=lambda value, sid=session_id: self._on_slider_change(sid, value),
-            length=400
+            length=length
         )
         slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(10, 0))
+
+        # Bottom row: two-handle range full-width beneath the main slider
+        bottom_row = ttk.Frame(slider_frame)
+        bottom_row.pack(fill=tk.X, pady=(6, 0))
+
+        # Callback invoked when a handle moves: ('start'|'end', value)
+        def _range_moved(handle_name, val):
+            if handle_name == 'start':
+                # keep end >= start
+                self.range_start[session_id].set(val)
+            else:
+                self.range_end[session_id].set(val)
+
+            # Move the main slider to the moved value
+            with contextlib.suppress(Exception):
+                slider.set(val)
+                self._on_slider_change(session_id, str(val))
+
+        two_range = TwoHandleRange(
+            bottom_row,
+            min_val=0,
+            max_val=max(0, len(calls) - 1),
+            start=self.range_start[session_id].get(),
+            end=self.range_end[session_id].get(),
+            width=length,
+            height=36,
+            callback=_range_moved
+        )
+        two_range.pack(fill=tk.X, expand=True)
+
+        # Store widgets for potential future use
+        self.session_range_widgets[session_id] = {
+            'two_range': two_range,
+            'slider_frame': slider_frame,
+            'top_row': top_row,
+            'bottom_row': bottom_row
+        }
 
         return slider
 
@@ -1435,7 +1687,12 @@ class GameExplorer:
                 # Custom object
                 attrs = [k for k in value.__dict__ if not k.startswith('_')]
                 return f'{type(value).__name__}({len(attrs)} attrs)'
-            return f'{type(value).__name__} (display error)'
+            if hasattr(value, '__str__'):
+                val_str = str(value)
+                if len(val_str) > 100:
+                    return f'{val_str[:97]}...'
+                return val_str
+            return f'{type(value).__name__}() (no str repr)'
         except Exception:
             return f'{type(value).__name__} (display error)'
 
@@ -1560,7 +1817,7 @@ class GameExplorer:
 
         # Setup tracked functions checkboxes
         for i, func_name in enumerate(sorted(all_tracked_functions)):
-            var = tk.BooleanVar(value=False)  # Default to unchecked (don't mock)
+            var = tk.BooleanVar(value=True)  # Default to unchecked (don't mock)
             self.tracked_vars[func_name] = var
 
             if self.tracked_content:
@@ -1739,6 +1996,104 @@ class GameExplorer:
             import traceback
             traceback.print_exc()
 
+    def _replay_subsequence(self):
+        """Replay a subsequence using the current session's sub-slider range (start/end)."""
+        if self.current_session_id is None or self.current_session_id not in self.sessions_data:
+            print("No current session to replay from")
+            return
+
+        # Ensure range vars exist for this session
+        if self.current_session_id not in self.range_start or self.current_session_id not in self.range_end:
+            print("No range information available for this session")
+            return
+
+        start_index = int(self.range_start[self.current_session_id].get())
+        end_index = int(self.range_end[self.current_session_id].get())
+
+        calls = self.sessions_data[self.current_session_id]['calls']
+        if not calls:
+            print("No function calls in this session")
+            return
+
+        # Normalize indices and allow the user to pick them in any order
+        start_index = max(0, min(start_index, len(calls) - 1))
+        end_index = max(0, min(end_index, len(calls) - 1))
+        if start_index > end_index:
+            start_index, end_index = end_index, start_index
+
+        # Safely get call objects and ids
+        start_call = calls[start_index]
+        end_call = calls[end_index]
+        start_call_id = getattr(start_call, 'id', None)
+        end_call_id = getattr(end_call, 'id', None)
+        if start_call_id is None or end_call_id is None:
+            print("Unable to determine start/end call IDs for replay")
+            return
+
+        ignored_globals = self._get_ignored_globals()
+        mocked_functions = self._get_mocked_functions()
+
+        session_name = self.sessions_data[self.current_session_id]['name']
+        print(f"Starting replay subsequence of {session_name} frames {start_index + 1}..{end_index + 1} (Call IDs: {start_call_id}..{end_call_id})")
+        print(f"Ignored globals: {ignored_globals}")
+        print(f"Mocked functions: {mocked_functions}")
+
+        if self.status_label:
+            self.status_label.configure(text=f"Replaying range {start_index + 1}-{end_index + 1}...", foreground="orange")
+            self.root.update() if self.root else None
+
+        try:
+            # Initialize monitoring for the replay
+            init_monitoring(db_path=self.db_path, custom_picklers=["pygame"])
+            session_id = start_session(f"Replay subsequence from {session_name} Frames {start_index + 1}-{end_index + 1}")
+
+            if session_id:
+                print(f"Started new monitoring session: {session_id}")
+
+                # Perform the replay subsequence
+                new_branch_id = replay_session_subsequence(
+                    start_call_id,
+                    end_call_id,
+                    self.db_path,
+                    ignore_globals=ignored_globals,
+                    mock_functions=mocked_functions,
+                )
+
+                if new_branch_id:
+                    print(f"Replay successful! New branch created with ID: {new_branch_id}")
+                    if self.status_label:
+                        self.status_label.configure(text=f"Replay successful! Branch: {new_branch_id}", foreground="green")
+                    # Try to close pygame screen after successful replay
+                    try:
+                        if 'pygame' in sys.modules:
+                            print("Pygame is already imported")
+                        else:
+                            print("Pygame is not imported")
+                        import pygame
+                        pygame.quit()
+                        print("Pygame screen closed after replay")
+                    except Exception as pygame_err:
+                        print(f"Warning: Could not close pygame screen: {pygame_err}")
+                    # Refresh the database to see new calls
+                    self._refresh_database()
+                else:
+                    print("Replay failed - no new branch created")
+                    if self.status_label:
+                        self.status_label.configure(text="Replay failed", foreground="red")
+
+                end_session()
+            else:
+                print("Failed to start monitoring session for replay")
+                if self.status_label:
+                    self.status_label.configure(text="Failed to start session", foreground="red")
+
+        except Exception as e:
+            print(f"Error during replay subsequence: {e}")
+            if self.status_label:
+                self.status_label.configure(text=f"Error: {str(e)[:50]}", foreground="red")
+            import traceback
+            traceback.print_exc()
+
     def _refresh_database(self):
         """Refresh the database connection to see new data"""
         try:
@@ -1825,6 +2180,10 @@ class GameExplorer:
         """Run the replay interface"""
         self._create_ui()
         if self.root:
+
+            # This is where the magic happens
+            import sv_ttk
+            sv_ttk.set_theme("light")
             self.root.mainloop()
 
         # Clean up

@@ -47,6 +47,7 @@ chlorophyll = { git = "https://github.com/jbdoderlein/chlorophyll" }
 game = [
     "pygame>=2.6.1",
     "chlorophyll",
+    "sv-ttk>=2.6.1",
 ]
 visualization = [
     "matplotlib>=3.10.3",
