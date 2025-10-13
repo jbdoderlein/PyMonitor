@@ -11,12 +11,12 @@ import io
 import os
 import sys
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 from typing import Any, TypedDict
 
 from PIL import Image, ImageTk
 
-from spacetimepy.core import FunctionCall, MonitoringSession, ObjectManager, init_db
+from spacetimepy.core import FunctionCall, MonitoringSession, ObjectManager, init_db, FunctionCallRepository
 from spacetimepy.core.monitoring import init_monitoring
 from spacetimepy.core.reanimation import replay_session_sequence, replay_session_subsequence
 from spacetimepy.core.session import end_session, start_session
@@ -1316,6 +1316,14 @@ class GameExplorer:
             )
             stroboscopic_cb.pack(side=tk.LEFT)
 
+            # Delete button to remove the entire session from the DB
+            delete_btn = ttk.Button(
+                checkbox_frame,
+                text="Delete",
+                command=lambda sid=session_id: self._on_delete_session(sid)
+            )
+            delete_btn.pack(side=tk.LEFT, padx=(10, 0))
+
             # Calculate slider positioning for branching visualization
             if is_branch and branch_point_index is not None:
                 # For branch sessions, create offset and reduced size slider
@@ -1403,6 +1411,78 @@ class GameExplorer:
                 break
 
         return sorted_sessions
+
+    def _on_delete_session(self, session_id: int):
+        """Prompt user and delete a monitoring session from the DB, then refresh UI."""
+        if session_id not in self.sessions_data:
+            if self.status_label:
+                self.status_label.configure(text="Session not found", foreground="red")
+            return
+
+        # Ask for confirmation
+        try:
+            if messagebox.askyesno("Delete session", f"Delete session {self.sessions_data[session_id]['name']} and all its data? This cannot be undone."):
+                # Perform deletion
+                deleted = self._delete_session_from_db(session_id)
+                if deleted:
+                    # Refresh in-memory structures and UI
+                    self._refresh_database()
+                    # Ensure current session is valid after refresh
+                    if self.sessions_data:
+                        self.current_session_id = list(self.sessions_data.keys())[0]
+                        self.current_call_index = 0
+                        # Update display to first frame of first session
+                        with contextlib.suppress(Exception):
+                            self._update_display(self.current_session_id, 0)
+                    if self.status_label:
+                        self.status_label.configure(text=f"Deleted session {session_id}", foreground="green")
+                else:
+                    if self.status_label:
+                        self.status_label.configure(text=f"Failed to delete session {session_id}", foreground="red")
+        except Exception as e:
+            print(f"Error deleting session: {e}")
+            if self.status_label:
+                self.status_label.configure(text=f"Delete error: {str(e)[:50]}", foreground="red")
+
+    def _delete_session_from_db(self, session_id: int) -> bool:
+        """Delete a MonitoringSession and all related FunctionCalls and StackSnapshots from the DB.
+
+        Returns True on success, False otherwise.
+        """
+        if not self.session:
+            print("No database session available to delete from")
+            return False
+
+        try:
+            # Use the SQLAlchemy session to find the session and related rows
+            ms = self.session.get(MonitoringSession, session_id)
+            if not ms:
+                print(f"MonitoringSession {session_id} not found in DB")
+                return False
+
+            # Find all function calls for this session and delete them using repository helper
+            calls = self.session.query(FunctionCall).filter(FunctionCall.session_id == session_id).all()
+            repo = FunctionCallRepository(self.session)
+            for call in calls:
+                with contextlib.suppress(Exception):
+                    repo.delete_call(call.id)
+
+            # Finally delete the monitoring session
+            try:
+                self.session.delete(ms)
+            except Exception:
+                # fallback to query delete
+                self.session.query(MonitoringSession).filter(MonitoringSession.id == session_id).delete(synchronize_session=False)
+
+            # Commit changes
+            self.session.commit()
+            print(f"Deleted session {session_id} from DB")
+            return True
+        except Exception as e:
+            print(f"Error deleting session {session_id}: {e}")
+            with contextlib.suppress(Exception):
+                self.session.rollback()
+            return False
 
     def _create_normal_slider(self, parent_frame: ttk.Frame, session_id: int, calls: list[Any], length: int = 400):
         """Create a normal full-width slider with optional range sub-sliders (start/end).
