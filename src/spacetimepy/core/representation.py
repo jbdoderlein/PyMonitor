@@ -478,6 +478,8 @@ class ObjectManager:
 
     def get(self, ref: str) -> tuple[Any, str]:
         """Get an object by its reference"""
+        if ref == "<unserializable>":
+            return "<unserializable>", "unserializable"
         stored_obj = self.session.query(StoredObject).filter(StoredObject.id == ref).first()
         if not stored_obj:
             return None, "None"
@@ -671,6 +673,8 @@ class ObjectManager:
         """
         result = {}
         for name, ref in refs.items():
+            if ref == "<unserializable>": # We do not want to assign unserializable values
+                continue
             try:
                 result[name] = self.rehydrate(ref)
             except ValueError as e:

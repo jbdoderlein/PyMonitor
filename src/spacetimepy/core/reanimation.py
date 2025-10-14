@@ -1307,7 +1307,8 @@ def _load_mock_functions(session, function_execution_id, obj_manager, module, mo
                 func_name = func_name_parts[-1]
 
             if func_name in working_module.__dict__:
-                working_module.__dict__[f"_old_{func_name}"] = working_module.__dict__[func_name]
+                if f"_old_{func_name}" not in working_module.__dict__:
+                    working_module.__dict__[f"_old_{func_name}"] = working_module.__dict__[func_name]
 
                 # Create a closure that captures the current func_name value
                 def create_mock_func(captured_func_name):

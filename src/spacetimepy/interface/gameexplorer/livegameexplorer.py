@@ -349,6 +349,8 @@ class GameExplorer:
         # Load locals
         if call.locals_refs and self.object_manager:
             for var_name, ref in call.locals_refs.items():
+                if ref == "<unserializable>":
+                    continue
                 try:
                     var_value = self.object_manager.rehydrate(ref)
                     variables['locals'][var_name] = var_value
@@ -360,6 +362,8 @@ class GameExplorer:
         if call.globals_refs and self.object_manager:
             for var_name, ref in call.globals_refs.items():
                 # Skip system variables
+                if ref == "<unserializable>":
+                    continue
                 if not var_name.startswith('__'):
                     try:
                         var_value = self.object_manager.rehydrate(ref)
@@ -548,6 +552,53 @@ class GameExplorer:
         except Exception as e:
             print(f"Error decoding image: {e}")
             return None
+
+    def _insert_new_code(self, new_code: str, first_line: int):
+        """Load source code from file into the code editor and optionally highlight a line"""
+        if not self.code_editor:
+            return
+
+        try:
+
+            # Get content from current source
+            old_code = self.code_editor.get('1.0', tk.END + '-1c')  # Exclude the final newline that tkinter adds
+            print(old_code)
+            old_code_lines = old_code.splitlines()
+            new_code_lines = new_code.splitlines()
+            final_code_lines = []
+            i = 0
+            while i<len(old_code_lines) and i<len(new_code_lines):
+                if i > first_line and old_code_lines[i+first_line-1] != new_code_lines[i]:
+                    final_code_lines.append(new_code_lines[i-first_line])
+                else:
+                    final_code_lines.append(old_code_lines[i])
+                i+=1
+
+            print(final_code_lines)
+            # Clear previous content
+
+            self.code_editor.delete('1.0', tk.END)
+
+            # Clear previous highlighting
+            if hasattr(self.code_editor, 'tag_delete'):
+                self.code_editor.tag_delete('highlight_line')
+
+
+            self.code_editor.insert('1.0', "\n".join(final_code_lines))
+
+            # Reset modification status
+            self.file_modified = False
+            self._update_save_button_state()
+            self._update_code_editor_title()
+
+
+        except Exception as e:
+            print(f"Error loading source code from i don t know: {e}")
+            self.code_editor.insert('1.0', f"Error loading source code: {e}")
+            self.current_source_file = None
+            self.file_modified = False
+            self._update_save_button_state()
+            self._update_code_editor_title()
 
     def _load_source_code(self, file_path: str, highlight_line: int | None = None):
         """Load source code from file into the code editor and optionally highlight a line"""
@@ -1155,7 +1206,7 @@ class GameExplorer:
                 self.code_editor = CodeView(
                     code_editor_frame,
                     lexer=pygments.lexers.PythonLexer,
-                    color_scheme="ayu-light"
+                    color_scheme="spacetimepy-light"
                 )
                 self.code_editor.pack(fill=tk.BOTH, expand=True)
 
@@ -1316,13 +1367,14 @@ class GameExplorer:
             )
             stroboscopic_cb.pack(side=tk.LEFT)
 
-            # Delete button to remove the entire session from the DB
-            delete_btn = ttk.Button(
+            # Source button to load the corresponding source code
+            """
+            source_btn = ttk.Button(
                 checkbox_frame,
-                text="Delete",
-                command=lambda sid=session_id: self._on_delete_session(sid)
+                text="Source",
+                command=lambda sid=session_id: self._on_source_load(sid)
             )
-            delete_btn.pack(side=tk.LEFT, padx=(10, 0))
+            source_btn.pack(side=tk.LEFT, padx=(10, 0))"""
 
             # Calculate slider positioning for branching visualization
             if is_branch and branch_point_index is not None:
@@ -1332,7 +1384,7 @@ class GameExplorer:
                     parent_calls_count = len(self.sessions_data[parent_id]['calls'])
 
                     # Calculate proportional offset and width
-                    total_width = 400  # Base slider width
+                    total_width = 600  # Base slider width
                     offset_ratio = branch_point_index / parent_calls_count if parent_calls_count > 0 else 0
                     width_ratio = len(calls) / parent_calls_count if parent_calls_count > 0 else 1
 
@@ -1412,37 +1464,30 @@ class GameExplorer:
 
         return sorted_sessions
 
-    def _on_delete_session(self, session_id: int):
+    def _on_source_load(self, session_id: int):
         """Prompt user and delete a monitoring session from the DB, then refresh UI."""
         if session_id not in self.sessions_data:
             if self.status_label:
                 self.status_label.configure(text="Session not found", foreground="red")
             return
 
-        # Ask for confirmation
+
         try:
-            if messagebox.askyesno("Delete session", f"Delete session {self.sessions_data[session_id]['name']} and all its data? This cannot be undone."):
-                # Perform deletion
-                deleted = self._delete_session_from_db(session_id)
-                if deleted:
-                    # Refresh in-memory structures and UI
-                    self._refresh_database()
-                    # Ensure current session is valid after refresh
-                    if self.sessions_data:
-                        self.current_session_id = list(self.sessions_data.keys())[0]
-                        self.current_call_index = 0
-                        # Update display to first frame of first session
-                        with contextlib.suppress(Exception):
-                            self._update_display(self.current_session_id, 0)
-                    if self.status_label:
-                        self.status_label.configure(text=f"Deleted session {session_id}", foreground="green")
-                else:
-                    if self.status_label:
-                        self.status_label.configure(text=f"Failed to delete session {session_id}", foreground="red")
+            current_session = self.sessions_data[session_id]
+            if len(current_session['calls']) == 0:
+                if self.status_label:
+                    self.status_label.configure(text="No calls in session", foreground="red")
+                return
+            source_file = current_session['calls'][0].code_definition
+
+            print(source_file.code_content, source_file.first_line_no)
+            self._insert_new_code(source_file.code_content, source_file.first_line_no)
+
         except Exception as e:
-            print(f"Error deleting session: {e}")
+            print(f"Error loading source for session {session_id}: {e}")
             if self.status_label:
-                self.status_label.configure(text=f"Delete error: {str(e)[:50]}", foreground="red")
+                self.status_label.configure(text=f"Error loading source: {str(e)[:30]}", foreground="red")
+            return
 
     def _delete_session_from_db(self, session_id: int) -> bool:
         """Delete a MonitoringSession and all related FunctionCalls and StackSnapshots from the DB.
@@ -1875,7 +1920,7 @@ class GameExplorer:
                 # Get child calls (tracked functions) for each main function call
                 child_calls = call.get_child_calls(self.session)
                 for child_call in child_calls:
-                    if child_call.function != self.tracked_function:
+                    if child_call.function != self.tracked_function and child_call.function != "mock_func":
                         all_tracked_functions.add(child_call.function)
 
 

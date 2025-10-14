@@ -339,9 +339,7 @@ class SpaceTimeMonitor:
                 refs[name] = ref
             except Exception as e:
                 # Log warning but continue if we can't store a variable
-                logger.info(f"Could not store variable {name}: {e}")
-                print("==========STORE VARIABLE ERROR==========")
-                raise e
+                refs[name] = "<unserializable>"
                 if self.performance:
                     self.performance_data["function_failed_serialization"] += 1
                     self.performance_data["function_failed_type"].add(type(value))
